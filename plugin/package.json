@@ -2,6 +2,7 @@
   "name": "llm-second-opinion-plugin",
   "private": true,
   "license": "MIT",
+  "packageManager": "pnpm@12.6.0",
   "scripts": {
     "gen:types": "node scripts/gen-types.mjs",
     "check:types": "node scripts/gen-types.mjs --check",

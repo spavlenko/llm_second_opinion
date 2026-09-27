@@ -14,7 +14,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Node 26 + pnpm 12 toolchain; MLflow 3.16 installed, local server script (`scripts/mlflow-server.sh`)
 - [x] Generated TypeScript types from `schemas/` (`pnpm gen:types`, drift check `pnpm check:types`)
 - [x] Plugin contract test: `EventWriter` output validates against `event.schema.json`
-- [ ] CI: ruff, pytest, `bench schemas --check`, plugin build and tests
+- [x] CI: ruff, pytest (Docker tests included), `bench schemas --check`, plugin build and tests
 
 ## Weeks 1–2 — task pipeline (Multi-SWE-bench C++)
 
