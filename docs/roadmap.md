@@ -1,7 +1,8 @@
 # Roadmap
 
-The build order from [spec.md](spec.md), at several days a week (~8 weeks to the pilot). Each
-step ends with something that runs. Tick items as they land and note anything deferred.
+The build order from [spec.md](spec.md), at several days a week (~8 weeks to the pilot, ~11 to
+confirmed results). Each step ends with something that runs. Tick items as they land and note
+anything deferred.
 
 Step 2 carries the most risk: arm64 build problems only show up during validation.
 
@@ -24,6 +25,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Gold-patch validation, run twice for flakiness
 - [ ] Frozen manifest writer, with dropped instances and reasons
 - [ ] First manifest; smoke task set (3 tasks)
+- [ ] `dev`/`test` split recorded in the manifest (fixed seed, stratified by repository)
 
 ## Week 3 — A0 end to end on smoke tasks
 
@@ -53,6 +55,8 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Tokens and cost in ledger, MLflow, and `bench report` (per arm, per resolved task);
       price table in the experiment
 - [ ] Deterministic scorers (capability, cost)
+- [ ] Paired comparisons in `bench report`: differences with paired bootstrap CI, McNemar;
+      lift over A0 and share of the A0–A4 gap closed; Pareto front of resolve rate vs cost
 
 ## Weeks 5–6 — advisor plugin
 
@@ -60,15 +64,39 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] `pi-binding`: consult tool, lifecycle hooks, advice injection, reading `advisor.json`
 - [ ] Planning review and consult tool interventions
 - [ ] OTel exporter to MLflow
+- [ ] Prompt slots (`executor_guidance`, `consult_tool`, `brief`, `advisor_system`,
+      `advice_injection`) with `prompts/default/`; placeholder validation
+- [ ] `prompts:` sets in config (directory or base + overrides), hashed by text, written into
+      `advisor.json`; sweeps over `advisor.prompts` and `advisor.interventions`
+- [ ] `consult_requested` event; `prompt_hash` on `advisor_request`
 
 ## Week 7 — levels, stuck trigger, exposure scorers
 
 - [ ] Levels L0, L1, L3
 - [ ] Heuristic stuck trigger
+- [ ] Triggers `on_test_failure` and `periodic`; consult cooldown and advisor answer-token cap
 - [ ] Leakage and re-identification scorers
 - [ ] SWE-bench-Live import
 
 ## Week 8 — pilot
 
-- [ ] Pilot: 10 tasks, arms A0, A2, A4, 3 seeds
+- [ ] Pilot on `dev`: 10 tasks, 3 seeds; arms A0, A4, and 3 help policies (prompt set ×
+      initiative); variance estimate for the power analysis
 - [ ] Gate A from the research proposal
+
+## Weeks 9–10 — automatic prompt search
+
+- [ ] `search:` config section; `train`/`val` split of `dev`, minibatches weighted toward tasks
+      A0 fails and A4 solves
+- [ ] `gepa` adapter over `Runner`: evaluate a candidate on a batch; reflective dataset from
+      item directories (prompts, events, exit reason, grade log)
+- [ ] `bench search`: resumable state in `runs/<experiment>/search/`, candidates with lineage in
+      `prompts/search/`, `--export N` to named prompt sets
+- [ ] Proposer calls through the metering proxy; search cost in the report
+- [ ] Search runs on `dev` with the budget set from the pilot
+
+## Week 11 — confirmation
+
+- [ ] Choose the policies to confirm (before running anything on `test`)
+- [ ] Run A0, A4, and the chosen policies once on `test`; paired comparisons; report the number
+      of variants tried

@@ -12,8 +12,14 @@ and scores every run on capability, cost, and exposure. It has two parts: a Pyth
 with MLflow for orchestration, grading, and tracking, and a TypeScript pi extension that
 implements the advisor. Version 1 runs on a single Apple Silicon Mac.
 
+What the experiments optimise is the **help policy**: the prompts and the approach by which a
+local executor model asks a cloud advisor for help (see
+[Research design](#research-design-help-policies)).
+
 **Goals**
 
+- Find help policies that raise the local executor's resolve rate per unit of advisor cost
+  and exposure, with results that hold on tasks not used to tune them.
 - Compare experiment arms reproducibly on a frozen task set.
 - Run unattended batches that resume after interruption, plus a debug mode for one task.
 - Support other agents through adapters, with pi as the first.
@@ -43,12 +49,172 @@ implements the advisor. Version 1 runs on a single Apple Silicon Mac.
 | Local model | Qwen3.8 via MLX behind an OpenAI-compatible endpoint | Any compatible server (llama.cpp, LM Studio, vLLM) also works |
 | Advisor model | Kimi K3 via an OpenAI-compatible API | Provider is configuration, not code |
 | Tasks | arm64-validated C++ subset, frozen manifest | Every arm sees an identical, verified task set |
+| Research variable | The help policy: prompt sets and help-seeking approach, both in config | Prompts and triggers can be iterated without code changes and are hashed with the results |
+| Validity | Tune on a `dev` split, report on a held-out `test` split; paired comparisons | Iterating on prompts is optimisation and overfits the tasks it is tuned on |
 
 **Trade-off: advisor inside the pi plugin.** Other agents run without advisor features until
 the plugin is ported to them. To keep that port cheap, the plugin is split into
 `advisor-core` (no pi imports) and `pi-binding` (pi-specific wiring). The config and event
 contracts are versioned JSON Schemas, so the core could later move into a standalone service
 without changing the harness.
+
+## Research design: help policies
+
+A **help policy** is everything that decides how the executor gets help from the advisor. It
+has two parts, prompts and approach, and both are experiment variables set in config, not in
+code. (Status: planned; built in weeks 5–7.)
+
+**Prompts: what is said.** Five prompt slots, each a text file under `prompts/`:
+
+| Slot | Where it goes | What it controls |
+| --- | --- | --- |
+| `executor_guidance` | Appended to the executor's system prompt | When and how to ask for help (e.g. "after two failed builds", "before a large refactor") |
+| `consult_tool` | The consult tool's description and argument descriptions | What the executor believes the tool is for and what it should put in a request |
+| `brief` | The brief builder's template | How a request is framed: a free question, or structured (goal, what was tried, current error, hypothesis) |
+| `advisor_system` | The advisor's system prompt | Form of the answer: hint, plan, or code; length; whether to name files |
+| `advice_injection` | How advice re-enters the executor's context | Framing and position of the advice (e.g. as a reviewer's note after the last tool result) |
+
+Templates use `{{name}}` placeholders from a fixed list per slot (for example `brief` gets
+`{{task_summary}}`, `{{tried}}`, `{{error}}`, `{{question}}`); an unknown placeholder fails at
+config load. `prompts/default/` holds one file per slot and is the policy every set starts from.
+
+**Approach: when, what, and how much.**
+
+- **Initiative:** who decides to ask. The executor (the consult tool), the harness (triggers:
+  plan review at the start, the stuck heuristic, a failed test run, every N turns), or both.
+  These are `interventions`, extended with `on_test_failure` and `periodic`.
+- **Content:** the abstraction level L0–L3 (how much code and how many identifiers leave the
+  machine) together with the `brief` prompt.
+- **Budget:** `max_consults`, a cap on advisor answer tokens, and a cooldown in turns between
+  consults.
+
+**Config.** Prompt sets are named once per experiment and chosen per arm. A set is a
+directory, or an earlier set with some slots replaced. `advisor.prompts` and
+`advisor.interventions` sweep like `level` (for `interventions`, a list of lists sweeps; a flat
+list is one value):
+
+```yaml
+prompts:
+  baseline: prompts/default
+  structured: {base: baseline, brief: prompts/brief/structured.md}
+  hints-only: {base: structured, advisor_system: prompts/advisor/hints-only.md}
+
+arms:
+  - {name: A0, agent: pi, executor: local}          # floor: no advisor
+  - name: H
+    agent: pi
+    executor: local
+    advisor:
+      prompts: [baseline, structured, hints-only]    # sweep: H-baseline, H-structured, ...
+      interventions: [[consult], [consult, stuck], [plan, consult, stuck]]
+      level: L2
+      max_consults: 5
+  - {name: A4, agent: pi, executor: advisor}        # ceiling: the advisor does the task
+```
+
+- The config hash covers the **text** of every slot, not the file paths, so editing a prompt
+  gives new results and moving or renaming a file does not.
+- The harness resolves the set and writes the slot texts into `advisor.json`
+  (`advisor.prompts`, plus the set's name and hash), so the plugin needs no file access and
+  each item directory records exactly which prompts were used.
+
+**What is measured.** Primary: resolve rate. Secondary, per policy:
+
+- advisor tokens and cost per resolved task (from the metering proxy);
+- consults per item, and time (turn) to the first consult;
+- advice uptake (`advice_applied` per `advisor_response`);
+- exposure: tokens and identifiers sent (from `advisor_request`);
+- lift over A0 on the same task and seed, and the share of the A0–A4 gap closed,
+  (H − A0) / (A4 − A0).
+
+A good policy is on the Pareto front of resolve rate against advisor cost and exposure; the
+report shows that front rather than a single winner.
+
+**Keeping results honest.** Iterating on prompts is optimisation, and it overfits the tasks it
+is tuned on.
+
+- The frozen manifest is split once into `dev` and `test` (fixed seed, stratified by repository,
+  recorded in the manifest).
+- Prompt development and sweeps use `dev` only. The few policies to confirm are chosen before
+  anything runs on `test`, run on it once, and only `test` numbers are reported as results.
+- Every variant tried on `dev` stays in the ledger and MLflow, so the number of variants tried
+  is reported with the results.
+- Arms are compared in pairs on the same tasks and seeds. The report adds paired differences
+  with a paired bootstrap interval over tasks (McNemar's test for two arms), which needs far
+  fewer runs than comparing each arm's own interval.
+
+**One model pair.** The study fixes one executor–advisor pair (Qwen3.8 via MLX and Kimi K3)
+and searches many prompt versions for it. Prompts are tuned to this pair; whether they
+transfer to other pairs is a follow-up check, not a goal of v1.
+
+### Automatic prompt search
+
+Hand-written prompt sets are the starting points; an automatic search then proposes new
+versions and keeps the ones that do better. The method is reflective evolution in the style of
+GEPA: a proposer model reads what happened in a few runs and rewrites one prompt slot at a
+time.
+
+1. **Start** from a prompt set (e.g. `baseline`) and evaluate it on a validation subset of `dev`.
+2. **Pick** a candidate from the pool (a Pareto front over validation tasks, so a candidate
+   that is best on some tasks survives even if its average is not the highest) and a slot to
+   change.
+3. **Run** the candidate on a small minibatch of training tasks and collect each run's record:
+   the prompts, the events (triggers, briefs, advice, uptake), the exit reason, and the
+   grading log.
+4. **Reflect:** the proposer model gets those records and the slot's current text, and writes a
+   new version of that slot.
+5. **Accept** the new candidate if it does better on the same minibatch; then evaluate it on
+   the validation subset and add it to the pool.
+6. Repeat until the rollout budget is spent. Every candidate is an ordinary prompt set, so it
+   runs through the same runner, ledger, grading, and MLflow as any arm.
+
+The search is built on the `gepa` package: its adapter interface (evaluate a candidate on a
+batch; turn traces into a reflective dataset) maps onto `Runner` and the item directories, and
+a candidate is exactly a mapping of slot names to texts. If the package does not fit, the
+same loop is small enough to own.
+
+**Splits.** `test` is never seen by the search. The search splits `dev` further into `train`
+(minibatches for reflection) and `val` (acceptance and the Pareto pool). Tasks that A0 fails
+and A4 solves carry the most signal, so minibatches favour them; tasks every arm solves or
+every arm fails tell the search nothing.
+
+**Config.**
+
+```yaml
+models:
+  local:    {base_url: "${LOCAL_MODEL_URL}", model: qwen3.8}
+  advisor:  {base_url: "${ADVISOR_URL}", model: kimi-k3, api_key_env: ADVISOR_API_KEY}
+  proposer: {base_url: "${ADVISOR_URL}", model: kimi-k3, reasoning_effort: high, api_key_env: ADVISOR_API_KEY}
+
+search:
+  arm: H                   # arm whose prompts are searched; its other settings stay fixed
+  start: [baseline, structured]
+  slots: [executor_guidance, consult_tool, brief, advisor_system, advice_injection]
+  proposer: proposer       # key in models
+  val_tasks: 8             # taken from dev; the rest of dev is train
+  minibatch: 4
+  budget: {rollouts: 300}  # agent runs, the real cost
+  seed: 0
+```
+
+- `bench search EXP.yaml` runs the loop and resumes after interruption; its state (pool,
+  lineage, scores) lives in `runs/<experiment>/search/`.
+- Each candidate is written to `prompts/search/<experiment>/<candidate>/`, one file per slot,
+  with its parent, the slot changed, and the proposer's reasoning. `bench search --export N`
+  turns the top N into named prompt sets for the confirmation run on `test`.
+- Proposer calls go through the metering proxy, so search cost is reported with the results.
+  Proposer inputs contain task code and logs from public benchmark repositories; they are
+  logged like advisor requests.
+
+**Cost.** One rollout is one agent run, up to `limits.wall_minutes`. At an average of 10
+minutes and `parallel` 1, 300 rollouts take about 50 hours on the Mac, so the budget is set
+from the pilot's measured run time, and approach settings (initiative, budget) are fixed or
+swept by a small grid rather than searched together with the prompts.
+
+**Contract changes (planned).** `RunConfig.advisor` gains `prompts` (slot to text), `prompt_set`
+and `prompt_hash`. A new event `consult_requested` records an executor-initiated request with
+the executor's stated reason and the turn. `advisor_request` gains `prompt_hash`, so every
+exposure record names the prompts that produced it.
 
 ## Architecture
 
@@ -99,7 +265,7 @@ inside a run.
 
 | Package | Responsibility |
 | --- | --- |
-| `advisor-core` | Trigger engine (planning review, consult tool, heuristic stuck detection); brief builder for L0–L3 with redaction and a local role map; consult budget; OpenAI-compatible advisor client; exposure log; event emitter. No pi imports. |
+| `advisor-core` | Prompt slots rendered from `advisor.json`; trigger engine (planning review, consult tool, heuristic stuck detection, test failure, periodic); brief builder for L0–L3 with redaction and a local role map; consult budget; OpenAI-compatible advisor client; exposure log; event emitter. No pi imports. |
 | `pi-binding` | Registers the consult tool, subscribes to pi lifecycle events, injects advice into the session, reads the run config |
 | OTel exporter | Sends spans for turns, tool calls, triggers, and consults to MLflow |
 
@@ -224,7 +390,9 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   the model under the key `advisor`. Arm names must be unique.
 - **Sweeps**: a list in `advisor.level` or `advisor.max_consults` expands into
   one arm per combination, named by suffix: arm `A2` with `level: [L1, L2]` becomes `A2-L1`
-  and `A2-L2`. (`interventions` is a real list, not a sweep.)
+  and `A2-L2`. (`interventions` is a real list, not a sweep.) Planned: `advisor.prompts` and
+  `advisor.interventions` (as a list of lists) also sweep; see
+  [Research design](#research-design-help-policies).
 - **Execution** (optional): `parallel` (work items at once, default 1), `cpus` and
   `memory_gb` (caps per container, default 4 and 8), `retries` (extra attempts after an
   infrastructure error, default 1), `grade_minutes` (default 30). Not part of the config hash.
@@ -374,6 +542,12 @@ llm_second_opinion/
       check that blocks a brief before sending.
 - [ ] CLI name: keep `bench`, or rename (e.g. `lso`)?
 - [ ] Safe `parallel` for the local model: measure MLX throughput at 1, 2, 4 concurrent sessions.
+- [ ] Search budget in rollouts, from the pilot's run time and variance.
+- [ ] Does the proposer get A4's successful trajectories on the same task, or only the
+      candidate's own runs? Showing A4 helps reflection but moves the search toward
+      imitating the advisor.
+- [ ] `dev`/`test` ratio, given how many tasks survive arm64 validation (power analysis once the
+      pilot gives a variance estimate).
 
 ## Decision log
 
@@ -396,3 +570,5 @@ llm_second_opinion/
 | 2026-09-27 | MLflow: child run per item until OTel traces exist; reports use Wilson 95% intervals. |
 | 2026-09-27 | Planned: agents configured as `agents:` entries (adapter, version, options) in the config hash; tokens metered by a harness proxy per item into `usage.jsonl`, not by the agents. |
 | 2026-09-27 | One shared metering proxy per batch. Only endpoints that report `usage` (also when streaming) are allowed: preflight check before a batch; a call without usage fails the item. No tokenizer estimates. |
+| 2026-09-27 | The experiments optimise the help policy: prompt sets (five slots, hashed by text) and approach (initiative, content, budget), both in config. Tune on a `dev` split, report on held-out `test`; arms compared in pairs. |
+| 2026-09-27 | Automatic prompt search (GEPA-style reflective evolution, `bench search`) on `dev` (`train`/`val`), with hand-written sets as starting points. One fixed model pair (Qwen3.8 executor, Kimi K3 advisor); prompts tuned to it. |
