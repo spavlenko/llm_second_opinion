@@ -1,0 +1,16 @@
+{
+  "name": "@llm-second-opinion/pi-binding",
+  "version": "0.0.1",
+  "description": "pi extension that wires advisor-core into pi sessions.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@llm-second-opinion/advisor-core": "workspace:*"
+  }
+}

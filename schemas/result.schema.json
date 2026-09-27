@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentResult",
+  "$defs": {
+    "AgentInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "AgentInfo",
+      "type": "object"
+    },
+    "ExitReason": {
+      "enum": [
+        "finished",
+        "turn_limit",
+        "time_limit",
+        "crash"
+      ],
+      "title": "ExitReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Returned by an AgentAdapter after a run.",
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "type": "string"
+    },
+    "diff": {
+      "description": "Final `git diff` of the workspace.",
+      "type": "string"
+    },
+    "exit_reason": {
+      "$ref": "#/$defs/ExitReason"
+    },
+    "agent": {
+      "$ref": "#/$defs/AgentInfo"
+    },
+    "turns": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "duration_s": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Error text when exit_reason is crash."
+    }
+  },
+  "required": [
+    "schema_version",
+    "diff",
+    "exit_reason",
+    "agent",
+    "turns",
+    "duration_s",
+    "detail"
+  ],
+  "type": "object"
+}

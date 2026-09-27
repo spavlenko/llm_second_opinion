@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Node
+node_modules/
+plugin/*/dist/
+*.tsbuildinfo
+
+# Runs and tracking
+mlruns/
+mlartifacts/
+*.sqlite
+*.db
+runs/
+
+# Secrets and OS
+.env
+.env.*
+.DS_Store
+
+# MLflow local store
+.mlflow/

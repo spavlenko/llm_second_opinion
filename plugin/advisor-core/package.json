@@ -1,0 +1,16 @@
+{
+  "name": "@llm-second-opinion/advisor-core",
+  "version": "0.0.1",
+  "description": "Advisor triggers, brief builder, consult budget, and exposure log. No pi imports.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p tsconfig.test.json && vitest run"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
+  }
+}

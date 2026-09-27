@@ -1,0 +1,22 @@
+# Paths are relative to this file. ${VAR} and ${VAR:-default} read the environment;
+# quote them inside {...} flow mappings.
+name: abstraction-sweep
+tasks: ../tasks/manifests/cpp-arm64-v1.yaml
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+
+models:
+  local:   {base_url: "${LOCAL_MODEL_URL}", model: qwen3.8}
+  advisor: {base_url: "${ADVISOR_URL}", model: kimi-k3, reasoning_effort: high, api_key_env: ADVISOR_API_KEY}
+
+arms:
+  - {name: A0, agent: pi, executor: local}
+  - name: A2
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      interventions: [plan, consult, stuck]
+      max_consults: 5
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+  - {name: A4, agent: pi, executor: advisor}

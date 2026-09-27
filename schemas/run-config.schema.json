@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunConfig",
+  "$defs": {
+    "AdvisorSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/Level"
+        },
+        "interventions": {
+          "items": {
+            "$ref": "#/$defs/Intervention"
+          },
+          "type": "array"
+        },
+        "max_consults": {
+          "default": 5,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stuck": {
+          "$ref": "#/$defs/StuckThresholds"
+        }
+      },
+      "required": [
+        "level",
+        "interventions",
+        "max_consults",
+        "stuck"
+      ],
+      "title": "AdvisorSettings",
+      "type": "object"
+    },
+    "Intervention": {
+      "enum": [
+        "plan",
+        "consult",
+        "stuck"
+      ],
+      "title": "Intervention",
+      "type": "string"
+    },
+    "Level": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "Level",
+      "type": "string"
+    },
+    "ModelEndpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "api_key_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name of the environment variable holding the API key. Never the key itself."
+        }
+      },
+      "required": [
+        "base_url",
+        "model",
+        "reasoning_effort",
+        "api_key_env"
+      ],
+      "title": "ModelEndpoint",
+      "type": "object"
+    },
+    "RunIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "experiment": {
+          "type": "string"
+        },
+        "arm": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "config_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "experiment",
+        "arm",
+        "task",
+        "seed",
+        "config_hash"
+      ],
+      "title": "RunIdentity",
+      "type": "object"
+    },
+    "StuckThresholds": {
+      "additionalProperties": false,
+      "properties": {
+        "repeat_calls": {
+          "default": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "same_error": {
+          "default": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "no_diff_turns": {
+          "default": 8,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "title": "StuckThresholds",
+      "type": "object",
+      "required": [
+        "repeat_calls",
+        "same_error",
+        "no_diff_turns"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "description": "Written by the harness into the container as advisor.json.",
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "type": "string"
+    },
+    "run": {
+      "$ref": "#/$defs/RunIdentity"
+    },
+    "executor": {
+      "$ref": "#/$defs/ModelEndpoint"
+    },
+    "advisor_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelEndpoint"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "advisor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AdvisorSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Null when the arm runs without advisor interventions."
+    },
+    "events_path": {
+      "default": "/run/events.jsonl",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run",
+    "executor",
+    "advisor_model",
+    "advisor",
+    "events_path"
+  ],
+  "type": "object"
+}

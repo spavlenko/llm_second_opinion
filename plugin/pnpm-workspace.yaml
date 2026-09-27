@@ -1,0 +1,5 @@
+packages:
+  - advisor-core
+  - pi-binding
+allowBuilds:
+  esbuild: true

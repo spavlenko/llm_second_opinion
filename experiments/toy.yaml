@@ -1,0 +1,15 @@
+# Harness smoke test: runs the full lifecycle (container, agent, grading, ledger) on toy tasks
+# with the `gold` agent, which applies the reference patch, so no model is needed.
+#   docker build -t llm-second-opinion/toy:1 tasks/toy
+#   bench run experiments/toy.yaml && bench report experiments/toy.yaml
+name: toy
+tasks: ../tasks/manifests/toy-v1.yaml
+seeds: 2
+limits: {wall_minutes: 5, max_turns: 10}
+execution: {parallel: 4, cpus: 1, memory_gb: 0.5}
+
+models:
+  none: {base_url: "http://unused.invalid/v1", model: none}
+
+arms:
+  - {name: gold, agent: gold, executor: none}
