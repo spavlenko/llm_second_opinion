@@ -1,0 +1,6 @@
+# How Multi-SWE-bench instances of fmtlib/fmt become task images (see Dockerfile).
+url: https://github.com/fmtlib/fmt.git
+parser: ctest
+# Upstream builds every fmt instance with `gcc:latest`, pinned here to 14.
+gcc:
+  - {version: "14"}

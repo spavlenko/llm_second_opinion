@@ -249,12 +249,12 @@ inside a run.
 | --- | --- |
 | `contracts` | The three shared contracts as Pydantic models; JSON Schema export |
 | `config` | Pydantic models for experiments, arms, models, limits, and task sets; YAML loading; a stable hash per arm config |
-| `tasks` | Internal task format and frozen manifests. To come: dataset importers (Multi-SWE-bench, SWE-bench-Live), arm64 image builds, gold-patch validation |
+| `tasks`, `pipeline` | Internal task format and frozen manifests; the Multi-SWE-bench importer, arm64 image builds from per-repo recipes, gold-patch validation, freezing with a `dev`/`test` split. SWE-bench-Live import is to come |
 | `runtime` | Container lifecycle through the Docker API (Colima or Docker Desktop), CPU and memory caps, exec with timeouts, file copy in and out |
 | `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter, which builds an agent layer (Node, pi, plugin) on each task image, is to come |
 | `runner` | Expands arms × tasks × seeds into work items; parallel workers, retries, and resume through the ledger |
 | `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id |
-| `grading` | Applies the agent's patch and the test patch in a fresh container and runs the task's eval command |
+| `grading` | Applies the agent's patch and the test patch in a fresh container, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output) |
 | `tracking` | MLflow: a run per arm with pinned inputs, a child run per item with metrics and artifacts; trace ingestion to come |
 | `report` | Per-arm resolve rates with Wilson 95% intervals, exit reasons, time and turns; per-item CSV |
 | `scorers` | Capability, cost, harm, identifier leakage, re-identification, and the calibrated advice judge |
@@ -438,8 +438,10 @@ command counts as timed out only if it also used the full time.
 
 | Command | Purpose |
 | --- | --- |
-| `bench tasks build` | Import candidates and build arm64 task images |
-| `bench tasks validate` | Run gold-patch validation and write the frozen manifest |
+| `bench tasks import [--dataset mini\|full] [--instance ID]` | Import Multi-SWE-bench C++ instances as candidates (dataset pinned to a revision) |
+| `bench tasks build NAME [--only ID] [--parallel N] [--jobs N]` | Build arm64 task images; resumes |
+| `bench tasks validate NAME [--runs 2] [--parallel N]` | Gold-patch validation; resumes |
+| `bench tasks freeze NAME --version V --out F [--smoke 3]` | Write the frozen manifest (with split and dropped instances) and a smoke subset |
 | `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--dry-run]` | Batch run; resumes where it stopped. MLflow logging is on when `--mlflow` or `MLFLOW_TRACKING_URI` is set |
 | `bench run EXP.yaml --arm A2 --task ID --debug` | One task with live logs; keeps the container afterwards |
 | `bench shell ITEM` | Open a shell in a kept container |
@@ -452,24 +454,57 @@ command counts as timed out only if it also used the full time.
 ## Task pipeline
 
 The pipeline turns benchmark instances into a frozen, arm64-validated task set; only tasks
-that pass validation twice are kept.
+that pass validation twice are kept. Work files (candidates, build and validation records,
+logs) go in `runs/tasks/<name>/`; dataset downloads and git mirrors in `.cache/`. Practical
+notes, measurements, and problems found: [task-pipeline.md](task-pipeline.md).
 
-1. **Import.** Pull C++ candidates from Multi-SWE-bench and SWE-bench-Live into one internal
-   task format (repo, base commit, issue text, test patch, gold patch, test lists, creation date).
-2. **Build.** Rebuild each environment for `linux/arm64`, removing x86-only compiler flags
-   where present.
-3. **Validate.** Apply the gold patch: fail-to-pass tests must fail before and pass after;
-   pass-to-pass tests must pass both times. Run twice to catch flaky tests.
-4. **Freeze.** Write a manifest with instance IDs, image digests, test lists, source, and
-   creation date. Dropped instances are listed with the reason.
+1. **Import** (`bench tasks import`). Multi-SWE-bench `mini` first (50 C++ instances: nlohmann/json
+   21, fmt 17, simdjson 8, Catch2 4); `full` is registered too and adds cpp-httplib, which has
+   no recipe yet. Each dataset is pinned to a Hugging Face commit (and checksum for `mini`).
+   The problem statement is the resolved issues' titles and bodies; the pull request's own
+   text describes the fix and is left out. Upstream's fixed tests (fail, skip, or absent
+   before; pass after) and pass-to-pass tests are kept for validation.
+2. **Build** (`bench tasks build`). One recipe per repository in `tasks/repos/<org>__<repo>/`:
+   a Dockerfile and `recipe.yaml` (git URL, log parser, GCC version by PR number, following
+   the upstream harness; its `gcc:latest` is pinned to 14). Every image uses a pinned CMake
+   (3.31, arm64 or x86-64 tarball, checksum-verified) instead of upstream's x86-64-only
+   CMake 3.14 download. The base commit's files come from a local mirror into a fresh
+   one-commit repository in `/testbed`, so the fix is not reachable in history. Submodules
+   are checked out at their recorded commits (recursively) as nested one-commit
+   repositories, since some build scripts look for their `.git`. The project
+   is configured and built in `/build` at image build time, so grading rebuilds incrementally.
+3. **Validate** (`bench tasks validate`). Fresh containers run the tests with the test patch
+   alone ("before") and with the gold patch ("after"), twice. The eval command
+   (`/opt/lso/run-tests`) deletes the previous build's linked outputs (keeping object files,
+   so the build stays incremental; otherwise a target that no longer compiles would leave its
+   old binary to be tested), reconfigures, builds with `-k` so one broken test target does
+   not hide the rest, and runs ctest. Test lists are re-derived from these runs, over upstream's
+   tests: fail-to-pass = passes after, not before; pass-to-pass = passes both. A candidate is
+   dropped if any upstream fixed test fails with the gold patch, any test differs between
+   runs (flaky), no test goes from failing to passing, a patch does not apply, or a run times
+   out. Upstream pass-to-pass tests that fail here with the gold patch are left out and
+   recorded. (Upstream's lists come from x86-64 runs where one compile error fails the whole
+   suite, so many of its "fixed" tests are really pass-to-pass.)
+4. **Freeze** (`bench tasks freeze`). Candidates over 20 min to build or 10 min to test are
+   dropped. The manifest lists every task with image ID, test lists, base commit and its
+   date, and split; and every dropped candidate with the reason. The split is a fixed-seed
+   shuffle within each repository (default half to `test`; a repository with one task goes
+   to `dev`). A smoke subset (the three quickest `dev` tasks from different repositories) is
+   written next to it.
 5. **Agent layer.** For each kept task, build a derived image with Node, pi, and the plugin,
    cached by plugin version.
 
-**Internal task format** (`tasks.Task`): `id`, `image` (repo at the base commit), `workdir`
-(default `/testbed`), `problem_statement`, `test_patch` (applied only at grading), `gold_patch`,
-and `eval_command` (run in `workdir` at grading; exit 0 means resolved). The importers will
-derive `eval_command` from the fail-to-pass and pass-to-pass test lists. A manifest is
-`version` plus `tasks`; task ids must be unique.
+Task images are local to the machine that built them: the manifest pins each by image ID, and
+the runner refuses a missing ID rather than using a rebuilt image, since a rebuild needs
+validating again.
+
+**Internal task format** (`tasks.Task`): `id`, `image` and `image_id`, `workdir` (default
+`/testbed`), `problem_statement`, `test_patch` (applied only at grading), `gold_patch`,
+`eval_command` (run in `workdir` at grading), optional `tests` (parser name, `fail_to_pass`,
+`pass_to_pass`), and provenance (`repo`, `base_commit`, `base_date`, `split`). With `tests`,
+a task is resolved when every listed test passes in the parsed output, whatever the exit
+code; without it (toy tasks), when `eval_command` exits 0. A manifest is `version`, `source`,
+`tasks` (unique ids), and `dropped`.
 
 The manifest is the only input experiments see. A new manifest version is a new task set,
 and results from different versions are never mixed.
@@ -506,6 +541,7 @@ llm_second_opinion/
     pi-binding/     pi extension package
   schemas/          JSON Schemas: run config, events, results (generated)
   tasks/manifests/  frozen task sets
+  tasks/repos/      per-repository image recipes (Dockerfile, recipe.yaml) and shared scripts
   experiments/      example YAML files
   docs/             this spec and the roadmap
   scripts/          dev helpers (local MLflow server)
@@ -519,8 +555,9 @@ llm_second_opinion/
   shell bugs with test and gold patches. `experiments/toy.yaml` runs them with the `gold`
   agent, exercising containers, grading, the ledger, and the report with no model.
   Docker-backed tests (`test_docker.py`) build the image and skip when no daemon is running.
-- **Smoke task set.** Three small validated tasks used in CI with the mock server, covering
-  the full lifecycle including grading.
+- **Smoke task set.** Three quick validated C++ tasks (`<manifest>-smoke.yaml`, written by
+  `bench tasks freeze`) for end-to-end runs with the mock server, covering the full lifecycle
+  including grading. Their images take minutes to build, so CI keeps using the toy set.
 - **Tests.** Unit tests on both sides, plus contract tests that check the plugin's events
   against the schemas. Plugin tests are type-checked (`tsconfig.test.json`) before vitest runs.
 - **Generated types.** `plugin/scripts/gen-types.mjs` merges `schemas/*.schema.json` into
@@ -572,3 +609,7 @@ llm_second_opinion/
 | 2026-09-27 | One shared metering proxy per batch. Only endpoints that report `usage` (also when streaming) are allowed: preflight check before a batch; a call without usage fails the item. No tokenizer estimates. |
 | 2026-09-27 | The experiments optimise the help policy: prompt sets (five slots, hashed by text) and approach (initiative, content, budget), both in config. Tune on a `dev` split, report on held-out `test`; arms compared in pairs. |
 | 2026-09-27 | Automatic prompt search (GEPA-style reflective evolution, `bench search`) on `dev` (`train`/`val`), with hand-written sets as starting points. One fixed model pair (Qwen3.8 executor, Kimi K3 advisor); prompts tuned to it. |
+| 2026-09-27 | Multi-SWE-bench `mini` (C++) first, `full` registered for later; datasets pinned to a Hugging Face commit. Task creation date recorded as the base commit's date. |
+| 2026-09-27 | Our own per-repository Dockerfiles and recipes (not upstream's generated ones); pinned CMake 3.31 in every image; upstream `gcc:latest` pinned to 14. Images are a fresh one-commit repo with a prebuilt `/build`. |
+| 2026-09-27 | Grading by per-test lists (`Task.tests`, ctest parser) instead of an exit code; fail-to-pass and pass-to-pass re-derived from arm64 before/after runs over upstream's tests. |
+| 2026-09-27 | Manifests pin task images by local image ID; freeze caps: build 20 min, tests 10 min; split `dev`/`test` half and half within each repository (seed 0). |

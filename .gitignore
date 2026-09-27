@@ -28,3 +28,6 @@ runs/
 
 # MLflow local store
 .mlflow/
+
+# Task pipeline caches (dataset downloads, git mirrors)
+.cache/

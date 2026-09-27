@@ -1,0 +1,15 @@
+# Gold patches on the C++ smoke subset: checks the runner, pinned task images, and grading by
+# test lists on real tasks, with no model. Build and validate the task set first (see
+# docs/task-pipeline.md).
+#   bench run experiments/mswe-smoke-gold.yaml && bench report experiments/mswe-smoke-gold.yaml
+name: mswe-smoke-gold
+tasks: ../tasks/manifests/mswe-mini-cpp-v1-smoke.yaml
+seeds: 1
+limits: {wall_minutes: 10, max_turns: 10}
+execution: {parallel: 3, cpus: 4, memory_gb: 2, grade_minutes: 20}
+
+models:
+  none: {base_url: "http://unused.invalid/v1", model: none}
+
+arms:
+  - {name: gold, agent: gold, executor: none}

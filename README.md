@@ -9,6 +9,7 @@ gives a "second opinion" through abstracted briefs, and everything sent to it is
 - `plugin/pi-binding/` — pi extension wiring
 - `schemas/` — versioned JSON Schemas: run config, events, results
 - `tasks/manifests/` — frozen task sets
+- `tasks/repos/` — per-repository image recipes for the task pipeline
 - `experiments/` — example experiment YAML files
 - `docs/` — design notes
 
@@ -49,7 +50,19 @@ bench report experiments/toy.yaml --csv runs/toy.csv
 Results land in `runs/<experiment>/`: `ledger.sqlite` and one directory per arm, task, and
 seed with `advisor.json`, `result.json`, `patch.diff`, `events.jsonl`, and `grade.log`.
 
-See [docs/spec.md](docs/spec.md) for the design and [docs/roadmap.md](docs/roadmap.md) for progress.
+Build the C++ task set (Multi-SWE-bench `mini`: arm64 images, gold-patch validation, frozen
+manifest with a `dev`/`test` split). See [docs/task-pipeline.md](docs/task-pipeline.md) for
+details and the problems found along the way.
+
+```sh
+bench tasks import --dataset mini
+bench tasks build mswe-mini-cpp --parallel 2
+bench tasks validate mswe-mini-cpp --parallel 2
+bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v1 --out ../tasks/manifests/mswe-mini-cpp-v1.yaml
+```
+
+See [docs/spec.md](docs/spec.md) for the design, [docs/roadmap.md](docs/roadmap.md) for progress, and
+[docs/task-pipeline.md](docs/task-pipeline.md) for the task pipeline in practice.
 
 ## License
 

@@ -1,0 +1,10 @@
+# How Multi-SWE-bench instances of catchorg/Catch2 become task images (see Dockerfile).
+url: https://github.com/catchorg/Catch2.git
+# The dataset's test names are lower-cased.
+parser: ctest-lower
+# GCC by PR number, following the upstream harness; the first matching entry wins.
+# Upstream's `gcc:latest` is pinned to 14, the latest release when the dataset was validated.
+gcc:
+  - {max_pr: 2187, version: "7"}
+  - {min_pr: 2288, max_pr: 2554, version: "12"}
+  - {version: "14"}

@@ -104,4 +104,9 @@ class Runtime:
         try:
             self.client.images.get(image)
         except docker.errors.ImageNotFound:
+            if image.startswith("sha256:"):
+                raise RuntimeError(
+                    f"image {image} not found: task images are local; a rebuilt image has a new "
+                    "ID, so rebuild and validate again (`bench tasks build`, `bench tasks validate`)"
+                ) from None
             self.client.images.pull(image)

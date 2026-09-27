@@ -20,12 +20,13 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 ## Weeks 1–2 — task pipeline (Multi-SWE-bench C++)
 
 - [x] Internal task format model (minimal; toy task set for harness tests)
-- [ ] Multi-SWE-bench C++ importer
-- [ ] arm64 image builds (strip x86-only flags)
-- [ ] Gold-patch validation, run twice for flakiness
-- [ ] Frozen manifest writer, with dropped instances and reasons
-- [ ] First manifest; smoke task set (3 tasks)
-- [ ] `dev`/`test` split recorded in the manifest (fixed seed, stratified by repository)
+- [x] Multi-SWE-bench C++ importer (`mini`, pinned revision; `full` registered)
+- [x] arm64 image builds from per-repo recipes (pinned CMake replaces upstream's x86-64 one)
+- [x] Gold-patch validation, run twice for flakiness; test lists re-derived on arm64
+- [x] Frozen manifest writer, with dropped instances and reasons
+- [x] First manifest (`mswe-mini-cpp-v1`: 49 tasks, dev 24 / test 25); smoke task set (3 tasks)
+- [x] `dev`/`test` split recorded in the manifest (fixed seed, stratified by repository)
+- [ ] Recipe for yhirose/cpp-httplib, then import `full`
 
 ## Week 3 — A0 end to end on smoke tasks
 
@@ -40,7 +41,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Endpoint rewriting so agents only reach models through the proxy
 - [x] `runner`: work-item expansion, parallel workers (`--parallel`), timeouts, retries
 - [x] `grading`: apply patch and test patch in a fresh container, run `eval_command`
-- [ ] `grading`: F2P and P2P test lists (with the importer)
+- [x] `grading`: F2P and P2P test lists (with the importer)
 - [ ] Measure the memory split between the local model and the VM
 - [ ] Measure MLX throughput at `parallel` 1, 2, 4
 

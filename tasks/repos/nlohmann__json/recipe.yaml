@@ -1,0 +1,9 @@
+# How Multi-SWE-bench instances of nlohmann/json become task images (see Dockerfile).
+url: https://github.com/nlohmann/json.git
+parser: ctest
+# GCC by PR number, following the upstream harness; the first matching entry wins.
+# Upstream's `gcc:latest` is pinned to 14, the latest release when the dataset was validated.
+gcc:
+  - {max_pr: 2576, version: "7"}
+  - {min_pr: 2825, max_pr: 3685, version: "12"}
+  - {version: "14"}

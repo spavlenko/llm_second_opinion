@@ -26,6 +26,15 @@ harness/.venv/bin/bench report experiments/toy.yaml --csv runs/toy.csv
 ```
 
 ```sh
+cd harness                              # task pipeline; work files in runs/tasks/<name>/
+.venv/bin/bench tasks import --dataset mini                  # -> mswe-mini-cpp
+.venv/bin/bench tasks build mswe-mini-cpp --parallel 2       # resumable
+.venv/bin/bench tasks validate mswe-mini-cpp --parallel 2    # resumable
+.venv/bin/bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v1 \
+  --out ../tasks/manifests/mswe-mini-cpp-v1.yaml
+```
+
+```sh
 scripts/mlflow-server.sh                # MLflow at http://127.0.0.1:5050, data in .mlflow/
 ```
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+# The task's eval_command: rebuild /build from /testbed and run ctest. Grading parses the
+# ctest lines. A build error does not stop the run; tests whose targets failed to build are
+# reported by ctest as not run, and the build log tail is printed.
+#
+# Linked outputs from the previous build (executables, libraries) are deleted first; object
+# files are kept, so the build stays incremental. Otherwise a target that no longer compiles
+# would leave its old binary behind, and ctest would run it.
+#
+# Reconfiguring picks up test files a patch adds (several projects glob their sources).
+# LSO_CTEST_ARGS (set in the task image) adds project-specific ctest options.
+cd /testbed || exit 2
+find /build -name CMakeFiles -prune -o -type f \( -name '*.a' -o -name '*.so' -o -name '*.so.*' \
+  -o -perm -u+x \) -print | while read -r f; do
+  case $f in *.a | *.so | *.so.*) rm -f "$f" ;; esac
+  [ "$(head -c 4 "$f" 2>/dev/null | od -An -c | tr -d ' ')" = 177ELF ] && rm -f "$f"
+done
+jobs=$(awk '$1 != "max" { n = int(($1 + $2 - 1) / $2) } END { print n ? n : "" }' \
+  /sys/fs/cgroup/cpu.max 2>/dev/null)
+jobs=${jobs:-$(nproc)}
+if ! { cmake -S . -B /build && cmake --build /build --parallel "$jobs" -- -k; } \
+  >/tmp/build.log 2>&1; then
+  echo "run-tests: build failed; last lines of /tmp/build.log:"
+  tail -n 40 /tmp/build.log
+fi
+cd /build && ctest --parallel "$jobs" --timeout "${LSO_TEST_TIMEOUT:-600}" $LSO_CTEST_ARGS

@@ -1,0 +1,9 @@
+# How Multi-SWE-bench instances of simdjson/simdjson become task images (see Dockerfile).
+url: https://github.com/simdjson/simdjson.git
+parser: ctest
+# GCC by PR number, following the upstream harness; the first matching entry wins.
+# Upstream pairs GCC 7 with an x86-64 CMake 3.14 tarball; every image here uses the pinned
+# CMake from common/install-cmake.sh instead.
+gcc:
+  - {max_pr: 958, version: "7"}
+  - {version: "11"}

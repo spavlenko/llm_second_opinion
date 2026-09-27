@@ -160,7 +160,9 @@ class Runner:
         rendered = config.model_dump_json(indent=2)
         (out / "advisor.json").write_text(rendered)
 
-        with self._container(adapter.build_layer(item.task.image), f"agent {item.key}") as box:
+        # A validated manifest pins the image by ID, so a rebuilt image is not used by mistake.
+        image = item.task.image_id or item.task.image
+        with self._container(adapter.build_layer(image), f"agent {item.key}") as box:
             box.write("/run/advisor.json", rendered)
             result = adapter.run(box, item.task, config, self.exp.limits, env)
             events = box.read(config.events_path) or ""
@@ -168,7 +170,7 @@ class Runner:
         (out / "patch.diff").write_text(result.diff)
         (out / "events.jsonl").write_text(events)
 
-        with self._container(item.task.image, f"grade {item.key}") as box:
+        with self._container(image, f"grade {item.key}") as box:
             graded = grade(box, item.task, result.diff, exe.grade_minutes * 60)
         (out / "grade.log").write_text(graded.log)
 
