@@ -15,6 +15,7 @@ from llm_second_opinion.mock_server import MockServer
 from llm_second_opinion.report import current_rows, format_table, summarize, write_csv
 from llm_second_opinion.runner import Runner
 from llm_second_opinion.tasks import Manifest
+from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
 
 REPO_SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
 
@@ -51,7 +52,14 @@ def _load(experiment: str) -> Experiment:
 @click.option(
     "--mlflow",
     envvar="MLFLOW_TRACKING_URI",
-    help="MLflow tracking URI (default: $MLFLOW_TRACKING_URI; unset means no MLflow logging).",
+    default=DEFAULT_URI,
+    show_default=True,
+    help="MLflow tracking URI ($MLFLOW_TRACKING_URI). Every run is tracked; the server must be up.",
+)
+@click.option(
+    "--no-mlflow",
+    is_flag=True,
+    help="Skip MLflow. Only for harness tests and CI: results would not be tracked.",
 )
 @click.option("--dry-run", is_flag=True, help="List the work items and stop.")
 def run(
@@ -60,7 +68,8 @@ def run(
     arm: str | None,
     task: str | None,
     parallel: int | None,
-    mlflow: str | None,
+    mlflow: str,
+    no_mlflow: bool,
     dry_run: bool,
 ) -> None:
     """Run an experiment in containers; resumes where it stopped."""
@@ -80,10 +89,15 @@ def run(
         click.echo(f"  {a.name:<12} {a.agent}/{a.executor:<10} {advisor:<12} {exp.config_hash(a)}")
     if dry_run:
         return
-    if mlflow:
-        from llm_second_opinion.tracking import Tracker  # mlflow is an optional extra
-
+    if no_mlflow:
+        click.echo("MLflow is off (--no-mlflow): results go to the ledger only", err=True)
+    else:
+        try:
+            check_server(mlflow)
+        except TrackingError as e:
+            raise click.ClickException(f"{e}; or pass --no-mlflow (tests and CI only)") from e
         runner.tracker = Tracker(mlflow, exp.name)
+        click.echo(f"tracking in MLflow: {mlflow} (experiment {exp.name!r})")
     try:
         outcomes = runner.run(arm, task)
     except ConfigError as e:

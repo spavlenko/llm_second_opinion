@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Any, Literal, Protocol
 
 from llm_second_opinion import __version__
@@ -16,8 +20,10 @@ from llm_second_opinion.config import ADVISOR_MODEL, Arm, ConfigError, Experimen
 from llm_second_opinion.contracts import AgentResult
 from llm_second_opinion.grading import Grade, grade
 from llm_second_opinion.ledger import ItemKey, Ledger
+from llm_second_opinion.report import summarize
 from llm_second_opinion.runtime import Container, Runtime
 from llm_second_opinion.tasks import Manifest, Task
+from llm_second_opinion.tracing import Span, clip
 
 
 class Tracker(Protocol):
@@ -30,9 +36,14 @@ class Tracker(Protocol):
         params: dict[str, Any],
         metrics: dict[str, float],
         artifacts: Path,
+        trace: Span | None = None,
     ) -> str:
-        """Record one finished work item and return its run id."""
+        """Record one finished work item (and its trace) and return its run id."""
         ...
+
+    def log_arm_summary(
+        self, arm: str, config_hash: str, arm_params: dict[str, Any], metrics: dict[str, float]
+    ) -> None: ...
 
     def close(self) -> None: ...
 
@@ -78,7 +89,7 @@ class Runner:
         self.tracker = tracker
         self.parallel = parallel or exp.execution.parallel
         self.echo = echo
-        self.adapters = {arm.name: _adapter_for(arm) for arm in exp.arms}
+        self.adapters = {arm.name: _adapter_for(exp, arm) for arm in exp.arms}
 
     @property
     def runtime(self) -> Runtime:
@@ -117,8 +128,28 @@ class Runner:
             # run on the next resume.
             pool.shutdown(cancel_futures=True)
             if self.tracker:
+                self._log_summaries()
                 self.tracker.close()
         return skipped + outcomes
+
+    def _log_summaries(self) -> None:
+        """Per-arm results so far (all resumes of this config), on each arm's MLflow run."""
+        rows = self.ledger.rows(self.exp.name)
+        for s in summarize(self.exp, rows, len(self.manifest.tasks)):
+            arm = self.exp.arm(s.arm)
+            metrics = {"items_planned": s.planned, "items_done": s.done, "items_failed": s.failed}
+            if s.done:
+                low, high = s.interval or (0.0, 0.0)
+                metrics |= {
+                    "resolved": s.resolved,
+                    "resolve_rate": s.rate or 0.0,
+                    "resolve_rate_ci_low": low,
+                    "resolve_rate_ci_high": high,
+                    "median_turns": median(s.turns),
+                    "median_duration_s": median(s.durations),
+                } | {f"exit_{reason}": n for reason, n in s.exit_reasons.items()}
+            params = self._pinned_inputs(arm, self.adapters[arm.name])
+            self.tracker.log_arm_summary(arm.name, s.config_hash, params, metrics)
 
     def _run_item(self, item: WorkItem, env: dict[str, str]) -> Outcome:
         retries = self.exp.execution.retries
@@ -162,17 +193,25 @@ class Runner:
 
         # A validated manifest pins the image by ID, so a rebuilt image is not used by mistake.
         image = item.task.image_id or item.task.image
-        with self._container(adapter.build_layer(image), f"agent {item.key}") as box:
+        layer = adapter.build_layer(image)
+        agent_start = time.time_ns()
+        with self._container(layer.image, f"agent {item.key}", layer.volumes) as box:
             box.write("/run/advisor.json", rendered)
             result = adapter.run(box, item.task, config, self.exp.limits, env)
             events = box.read(config.events_path) or ""
+            for path in adapter.artifacts:
+                content = box.read(path)
+                if content is not None:
+                    (out / Path(path).name).write_text(content)
         (out / "result.json").write_text(result.model_dump_json(indent=2))
         (out / "patch.diff").write_text(result.diff)
         (out / "events.jsonl").write_text(events)
+        agent_end = time.time_ns()
 
         with self._container(image, f"grade {item.key}") as box:
             graded = grade(box, item.task, result.diff, exe.grade_minutes * 60)
         (out / "grade.log").write_text(graded.log)
+        grade_end = time.time_ns()
 
         run_id = None
         if self.tracker:
@@ -191,14 +230,66 @@ class Runner:
                     "duration_s": result.duration_s,
                 },
                 artifacts=out,
+                trace=self._trace(
+                    item, adapter, out, result, graded, (agent_start, agent_end, grade_end)
+                ),
             )
         return result, graded, run_id
 
+    def _trace(
+        self,
+        item: WorkItem,
+        adapter: AgentAdapter,
+        out: Path,
+        result: AgentResult,
+        graded: Grade,
+        times: tuple[int, int, int],
+    ) -> Span:
+        """The item's trace: the agent's own spans under an agent span, then grading."""
+        agent_start, agent_end, grade_end = times
+        crashed = result.exit_reason.value == "crash"
+        agent = Span(
+            f"{adapter.name} {adapter.version}",
+            "AGENT",
+            agent_start,
+            agent_end,
+            inputs={"problem_statement": clip(item.task.problem_statement)},
+            outputs={"exit_reason": result.exit_reason.value, "diff": clip(result.diff)},
+            attributes={"turns": result.turns},
+            error=result.detail if crashed else None,
+            children=adapter.spans(out),
+        )
+        tests = Counter(graded.tests.values())
+        grading = Span(
+            "grade",
+            "EVALUATOR",
+            agent_end,
+            grade_end,
+            inputs={"patch_bytes": len(result.diff)},
+            outputs={"resolved": graded.resolved, "reason": graded.reason, "tests": dict(tests)},
+        )
+        return Span(
+            str(item.key),
+            "CHAIN",
+            agent_start,
+            grade_end,
+            inputs={"task": item.task.id, "seed": item.seed},
+            outputs={
+                "resolved": graded.resolved,
+                "grade": graded.reason,
+                "exit_reason": result.exit_reason.value,
+            },
+            attributes={"arm": item.arm.name, "config_hash": item.key.config_hash},
+            children=[agent, grading],
+        )
+
     @contextmanager
-    def _container(self, image: str, name: str) -> Iterator[Container]:
+    def _container(
+        self, image: str, name: str, volumes: dict[str, str] | None = None
+    ) -> Iterator[Container]:
         """A capped container that is removed however the block exits."""
         exe = self.exp.execution
-        box = self.runtime.start(image, exe.cpus, exe.memory_gb, name)
+        box = self.runtime.start(image, exe.cpus, exe.memory_gb, name, volumes)
         try:
             yield box
         finally:
@@ -213,6 +304,8 @@ class Runner:
             "manifest_version": self.manifest.version,
             "harness_version": __version__,
             "agent": adapter.name,
+            "agent_version": adapter.version,
+            "agent_options": json.dumps(self.exp.agent_spec(arm).options, sort_keys=True),
             "executor_model": executor.model,
             "executor_reasoning_effort": executor.reasoning_effort,
             "advisor_model": advisor.model if advisor else None,
@@ -223,12 +316,15 @@ class Runner:
         }
 
 
-def _adapter_for(arm: Arm) -> AgentAdapter:
-    if arm.agent not in ADAPTERS:
-        raise ConfigError(
-            f"arm {arm.name}: unknown agent {arm.agent!r}; known: {', '.join(ADAPTERS)}"
-        )
-    adapter = ADAPTERS[arm.agent]()
+def _adapter_for(exp: Experiment, arm: Arm) -> AgentAdapter:
+    spec = exp.agent_spec(arm)
+    if spec.adapter not in ADAPTERS:
+        known = ", ".join([*exp.agents, *ADAPTERS])
+        raise ConfigError(f"arm {arm.name}: unknown agent {arm.agent!r}; known: {known}")
+    try:
+        adapter = ADAPTERS[spec.adapter](spec)
+    except ConfigError as e:
+        raise ConfigError(f"arm {arm.name}: {e}") from e
     if arm.advisor and "advisor" not in adapter.capabilities:
         raise ConfigError(f"arm {arm.name}: agent {arm.agent!r} does not support an advisor")
     return adapter

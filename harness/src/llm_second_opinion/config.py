@@ -50,9 +50,19 @@ class Execution(Strict):
     grade_minutes: float = Field(30, gt=0, description="Time limit for the grading tests.")
 
 
+class AgentSpec(Strict):
+    """An entry in the experiment's `agents`: which adapter, which version, and its options."""
+
+    adapter: str = Field(description="A name in `adapters.ADAPTERS`.")
+    version: str | None = Field(None, description="Agent version; None means the default.")
+    options: dict[str, Any] = Field(
+        default_factory=dict, description="Validated by the adapter's own options model."
+    )
+
+
 class Arm(Strict):
     name: str = Field(min_length=1)
-    agent: str = "pi"
+    agent: str = Field("pi", description="A key in `agents`, or an adapter name with defaults.")
     executor: str = Field(description="Key in the experiment's models that the agent runs on.")
     advisor: AdvisorSettings | None = None
 
@@ -70,6 +80,7 @@ class Experiment(Strict):
     limits: Limits
     execution: Execution = Field(default_factory=Execution)
     models: dict[str, ModelEndpoint]
+    agents: dict[str, AgentSpec] = Field(default_factory=dict)
     arms: list[Arm] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -105,14 +116,19 @@ class Experiment(Strict):
                 return arm
         raise KeyError(f"no arm named {name!r}; arms: {', '.join(a.name for a in self.arms)}")
 
+    def agent_spec(self, arm: Arm) -> AgentSpec:
+        """The arm's `agents` entry; a bare adapter name means that adapter's defaults."""
+        return self.agents.get(arm.agent) or AgentSpec(adapter=arm.agent)
+
     def config_hash(self, arm: Arm) -> str:
         """Hash of everything that changes an arm's behaviour.
 
-        Excludes the arm's name and model base URLs, so renaming an arm or moving a
-        server to another port keeps existing results.
+        Excludes the arm's name, the name of its `agents` entry, and model base URLs, so
+        renaming an arm or an agent entry, or moving a server to another port, keeps results.
         """
         payload = {
-            "arm": arm.model_dump(mode="json", exclude={"name"}),
+            "arm": arm.model_dump(mode="json", exclude={"name", "agent"}),
+            "agent": self.agent_spec(arm).model_dump(mode="json"),
             "limits": self.limits.model_dump(mode="json"),
             "executor": self.models[arm.executor].model_dump(mode="json", exclude={"base_url"}),
             "advisor_model": (

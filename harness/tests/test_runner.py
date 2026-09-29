@@ -5,6 +5,7 @@ import threading
 import pytest
 
 from llm_second_opinion.adapters import ADAPTERS
+from llm_second_opinion.adapters.base import Layer
 from llm_second_opinion.config import ConfigError, Experiment
 from llm_second_opinion.contracts import AgentInfo, AgentResult, ExitReason
 from llm_second_opinion.runner import Runner
@@ -34,7 +35,7 @@ class FakeRuntime:
         self.started = 0
         self.live = 0
 
-    def start(self, image, cpus, memory_gb, name):
+    def start(self, image, cpus, memory_gb, name, volumes=None):
         self.started += 1
         self.live += 1
         return FakeContainer(self)
@@ -42,7 +43,9 @@ class FakeRuntime:
 
 class FakeAgent:
     name = "fake"
+    version = "0"
     capabilities = frozenset()
+    artifacts = ()
 
     def __init__(self, fail_times=0, barrier=None):
         self.fail_times = fail_times
@@ -50,7 +53,10 @@ class FakeAgent:
         self.env_seen = None
 
     def build_layer(self, task_image):
-        return task_image
+        return Layer(task_image)
+
+    def spans(self, item_dir):
+        return []
 
     def run(self, box, task, config, limits, env):
         self.env_seen = env
@@ -84,7 +90,7 @@ def experiment(repo, **overrides):
 @pytest.fixture
 def agent(monkeypatch):
     agent = FakeAgent()
-    monkeypatch.setitem(ADAPTERS, "fake", lambda: agent)
+    monkeypatch.setitem(ADAPTERS, "fake", lambda spec: agent)
     return agent
 
 

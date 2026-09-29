@@ -5,6 +5,7 @@ import subprocess
 import docker
 import pytest
 from click.testing import CliRunner
+from mlflow import MlflowClient
 
 from llm_second_opinion.cli import main
 from llm_second_opinion.grading import grade
@@ -56,12 +57,33 @@ def test_gold_patch_resolves(box, toy):
     assert grade(box, toy["toy-max"], toy["toy-max"].gold_patch, timeout_s=30).resolved
 
 
-def test_toy_experiment_end_to_end(repo, tmp_path, toy):
+def test_toy_experiment_end_to_end(repo, tmp_path, toy, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a SQLite store puts artifacts in ./mlruns
     exp = str(repo / "experiments/toy.yaml")
     runs = str(tmp_path)
-    result = CliRunner().invoke(main, ["run", exp, "--runs-dir", runs, "--parallel", "2"])
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    args = ["run", exp, "--runs-dir", runs, "--parallel", "2", "--mlflow", uri]
+    result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
     assert "resolved 4/4" in result.output
     report = CliRunner().invoke(main, ["report", exp, "--runs-dir", runs])
     assert "4/4" in report.output
     assert not docker.from_env().containers.list(all=True, filters={"label": "llm-second-opinion"})
+
+    client = MlflowClient(uri)
+    experiment = client.get_experiment_by_name("toy")
+    [arm] = client.search_runs([experiment.experiment_id], "tags.`lso.level` = 'arm'")
+    assert arm.data.metrics["resolve_rate"] == 1.0 and arm.data.metrics["items_done"] == 4
+    traces = client.search_traces(locations=[experiment.experiment_id])
+    assert len(traces) == 4
+    spans = traces[0].data.spans
+    [root] = [s for s in spans if s.parent_id is None]
+    assert root.name.startswith("gold/toy-")
+    assert {s.name for s in spans} >= {"gold 1", "grade"}
+
+
+def test_run_refuses_without_a_tracking_server(repo, tmp_path):
+    exp = str(repo / "experiments/toy.yaml")
+    args = ["run", exp, "--runs-dir", str(tmp_path), "--mlflow", "http://127.0.0.1:9"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code != 0 and "MLflow is not reachable" in result.output

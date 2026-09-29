@@ -32,9 +32,10 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 
 - [x] `runtime`: containers via Docker API (Colima or Docker Desktop), CPU and memory caps
 - [x] `adapters`: protocol and `gold` adapter
-- [ ] `adapters`: pi adapter and agent-layer image build
-- [ ] Agent settings in config: `agents:` entries (adapter, version, options) with per-adapter
+- [x] `adapters`: pi adapter and agent bundle (volume); turn limit via a pi extension
+- [x] Agent settings in config: `agents:` entries (adapter, version, options) with per-adapter
       option models; short form `agent: pi`; included in the config hash
+- [ ] Executor prompt as a prompt slot (`executor_guidance`), replacing the adapter's fixed prompt
 - [ ] Metering proxy: one shared proxy, per-item routes, forced stream usage, `usage.jsonl` +
       `usage.schema.json`
 - [ ] Usage preflight: refuse endpoints without `usage`; a call without usage fails the item
@@ -48,7 +49,8 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 ## Week 4 — tracking and operations
 
 - [x] MLflow tracking: runs per arm and item, artifacts, pinned inputs
-- [ ] MLflow traces from the plugin
+- [x] MLflow mandatory for `bench run`; item traces from agent logs (pi); arm summary metrics and git commit
+- [ ] Advisor spans (triggers, briefs, consults) in the item traces
 - [x] SQLite ledger and resume
 - [ ] Debug mode, `bench shell`, `bench replay`
 - [x] `bench report`: per-arm resolve rate with Wilson CI, exit reasons, time, turns; CSV

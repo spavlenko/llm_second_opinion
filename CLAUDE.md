@@ -23,6 +23,8 @@ pnpm check:types && pnpm build && pnpm test
 docker build -t llm-second-opinion/toy:1 tasks/toy     # toy task image
 harness/.venv/bin/bench run experiments/toy.yaml --parallel 4   # full lifecycle, no model
 harness/.venv/bin/bench report experiments/toy.yaml --csv runs/toy.csv
+harness/.venv/bin/bench mock-server --recordings harness/tests/fixtures/pi-toy-add.jsonl --host 0.0.0.0 &
+harness/.venv/bin/bench run experiments/toy-pi.yaml --task toy-add   # pi end to end, mock model
 ```
 
 ```sh
@@ -35,7 +37,8 @@ cd harness                              # task pipeline; work files in runs/task
 ```
 
 ```sh
-scripts/mlflow-server.sh                # MLflow at http://127.0.0.1:5050, data in .mlflow/
+scripts/mlflow-server.sh                # MLflow at http://127.0.0.1:5050, data in .mlflow/;
+                                        # `bench run` requires it (--no-mlflow: tests/CI only)
 ```
 
 Toolchain: Python 3.14 (venv in `harness/.venv`), Node 26 + pnpm 12 via Homebrew, TypeScript 7,

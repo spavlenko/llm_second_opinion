@@ -7,6 +7,7 @@ import math
 import shlex
 import tarfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -85,8 +86,18 @@ class Runtime:
     def __init__(self, client: docker.DockerClient | None = None):
         self.client = client or docker.from_env()
 
-    def start(self, image: str, cpus: float, memory_gb: float, name: str) -> Container:
+    def start(
+        self,
+        image: str,
+        cpus: float,
+        memory_gb: float,
+        name: str,
+        volumes: Mapping[str, str] | None = None,
+    ) -> Container:
+        """A capped container idling on `sleep`; `volumes` maps volume names to read-only
+        mount points."""
         self._ensure_image(image)
+        mounts = {v: {"bind": path, "mode": "ro"} for v, path in (volumes or {}).items()}
         handle = self.client.containers.run(
             image,
             command=["sleep", "infinity"],
@@ -97,6 +108,7 @@ class Runtime:
             mem_limit=int(memory_gb * 2**30),
             labels={LABEL: name},
             extra_hosts={"host.docker.internal": "host-gateway"},
+            volumes=mounts,
         )
         return Container(handle)
 

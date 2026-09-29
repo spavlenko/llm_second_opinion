@@ -1,0 +1,18 @@
+# pi on the toy tasks against the mock model server: the agent layer, pi's JSON mode, turn
+# counting, and grading, with no real model. The recordings answer toy-add once:
+#   bench mock-server --recordings harness/tests/fixtures/pi-toy-add.jsonl --host 0.0.0.0 &
+#   bench run experiments/toy-pi.yaml --task toy-add
+name: toy-pi
+tasks: ../tasks/manifests/toy-v1.yaml
+seeds: 1
+limits: {wall_minutes: 5, max_turns: 10}
+execution: {parallel: 1, cpus: 1, memory_gb: 1}
+
+models:
+  mock: {base_url: "http://127.0.0.1:8765/v1", model: mock}
+
+agents:
+  pi: {adapter: pi, version: "0.99.1"}
+
+arms:
+  - {name: pi-mock, agent: pi, executor: mock}

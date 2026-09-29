@@ -251,11 +251,11 @@ inside a run.
 | `config` | Pydantic models for experiments, arms, models, limits, and task sets; YAML loading; a stable hash per arm config |
 | `tasks`, `pipeline` | Internal task format and frozen manifests; the Multi-SWE-bench importer, arm64 image builds from per-repo recipes, gold-patch validation, freezing with a `dev`/`test` split. SWE-bench-Live import is to come |
 | `runtime` | Container lifecycle through the Docker API (Colima or Docker Desktop), CPU and memory caps, exec with timeouts, file copy in and out |
-| `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter, which builds an agent layer (Node, pi, plugin) on each task image, is to come |
+| `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter (pi in JSON mode, bundle mounted from a volume, turn limit by a harness extension). The advisor plugin joins the pi bundle when it exists |
 | `runner` | Expands arms × tasks × seeds into work items; parallel workers, retries, and resume through the ledger |
 | `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id |
 | `grading` | Applies the agent's patch and the test patch in a fresh container, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output) |
-| `tracking` | MLflow: a run per arm with pinned inputs, a child run per item with metrics and artifacts; trace ingestion to come |
+| `tracking`, `tracing` | MLflow, mandatory for `bench run`: a run per arm with pinned inputs, git commit, and summary metrics; a child run per item with metrics, artifacts, and a trace built from the agent's logs |
 | `report` | Per-arm resolve rates with Wilson 95% intervals, exit reasons, time and turns; per-item CSV |
 | `scorers` | Capability, cost, harm, identifier leakage, re-identification, and the calibrated advice judge |
 | `mock_server` | OpenAI-compatible server replaying recorded completions (see Testing) |
@@ -297,9 +297,12 @@ property is required: producers always write every field (optionals as `null`), 
 ```python
 class AgentAdapter(Protocol):
     name: str
+    version: str
     capabilities: frozenset[str]  # e.g. {"advisor", "otel"}
+    artifacts: tuple[str, ...]    # container files copied into the item directory
 
-    def build_layer(self, task_image: str) -> str: ...
+    def __init__(self, spec: AgentSpec): ...            # the experiment's `agents` entry
+    def build_layer(self, task_image: str) -> Layer: ...  # image + read-only volumes
     def run(self, box: Container, task: Task, config: RunConfig, limits: Limits,
             env: dict[str, str]) -> AgentResult: ...
 ```
@@ -308,11 +311,40 @@ The runner writes `config` to `/run/advisor.json` before calling `run`, and pass
 in `env`; they are set per `exec`, never in the image or container config. One adapter
 instance per arm is shared by parallel workers, so `run` keeps no state on the instance. The
 runner refuses an arm that needs a capability the adapter lacks, such as an advisor arm on an
-agent without the plugin. Adapters are registered by name in `adapters.ADAPTERS`; an arm's
-`agent` picks one.
+agent without the plugin. Adapters are registered by name in `adapters.ADAPTERS`.
 
-**Agent settings in config (planned).** An arm's `agent` becomes either a name (`pi`) or a
-mapping, so the agent and its version are experiment variables like the models:
+**pi adapter.** pi (`@earendil-works/pi-coding-agent`, default 0.99.1) runs non-interactively
+in JSON mode (`pi --mode json`), which writes one event per line; the adapter keeps that
+stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
+
+- *Bundle.* `agents/pi/Dockerfile` builds an image with Node 24 and the pinned pi under
+  `/opt/lso-agent`; its contents are copied once into a Docker volume that every agent
+  container mounts read-only there. Task images stay as validated: copying the ~560 MB
+  bundle into each task image would store it once per task (Docker does not share those
+  layers). Node runs from the bundle by absolute path and is not put on the agent's `PATH`.
+  Official Node binaries need glibc 2.28, which all task images have (the oldest is Debian
+  buster); the toy image is Debian slim for the same reason.
+- *Model.* The executor endpoint becomes pi's only provider (`lso`, OpenAI-compatible) in a
+  `models.json` under `/run/lso/agent` (`PI_CODING_AGENT_DIR`). The API key is referenced by
+  variable name and read from the exec environment. Host-local URLs are rewritten to
+  `host.docker.internal` until the metering proxy takes over routing.
+- *Isolation.* `--no-extensions` (so no MCP or codemode), no skills, prompt templates, themes,
+  or context files (`AGENTS.md`/`CLAUDE.md` in a task repository), `--offline`, no telemetry.
+  Tools are pi's defaults (read, bash, edit, write) unless the options say otherwise.
+- *Limits.* pi has no turn-limit flag, so the harness extension `agents/pi/limits.ts` counts
+  turns, records the limit in `/run/lso/exit.json`, and aborts; the turn the abort cuts short
+  is not counted. The wall-clock limit is `timeout` around `exec pi`.
+- *Exit reason.* `time_limit` if the timeout fired; `turn_limit` if the extension recorded
+  it; `crash` if pi exited non-zero or the last assistant message ended in an error (for
+  example the model endpoint failing after pi's retries); otherwise `finished`. Turns are
+  pi's `turn_end` events.
+- *Prompt.* Until prompt slots exist, a fixed instruction with the issue text: fix the
+  source, do not change existing tests, `/opt/lso/run-tests` rebuilds and runs the tests.
+- *Options.* `thinking` (default: the endpoint's `reasoning_effort`), `tools`,
+  `context_window`, `max_output_tokens`.
+
+**Agent settings in config.** An arm's `agent` names an entry in `agents`, or an adapter
+directly, so the agent and its version are experiment variables like the models:
 
 ```yaml
 agents:
@@ -322,12 +354,12 @@ arms:
   - {name: A0, agent: pi, executor: local}
 ```
 
-- `adapter` picks the registered `AgentAdapter`; `version` pins what is installed in the agent
-  layer (and its image tag); `options` are adapter-specific and validated by the adapter's own
-  Pydantic model (`options_model`), so a typo fails before anything runs.
-- The whole agent entry is part of the config hash; changing the version or options gives new
-  results.
-- A short form `agent: pi` stays valid and means the adapter's defaults.
+- `adapter` picks the registered `AgentAdapter`; `version` pins what is installed in the
+  agent's bundle; `options` are adapter-specific and validated by the adapter's own Pydantic
+  model when the runner starts, so a typo fails before anything runs.
+- The whole agent entry (not its name) is part of the config hash; changing the version or
+  options gives new results.
+- A short form `agent: pi` means the adapter's defaults.
 
 **Token metering (planned).** Token counts must not depend on each agent reporting them, so the
 harness meters them itself: agents never call a model directly. One metering proxy per batch
@@ -442,7 +474,7 @@ command counts as timed out only if it also used the full time.
 | `bench tasks build NAME [--only ID] [--parallel N] [--jobs N]` | Build arm64 task images; resumes |
 | `bench tasks validate NAME [--runs 2] [--parallel N]` | Gold-patch validation; resumes |
 | `bench tasks freeze NAME --version V --out F [--smoke 3]` | Write the frozen manifest (with split and dropped instances) and a smoke subset |
-| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--dry-run]` | Batch run; resumes where it stopped. MLflow logging is on when `--mlflow` or `MLFLOW_TRACKING_URI` is set |
+| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--dry-run]` | Batch run; resumes where it stopped. Always tracked in MLflow (`--mlflow`, `MLFLOW_TRACKING_URI`, default `http://127.0.0.1:5050`); refuses to start if the server is down. `--no-mlflow` is for harness tests and CI only |
 | `bench run EXP.yaml --arm A2 --task ID --debug` | One task with live logs; keeps the container afterwards |
 | `bench shell ITEM` | Open a shell in a kept container |
 | `bench replay ITEM` | Step through a stored run's events: turns, triggers, briefs, advice |
@@ -491,8 +523,8 @@ notes, measurements, and problems found: [task-pipeline.md](task-pipeline.md).
    shuffle within each repository (default half to `test`; a repository with one task goes
    to `dev`). A smoke subset (the three quickest `dev` tasks from different repositories) is
    written next to it.
-5. **Agent layer.** For each kept task, build a derived image with Node, pi, and the plugin,
-   cached by plugin version.
+5. **Agent layer.** Not a per-task image: the agent's bundle (Node, pi, and later the plugin)
+   is mounted read-only from a Docker volume at run time (see the pi adapter).
 
 Task images are local to the machine that built them: the manifest pins each by image ID, and
 the runner refuses a missing ID rather than using a rebuilt image, since a rebuild needs
@@ -519,10 +551,23 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
 - **Item directory.** `runs/<experiment>/<arm>/<task>/seed-<n>/` holds `advisor.json`,
   `result.json`, `patch.diff`, `events.jsonl`, and `grade.log`, whether or not MLflow is on.
   The ledger is `runs/<experiment>/ledger.sqlite`.
-- **MLflow layout.** One MLflow experiment per study; one parent run per arm (tagged with the
-  config hash, reused on resume) holding the pinned inputs as params; one child run per task
-  and seed with `resolved`, `turns`, `duration_s` and the item directory as artifacts. Traces
-  per item come with the plugin's OTel exporter.
+- **MLflow is mandatory.** Every experiment run is tracked; `bench run` checks the server's
+  `/health` first and will not start without it. MLflow is a core dependency.
+- **MLflow layout.** One MLflow experiment per experiment file; one parent run per arm
+  (tagged with the config hash and reused on resume) holding the pinned inputs as params, the
+  harness's git commit and whether the checkout was dirty as tags, and summary metrics updated
+  after every batch (`resolve_rate` with its Wilson interval, items done and failed, median
+  turns and duration, `exit_<reason>` counts); one child run per task and seed with
+  `resolved`, `turns`, `duration_s`, and the item directory as artifacts.
+- **Traces.** Each item's run has one trace: the item, the agent (with the diff and exit
+  reason), and grading (test outcome counts). Adapters add the agent's spans from their own
+  logs after the run (`AgentAdapter.spans`): for pi, a span per turn with its model calls
+  (messages in and out, tool calls, token counts as the model server reported them) and tool
+  calls (arguments, result, error). pi's JSON events have no times for tool calls, so the
+  harness extension `agents/pi/timeline.ts` records turn, model, and tool start and end times.
+  Traces are built after the fact, so every agent gets them, with or without the plugin; the
+  plugin will add advisor spans (triggers, briefs, consults). Long values are clipped to 20k
+  characters, keeping both ends; the artifacts keep everything.
 - **Pinned inputs.** Each run logs the manifest version, image digests, local model ID and
   MLX quantization, advisor model ID and reasoning effort, plugin and harness versions, and the seed.
 - **Known non-determinism.** MLX sampling is not bit-exact across runs, and the advisor API
@@ -571,8 +616,6 @@ llm_second_opinion/
 - [ ] Container runtime: Colima is the default because it exposes the Docker API the Python
       SDK expects. Revisit Apple's `container` tool if Docker API support is not needed.
 - [ ] Memory split on 48 GB: how much for Qwen3.8 weights and KV cache versus the VM. Measure in week 3.
-- [ ] Does pi's non-interactive mode expose everything the adapter needs (turn limit, clean
-      exit reason), or does the adapter drive pi through its SDK?
 - [ ] Where the brief builder's role map lives across a session, so advice maps back
       correctly after context compaction.
 - [ ] Whether the re-identification attacker runs at scoring time only, or also as a live
@@ -613,3 +656,8 @@ llm_second_opinion/
 | 2026-09-27 | Our own per-repository Dockerfiles and recipes (not upstream's generated ones); pinned CMake 3.31 in every image; upstream `gcc:latest` pinned to 14. Images are a fresh one-commit repo with a prebuilt `/build`. |
 | 2026-09-27 | Grading by per-test lists (`Task.tests`, ctest parser) instead of an exit code; fail-to-pass and pass-to-pass re-derived from arm64 before/after runs over upstream's tests. |
 | 2026-09-27 | Manifests pin task images by local image ID; freeze caps: build 20 min, tests 10 min; split `dev`/`test` half and half within each repository (seed 0). |
+| 2026-09-29 | pi adapter: CLI JSON mode, not the SDK. pi has no turn-limit flag, so a harness extension enforces it; exit reason from the timeout, that extension, pi's exit code, and the final message. |
+| 2026-09-29 | Agent bundle mounted read-only from a Docker volume instead of a derived image per task (~560 MB each, not shared between task images). Toy image moved to Debian for glibc. |
+| 2026-09-29 | `agents:` entries implemented; the entry's contents (not its name) are in the config hash, so existing hashes changed. Builds use `--provenance=false`, so unchanged rebuilds keep their image IDs. |
+| 2026-09-29 | MLflow is mandatory for every experiment run (default local server, health check before starting; `--no-mlflow` only for tests and CI) and a core dependency. |
+| 2026-09-29 | Item traces are built by the harness from the agent's logs after each run (pi: JSON events plus a timeline extension), not only by the plugin's OTel exporter; arm runs get summary metrics and the git commit. |

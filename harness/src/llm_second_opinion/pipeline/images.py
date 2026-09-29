@@ -101,7 +101,9 @@ def build_image(
         (ctx / "common/submodules").write_text("".join(f"{p}\n" for p in paths))
         iidfile = ctx / "iid"
         cmd = [
-            "docker", "build", "-t", tag, "--iidfile", str(iidfile),
+            # Without provenance (a timestamped attestation), a rebuild that Docker serves
+            # entirely from cache keeps the image ID the manifest pins.
+            "docker", "build", "--provenance=false", "-t", tag, "--iidfile", str(iidfile),
             "--build-arg", f"GCC={gcc}", "--build-arg", f"JOBS={jobs}",
             "--progress", "plain", str(ctx),
         ]  # fmt: skip
