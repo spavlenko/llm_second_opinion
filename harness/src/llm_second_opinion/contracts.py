@@ -63,6 +63,15 @@ class ModelEndpoint(Strict):
         description="Extra request headers with secret values: header name to the name of the "
         "environment variable holding the value. Never the value itself.",
     )
+    temperature: float | None = Field(
+        default=None, ge=0, description="Sampling temperature sent with every call; None: unset."
+    )
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    sampling_seed: int | None = Field(
+        default=None,
+        description="Sampling seed sent with every call, if the server honours one. Unrelated to "
+        "the experiment's `seeds`, which are replicate indices.",
+    )
 
 
 class StuckThresholds(Strict):
@@ -168,6 +177,10 @@ class BriefBuilt(_Event):
     tokens: int = Field(ge=0)
     identifiers_redacted: int = Field(ge=0)
     role_map_size: int = Field(ge=0)
+    role_map: dict[str, str] = Field(
+        description="Placeholder to real identifier, for every placeholder in this brief. Stays "
+        "on the machine; the leakage and re-identification scorers need it."
+    )
 
 
 class AdvisorRequest(_Event):
@@ -184,6 +197,10 @@ class AdvisorResponse(_Event):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(ge=0)
+    prompt_tokens: int | None = Field(
+        default=None, ge=0, description="The provider's own count, when it reports one."
+    )
+    reasoning_tokens: int | None = Field(default=None, ge=0)
     advice_text: str = Field(
         description="The advisor's answer exactly as received (placeholders not yet mapped back)."
     )
@@ -193,6 +210,8 @@ class AdvisorError(_Event):
     type: Literal["advisor_error"] = "advisor_error"
     request_id: str
     message: str
+    status: int | None = Field(default=None, description="HTTP status; None if none came back.")
+    latency_ms: float = Field(ge=0)
 
 
 class AdviceApplied(_Event):
@@ -202,6 +221,17 @@ class AdviceApplied(_Event):
     injected_text: str = Field(description="The exact text the executor was given.")
 
 
+class PolicyRendered(_Event):
+    """Emitted once at the start of an advisor run: the help-policy text the executor sees."""
+
+    type: Literal["policy_rendered"] = "policy_rendered"
+    prompt_hash: str
+    executor_guidance: str = Field(description="As appended to the executor's system prompt.")
+    consult_tool: str | None = Field(
+        description="The consult tool's description; None when the tool is not registered."
+    )
+
+
 class BudgetExhausted(_Event):
     type: Literal["budget_exhausted"] = "budget_exhausted"
     consults_used: int = Field(ge=0)
@@ -209,7 +239,8 @@ class BudgetExhausted(_Event):
 
 
 Event = Annotated[
-    ConsultRequested
+    PolicyRendered
+    | ConsultRequested
     | TriggerFired
     | BriefBuilt
     | AdvisorRequest
@@ -278,7 +309,13 @@ class UsageRecord(Strict):
     cached_tokens: int = Field(default=0, ge=0)
     reasoning_tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(ge=0)
-    status: int = Field(description="HTTP status from the upstream endpoint.")
+    status: int = Field(description="HTTP status from the upstream endpoint; 0 if none came back.")
+    request_id: str | None = Field(
+        default=None,
+        description="The plugin's request id (header X-LSO-Request-Id) for advisor calls, which "
+        "joins this record to the advisor_request event.",
+    )
+    attempt: int = Field(default=1, ge=1, description="The item attempt this call belongs to.")
 
 
 class RoleUsage(Strict):

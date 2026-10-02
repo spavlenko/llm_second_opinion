@@ -139,6 +139,44 @@
           },
           "description": "Extra request headers with secret values: header name to the name of the environment variable holding the value. Never the value itself.",
           "type": "object"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sampling temperature sent with every call; None: unset."
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sampling_seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sampling seed sent with every call, if the server honours one. Unrelated to the experiment's `seeds`, which are replicate indices."
         }
       },
       "required": [
@@ -147,7 +185,10 @@
         "reasoning_effort",
         "api_key_env",
         "headers",
-        "header_env"
+        "header_env",
+        "temperature",
+        "top_p",
+        "sampling_seed"
       ],
       "title": "ModelEndpoint",
       "type": "object"

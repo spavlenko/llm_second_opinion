@@ -6,6 +6,7 @@
  * via the `definition` "Event".
  */
 export type Event =
+  | PolicyRendered
   | ConsultRequested
   | TriggerFired
   | BriefBuilt
@@ -38,6 +39,33 @@ export interface Contracts {
   AgentResult?: AgentResult;
   RunConfig?: RunConfig;
   UsageRecord?: UsageRecord;
+}
+/**
+ * Emitted once at the start of an advisor run: the help-policy text the executor sees.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "PolicyRendered".
+ */
+export interface PolicyRendered {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "policy_rendered";
+  prompt_hash: string;
+  /**
+   * As appended to the executor's system prompt.
+   */
+  executor_guidance: string;
+  /**
+   * The consult tool's description; None when the tool is not registered.
+   */
+  consult_tool: string | null;
 }
 /**
  * The executor called the consult tool.
@@ -100,6 +128,12 @@ export interface BriefBuilt {
   tokens: number;
   identifiers_redacted: number;
   role_map_size: number;
+  /**
+   * Placeholder to real identifier, for every placeholder in this brief. Stays on the machine; the leakage and re-identification scorers need it.
+   */
+  role_map: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -147,6 +181,11 @@ export interface AdvisorResponse {
   cached_tokens: number;
   latency_ms: number;
   /**
+   * The provider's own count, when it reports one.
+   */
+  prompt_tokens: number | null;
+  reasoning_tokens: number | null;
+  /**
    * The advisor's answer exactly as received (placeholders not yet mapped back).
    */
   advice_text: string;
@@ -168,6 +207,11 @@ export interface AdvisorError {
   type: "advisor_error";
   request_id: string;
   message: string;
+  /**
+   * HTTP status; None if none came back.
+   */
+  status: number | null;
+  latency_ms: number;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -310,6 +354,15 @@ export interface ModelEndpoint {
   header_env: {
     [k: string]: string;
   };
+  /**
+   * Sampling temperature sent with every call; None: unset.
+   */
+  temperature: number | null;
+  top_p: number | null;
+  /**
+   * Sampling seed sent with every call, if the server honours one. Unrelated to the experiment's `seeds`, which are replicate indices.
+   */
+  sampling_seed: number | null;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -398,7 +451,15 @@ export interface UsageRecord {
   reasoning_tokens: number;
   latency_ms: number;
   /**
-   * HTTP status from the upstream endpoint.
+   * HTTP status from the upstream endpoint; 0 if none came back.
    */
   status: number;
+  /**
+   * The plugin's request id (header X-LSO-Request-Id) for advisor calls, which joins this record to the advisor_request event.
+   */
+  request_id: string | null;
+  /**
+   * The item attempt this call belongs to.
+   */
+  attempt: number;
 }

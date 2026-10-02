@@ -75,6 +75,22 @@
         },
         "message": {
           "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HTTP status; None if none came back."
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "type": "number"
         }
       },
       "required": [
@@ -83,7 +99,9 @@
         "ts",
         "type",
         "request_id",
-        "message"
+        "message",
+        "status",
+        "latency_ms"
       ],
       "title": "AdvisorError",
       "type": "object"
@@ -177,6 +195,31 @@
           "minimum": 0,
           "type": "number"
         },
+        "prompt_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The provider's own count, when it reports one."
+        },
+        "reasoning_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "advice_text": {
           "description": "The advisor's answer exactly as received (placeholders not yet mapped back).",
           "type": "string"
@@ -191,6 +234,8 @@
         "output_tokens",
         "cached_tokens",
         "latency_ms",
+        "prompt_tokens",
+        "reasoning_tokens",
         "advice_text"
       ],
       "title": "AdvisorResponse",
@@ -232,6 +277,13 @@
         "role_map_size": {
           "minimum": 0,
           "type": "integer"
+        },
+        "role_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Placeholder to real identifier, for every placeholder in this brief. Stays on the machine; the leakage and re-identification scorers need it.",
+          "type": "object"
         }
       },
       "required": [
@@ -242,7 +294,8 @@
         "level",
         "tokens",
         "identifiers_redacted",
-        "role_map_size"
+        "role_map_size",
+        "role_map"
       ],
       "title": "BriefBuilt",
       "type": "object"
@@ -353,6 +406,60 @@
       "title": "Level",
       "type": "string"
     },
+    "PolicyRendered": {
+      "additionalProperties": false,
+      "description": "Emitted once at the start of an advisor run: the help-policy text the executor sees.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "policy_rendered",
+          "default": "policy_rendered",
+          "type": "string"
+        },
+        "prompt_hash": {
+          "type": "string"
+        },
+        "executor_guidance": {
+          "description": "As appended to the executor's system prompt.",
+          "type": "string"
+        },
+        "consult_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The consult tool's description; None when the tool is not registered."
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "prompt_hash",
+        "executor_guidance",
+        "consult_tool"
+      ],
+      "title": "PolicyRendered",
+      "type": "object"
+    },
     "TriggerFired": {
       "additionalProperties": false,
       "properties": {
@@ -408,11 +515,15 @@
       "brief_built": "#/$defs/BriefBuilt",
       "budget_exhausted": "#/$defs/BudgetExhausted",
       "consult_requested": "#/$defs/ConsultRequested",
+      "policy_rendered": "#/$defs/PolicyRendered",
       "trigger_fired": "#/$defs/TriggerFired"
     },
     "propertyName": "type"
   },
   "oneOf": [
+    {
+      "$ref": "#/$defs/PolicyRendered"
+    },
     {
       "$ref": "#/$defs/ConsultRequested"
     },

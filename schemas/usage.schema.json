@@ -52,7 +52,25 @@
       "type": "number"
     },
     "status": {
-      "description": "HTTP status from the upstream endpoint.",
+      "description": "HTTP status from the upstream endpoint; 0 if none came back.",
+      "type": "integer"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The plugin's request id (header X-LSO-Request-Id) for advisor calls, which joins this record to the advisor_request event."
+    },
+    "attempt": {
+      "default": 1,
+      "description": "The item attempt this call belongs to.",
+      "minimum": 1,
       "type": "integer"
     }
   },
@@ -67,7 +85,9 @@
     "cached_tokens",
     "reasoning_tokens",
     "latency_ms",
-    "status"
+    "status",
+    "request_id",
+    "attempt"
   ],
   "type": "object"
 }
