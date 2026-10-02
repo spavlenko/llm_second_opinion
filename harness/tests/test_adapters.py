@@ -82,6 +82,22 @@ def test_models_json_points_at_the_executor_through_the_host_gateway():
     ]
 
 
+def test_models_json_references_secret_headers_by_name():
+    endpoint = ENDPOINT.model_copy(
+        update={"headers": {"X-Session": "me"}, "header_env": {"X-Auth": "AUTH_KEY"}}
+    )
+    options = {
+        "thinking_level_map": {"off": "none", "high": "xhigh"},
+        "compat": {"supportsDeveloperRole": False},
+    }
+    pi = PiAdapter(AgentSpec(adapter="pi", options=options))
+    provider = pi.models_json(endpoint)["providers"]["lso"]
+    assert provider["headers"] == {"X-Session": "me", "X-Auth": "${AUTH_KEY}"}
+    [model] = provider["models"]
+    assert model["thinkingLevelMap"] == {"off": "none", "high": "xhigh"}
+    assert model["compat"] == {"supportsDeveloperRole": False}
+
+
 def test_container_url_rewrites_only_host_local_addresses():
     assert container_url("http://localhost/v1") == "http://host.docker.internal/v1"
     assert container_url("https://api.example.com/v1") == "https://api.example.com/v1"

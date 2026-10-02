@@ -10,7 +10,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import Field, model_validator
@@ -22,9 +22,12 @@ from llm_second_opinion.contracts import (
     RunIdentity,
     Strict,
 )
+from llm_second_opinion.tasks import Manifest
 
 ADVISOR_MODEL = "advisor"  # key in `models` that advisor arms consult
 _ENV_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
+_ROUTING = {"base_url", "headers", "header_env"}  # how a model is reached, not which model
+_DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$")
 
 
 class ConfigError(ValueError):
@@ -76,6 +79,12 @@ class Arm(Strict):
 class Experiment(Strict):
     name: str = Field(min_length=1)
     tasks: Path = Field(description="Frozen task manifest.")
+    split: Literal["dev", "test"] | None = Field(
+        None, description="Run only the manifest's tasks in this split; None runs all of them."
+    )
+    task_ids: list[str] | None = Field(
+        None, description="Run only these tasks (after `split`); None runs all of them."
+    )
     seeds: int = Field(ge=1, description="Number of seeds; runs use seeds 0..n-1.")
     limits: Limits
     execution: Execution = Field(default_factory=Execution)
@@ -110,6 +119,20 @@ class Experiment(Strict):
             raw["tasks"] = (path.parent / raw["tasks"]).resolve()
         return cls.model_validate(raw)
 
+    def select(self, manifest: Manifest) -> Manifest:
+        """The manifest restricted to `split` and `task_ids`. Selection is not part of the
+        config hash: it picks which items run, not how they behave."""
+        tasks = [t for t in manifest.tasks if self.split in (None, t.split)]
+        if self.task_ids is not None:
+            unknown = sorted(set(self.task_ids) - {t.id for t in tasks})
+            if unknown:
+                where = f"split {self.split!r} of " if self.split else ""
+                raise ConfigError(f"task_ids not in {where}{self.tasks}: {', '.join(unknown)}")
+            tasks = [t for t in tasks if t.id in self.task_ids]
+        if not tasks:
+            raise ConfigError(f"no tasks selected from {self.tasks}")
+        return manifest.model_copy(update={"tasks": tasks})
+
     def arm(self, name: str) -> Arm:
         for arm in self.arms:
             if arm.name == name:
@@ -123,16 +146,17 @@ class Experiment(Strict):
     def config_hash(self, arm: Arm) -> str:
         """Hash of everything that changes an arm's behaviour.
 
-        Excludes the arm's name, the name of its `agents` entry, and model base URLs, so
-        renaming an arm or an agent entry, or moving a server to another port, keeps results.
+        Excludes the arm's name, the name of its `agents` entry, and how a model is reached
+        (base URL, headers), so renaming an arm or an agent entry, moving a server, or
+        changing credentials keeps results.
         """
         payload = {
             "arm": arm.model_dump(mode="json", exclude={"name", "agent"}),
             "agent": self.agent_spec(arm).model_dump(mode="json"),
             "limits": self.limits.model_dump(mode="json"),
-            "executor": self.models[arm.executor].model_dump(mode="json", exclude={"base_url"}),
+            "executor": self.models[arm.executor].model_dump(mode="json", exclude=_ROUTING),
             "advisor_model": (
-                self.models[ADVISOR_MODEL].model_dump(mode="json", exclude={"base_url"})
+                self.models[ADVISOR_MODEL].model_dump(mode="json", exclude=_ROUTING)
                 if arm.advisor
                 else None
             ),
@@ -157,7 +181,8 @@ class Experiment(Strict):
 
 
 def interpolate_env(value: Any, env: Mapping[str, str]) -> Any:
-    """Replace ${VAR} and ${VAR:-default} in every string; fail listing all missing vars."""
+    """Replace ${VAR} and ${VAR:-default} in every string, mapping keys included (so header
+    names can stay out of the YAML too); fail listing all missing vars."""
     missing: set[str] = set()
 
     def sub(match: re.Match[str]) -> str:
@@ -173,7 +198,7 @@ def interpolate_env(value: Any, env: Mapping[str, str]) -> Any:
         if isinstance(node, str):
             return _ENV_REF.sub(sub, node)
         if isinstance(node, dict):
-            return {k: walk(v) for k, v in node.items()}
+            return {walk(k): walk(v) for k, v in node.items()}
         if isinstance(node, list):
             return [walk(v) for v in node]
         return node
@@ -182,6 +207,27 @@ def interpolate_env(value: Any, env: Mapping[str, str]) -> Any:
     if missing:
         raise ConfigError(f"unset environment variables: {', '.join(sorted(missing))}")
     return result
+
+
+def load_dotenv(path: Path, env: dict[str, str] | os._Environ[str] = os.environ) -> list[str]:
+    """Set `NAME=value` lines from a .env file into `env`, without overriding variables that
+    are already set. Values may be quoted; `#` starts a comment line. Returns the names set."""
+    if not path.is_file():
+        return []
+    loaded = []
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _DOTENV_LINE.match(line)
+        if not match:
+            raise ConfigError(f"{path}: cannot parse a line (expected NAME=value)")
+        name, value = match.groups()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if name not in env:
+            env[name] = value
+            loaded.append(name)
+    return loaded
 
 
 def expand_sweeps(arms: list[Any]) -> list[Any]:

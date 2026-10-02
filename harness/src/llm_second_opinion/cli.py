@@ -8,7 +8,7 @@ import click
 from pydantic import ValidationError
 
 from llm_second_opinion import __version__
-from llm_second_opinion.config import ConfigError, Experiment
+from llm_second_opinion.config import ConfigError, Experiment, load_dotenv
 from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
 from llm_second_opinion.mock_server import MockServer
@@ -17,13 +17,26 @@ from llm_second_opinion.runner import Runner
 from llm_second_opinion.tasks import Manifest
 from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
 
-REPO_SCHEMAS = Path(__file__).resolve().parents[3] / "schemas"
+REPO = Path(__file__).resolve().parents[3]
+REPO_SCHEMAS = REPO / "schemas"
 
 
 @click.group()
 @click.version_option(__version__)
-def main() -> None:
+@click.option(
+    "--env-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=REPO / ".env",
+    envvar="BENCH_ENV_FILE",
+    show_default=True,
+    help="Endpoints and secrets as NAME=value lines (gitignored). Exported variables win.",
+)
+def main(env_file: Path) -> None:
     """Run and score coding-agent experiments."""
+    try:
+        load_dotenv(env_file)
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
 
 
 EXPERIMENT = click.argument("experiment", type=click.Path(exists=True, dir_okay=False))
@@ -128,7 +141,7 @@ def report(experiment: str, runs_dir: Path, csv_path: Path | None) -> None:
     if not ledger_path.exists():
         raise click.ClickException(f"no ledger at {ledger_path}; run the experiment first")
     rows = Ledger(ledger_path).rows(exp.name)
-    tasks = len(Manifest.from_yaml(exp.tasks).tasks)
+    tasks = len(exp.select(Manifest.from_yaml(exp.tasks)).tasks)
     click.echo(format_table(summarize(exp, rows, tasks)))
     if csv_path:
         write_csv(current_rows(exp, rows), csv_path)

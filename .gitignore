@@ -24,6 +24,7 @@ runs/
 # Secrets and OS
 .env
 .env.*
+!.env.example
 .DS_Store
 
 # MLflow local store

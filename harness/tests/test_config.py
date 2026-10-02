@@ -3,7 +3,13 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from llm_second_opinion.config import ConfigError, Experiment, expand_sweeps, interpolate_env
+from llm_second_opinion.config import (
+    ConfigError,
+    Experiment,
+    expand_sweeps,
+    interpolate_env,
+    load_dotenv,
+)
 
 ENV = {"LOCAL_MODEL_URL": "http://127.0.0.1:8080/v1", "ADVISOR_URL": "https://advisor/v1"}
 
@@ -99,6 +105,8 @@ def test_config_hash_ignores_name_and_url_but_not_behaviour(tmp_path):
     assert exp.config_hash(arm.model_copy(update={"name": "B"})) == h
     moved = exp.model_copy(deep=True)
     moved.models["local"].base_url = "http://elsewhere/v1"
+    moved.models["local"].headers = {"X-Session": "me"}
+    moved.models["local"].header_env = {"X-Auth": "AUTH"}
     assert moved.config_hash(arm) == h
     assert exp.config_hash(arm.with_advisor(level="L3")) != h
     other_model = exp.model_copy(deep=True)
@@ -137,3 +145,44 @@ def test_run_config_for_work_item(tmp_path):
     }
     assert advised["advisor_model"]["model"] == "kimi"
     assert advised["advisor"]["interventions"] == ["plan", "consult", "stuck"]
+
+
+def test_load_dotenv_sets_unset_names_only(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("# endpoints\n\nexport A=1\nB = 'two words'\nC=\"x=y\"\nKEEP=from-file\n")
+    env = {"KEEP": "exported"}
+    assert load_dotenv(path, env) == ["A", "B", "C"]
+    assert env == {"KEEP": "exported", "A": "1", "B": "two words", "C": "x=y"}
+    assert load_dotenv(tmp_path / "missing", env) == []
+
+
+def test_load_dotenv_does_not_echo_a_bad_line(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("sk-secret-without-a-name\n")
+    with pytest.raises(ConfigError) as e:
+        load_dotenv(path, {})
+    assert "sk-secret" not in str(e.value)
+
+
+def test_split_and_task_ids_select_tasks_without_changing_the_hash(repo, tmp_path):
+    from llm_second_opinion.tasks import Manifest
+
+    manifest_path = repo / "tasks/manifests/mswe-mini-cpp-v1.yaml"
+    manifest = Manifest.from_yaml(manifest_path)
+    dev = [t.id for t in manifest.tasks if t.split == "dev"]
+    text = BASE.replace("tasks: manifest.yaml", f"tasks: {manifest_path}")
+    exp = Experiment.from_yaml(
+        write(tmp_path, text + "split: dev\narms: [{name: A, executor: local}]\n"), env={}
+    )
+    assert [t.id for t in exp.select(manifest).tasks] == dev
+    picked = exp.model_copy(update={"task_ids": dev[:2]})
+    assert [t.id for t in picked.select(manifest).tasks] == dev[:2]
+    assert picked.config_hash(exp.arms[0]) == exp.config_hash(exp.arms[0])
+    test_task = next(t.id for t in manifest.tasks if t.split == "test")
+    with pytest.raises(ConfigError, match=test_task):
+        exp.model_copy(update={"task_ids": [test_task]}).select(manifest)
+
+
+def test_mapping_keys_are_interpolated():
+    raw = {"headers": {"${NAME}": "${VALUE}"}}
+    assert interpolate_env(raw, {"NAME": "X-A", "VALUE": "v"}) == {"headers": {"X-A": "v"}}

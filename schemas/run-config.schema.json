@@ -82,13 +82,29 @@
           ],
           "default": null,
           "description": "Name of the environment variable holding the API key. Never the key itself."
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra request headers with non-secret values.",
+          "type": "object"
+        },
+        "header_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra request headers with secret values: header name to the name of the environment variable holding the value. Never the value itself.",
+          "type": "object"
         }
       },
       "required": [
         "base_url",
         "model",
         "reasoning_effort",
-        "api_key_env"
+        "api_key_env",
+        "headers",
+        "header_env"
       ],
       "title": "ModelEndpoint",
       "type": "object"

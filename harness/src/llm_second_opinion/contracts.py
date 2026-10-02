@@ -45,6 +45,14 @@ class ModelEndpoint(Strict):
         default=None,
         description="Name of the environment variable holding the API key. Never the key itself.",
     )
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="Extra request headers with non-secret values."
+    )
+    header_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra request headers with secret values: header name to the name of the "
+        "environment variable holding the value. Never the value itself.",
+    )
 
 
 class StuckThresholds(Strict):

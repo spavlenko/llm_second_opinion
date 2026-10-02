@@ -82,7 +82,7 @@ class Runner:
         echo: Callable[[str], None] = print,
     ):
         self.exp = exp
-        self.manifest = Manifest.from_yaml(exp.tasks)
+        self.manifest = exp.select(Manifest.from_yaml(exp.tasks))
         self.dir = runs_dir / exp.name
         self.ledger = Ledger(self.dir / "ledger.sqlite")
         self._runtime = runtime
@@ -302,6 +302,8 @@ class Runner:
         return {
             "config_hash": self.exp.config_hash(arm),
             "manifest_version": self.manifest.version,
+            "split": self.exp.split,
+            "tasks": len(self.manifest.tasks),
             "harness_version": __version__,
             "agent": adapter.name,
             "agent_version": adapter.version,
@@ -331,12 +333,14 @@ def _adapter_for(exp: Experiment, arm: Arm) -> AgentAdapter:
 
 
 def _secrets(exp: Experiment, arms: Iterable[Arm]) -> dict[str, str]:
-    """API keys the arms' models name, read from the host environment. Fails before any run."""
+    """API keys and secret headers the arms' models name, read from the host environment.
+    Fails before any run."""
     names = set()
     for arm in arms:
         models = [exp.models[arm.executor]] + ([exp.models[ADVISOR_MODEL]] if arm.advisor else [])
         names |= {m.api_key_env for m in models if m.api_key_env}
+        names |= {var for m in models for var in m.header_env.values()}
     missing = sorted(n for n in names if n not in os.environ)
     if missing:
-        raise ConfigError(f"unset API key variables: {', '.join(missing)}")
+        raise ConfigError(f"unset secret variables: {', '.join(missing)}")
     return {n: os.environ[n] for n in names}

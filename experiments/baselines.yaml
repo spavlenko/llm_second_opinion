@@ -1,0 +1,42 @@
+# The two reference arms on `dev`: A0 (executor alone, the floor) and A4 (advisor model does
+# the whole task, the ceiling). Endpoints, keys, and header names come from ../.env
+# (see ../.env.example). A0 runs without the advisor variables:
+#   bench run experiments/baselines.yaml --arm A0 --task <id>     # one task first
+#   bench run experiments/baselines.yaml --arm A0
+#   bench report experiments/baselines.yaml
+name: baselines
+tasks: ../tasks/manifests/mswe-mini-cpp-v1.yaml
+split: dev
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 2, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: kimi-k3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor: {adapter: pi, version: "0.99.1"}
+
+arms:
+  - {name: A0, agent: pi, executor: local}
+  - {name: A4, agent: pi-advisor, executor: advisor}

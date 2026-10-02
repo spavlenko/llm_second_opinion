@@ -216,6 +216,18 @@ export interface ModelEndpoint {
    * Name of the environment variable holding the API key. Never the key itself.
    */
   api_key_env: string | null;
+  /**
+   * Extra request headers with non-secret values.
+   */
+  headers: {
+    [k: string]: string;
+  };
+  /**
+   * Extra request headers with secret values: header name to the name of the environment variable holding the value. Never the value itself.
+   */
+  header_env: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema

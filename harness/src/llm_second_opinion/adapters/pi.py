@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from llm_second_opinion.adapters.base import Layer, parse_options, workspace_diff
@@ -66,6 +66,9 @@ class PiOptions(Strict):
     tools: list[str] | None = None  # pi's defaults: read, bash, edit, write
     context_window: int | None = None  # tokens; tells pi when to compact
     max_output_tokens: int | None = None
+    # pi's thinking level -> the endpoint's reasoning_effort value (None: not sent)
+    thinking_level_map: dict[Thinking, str | None] | None = None
+    compat: dict[str, Any] | None = None  # pi's `compat` flags for the endpoint, as is
 
 
 class PiAdapter:
@@ -170,25 +173,31 @@ class PiAdapter:
         )
 
     def models_json(self, executor: ModelEndpoint) -> dict:
-        """pi's models.json: the executor endpoint as the `lso` provider. The API key is
-        referenced by variable name and read from the per-exec environment."""
+        """pi's models.json: the executor endpoint as the `lso` provider. The API key and
+        secret headers are referenced by variable name and read from the per-exec
+        environment, so the file holds no secrets."""
+        opts = self.options
         model: dict = {"id": executor.model, "name": executor.model}
-        if self.options.thinking or executor.reasoning_effort:
+        if opts.thinking or executor.reasoning_effort or opts.thinking_level_map:
             model["reasoning"] = True
-        if self.options.context_window:
-            model["contextWindow"] = self.options.context_window
-        if self.options.max_output_tokens:
-            model["maxTokens"] = self.options.max_output_tokens
-        return {
-            "providers": {
-                PROVIDER: {
-                    "baseUrl": container_url(executor.base_url),
-                    "api": "openai-completions",
-                    "apiKey": f"${{{executor.api_key_env}}}" if executor.api_key_env else "none",
-                    "models": [model],
-                }
-            }
+        if opts.thinking_level_map:
+            model["thinkingLevelMap"] = opts.thinking_level_map
+        if opts.context_window:
+            model["contextWindow"] = opts.context_window
+        if opts.max_output_tokens:
+            model["maxTokens"] = opts.max_output_tokens
+        if opts.compat:
+            model["compat"] = opts.compat
+        provider: dict = {
+            "baseUrl": container_url(executor.base_url),
+            "api": "openai-completions",
+            "apiKey": f"${{{executor.api_key_env}}}" if executor.api_key_env else "none",
+            "models": [model],
         }
+        headers = executor.headers | {h: f"${{{v}}}" for h, v in executor.header_env.items()}
+        if headers:
+            provider["headers"] = headers
+        return {"providers": {PROVIDER: provider}}
 
     def spans(self, item_dir: Path) -> list[Span]:
         """Turn spans, each with its model calls and tool calls, from the item's artifacts."""

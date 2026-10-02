@@ -46,7 +46,7 @@ local executor model asks a cloud advisor for help (see
 | Configuration | YAML validated by Pydantic, Python API underneath | YAML for everyday use and sweeps; code for anything unusual |
 | Modes | Resumable batch plus single-task debug, one code path | A bug seen in debug is the same bug that happens in batch |
 | Platform | One Apple Silicon Mac, arm64 Linux containers | Matches the available hardware; no x86 emulation |
-| Local model | Qwen3.8 via MLX behind an OpenAI-compatible endpoint | Any compatible server (llama.cpp, LM Studio, vLLM) also works |
+| Local model | Qwen3.8 (27B) behind an OpenAI-compatible endpoint, set in `.env` | Currently served off the Mac (not MLX on it); any compatible server works |
 | Advisor model | Kimi K3 via an OpenAI-compatible API | Provider is configuration, not code |
 | Tasks | arm64-validated C++ subset, frozen manifest | Every arm sees an identical, verified task set |
 | Research variable | The help policy: prompt sets and help-seeking approach, both in config | Prompts and triggers can be iterated without code changes and are hashed with the results |
@@ -341,7 +341,10 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
 - *Prompt.* Until prompt slots exist, a fixed instruction with the issue text: fix the
   source, do not change existing tests, `/opt/lso/run-tests` rebuilds and runs the tests.
 - *Options.* `thinking` (default: the endpoint's `reasoning_effort`), `tools`,
-  `context_window`, `max_output_tokens`.
+  `context_window`, `max_output_tokens`, `thinking_level_map` (pi level to the endpoint's
+  `reasoning_effort` value), and `compat` (pi's endpoint compatibility flags, passed as is).
+  The endpoint's `headers` and `header_env` become provider headers in `models.json`, secret
+  ones as `${VAR}` references that pi resolves from the exec environment.
 
 **Agent settings in config.** An arm's `agent` names an entry in `agents`, or an adapter
 directly, so the agent and its version are experiment variables like the models:
@@ -418,6 +421,14 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   variables are reported at once. Inside `{...}` flow mappings the value must be quoted
   (`base_url: "${LOCAL_MODEL_URL}"`), or YAML fails to parse.
 - **Seeds**: a count (`3` → seeds 0, 1, 2).
+- **Task selection** (optional): `split: dev|test` runs only that split of the manifest, and
+  `task_ids: [...]` only those tasks (after `split`). Selection is not in the config hash; it
+  picks which items run, not how they behave. Prompt work uses `split: dev`.
+- **Endpoints and secrets**: `bench` loads `NAME=value` lines from the repository's `.env`
+  (gitignored; `--env-file` or `BENCH_ENV_FILE` to change; exported variables win), and
+  `.env.example` lists the names. A model's `api_key_env` and `header_env` (header name to
+  variable name) name secrets, never hold them; `headers` holds non-secret header values.
+  `${VAR}` also works in mapping keys, so header names can stay out of committed YAML too.
 - **Arms** name an `executor` model, which must be a key in `models`. Advisor arms consult
   the model under the key `advisor`. Arm names must be unique.
 - **Sweeps**: a list in `advisor.level` or `advisor.max_consults` expands into
@@ -430,7 +441,7 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   infrastructure error, default 1), `grade_minutes` (default 30). Not part of the config hash.
   `bench run --parallel N` overrides `parallel`.
 - **Config hash**: 16 hex chars of SHA-256 over the arm (minus its name), the limits, and the
-  executor and advisor model settings (minus `base_url`). Renaming an arm or moving a server
+  executor and advisor model settings (minus `base_url`, `headers`, and `header_env`). Renaming an arm or moving a server
   keeps results; changing behaviour invalidates them.
 
 The same experiment can be built in Python for cases YAML does not cover:
@@ -615,13 +626,16 @@ llm_second_opinion/
 
 - [ ] Container runtime: Colima is the default because it exposes the Docker API the Python
       SDK expects. Revisit Apple's `container` tool if Docker API support is not needed.
-- [ ] Memory split on 48 GB: how much for Qwen3.8 weights and KV cache versus the VM. Measure in week 3.
+- [ ] The executor is now served off the Mac (an OpenAI-compatible endpoint in `.env`), not by
+      MLX on it. Does the executor's traffic count as exposure, or is that endpoint treated as
+      trusted and only advisor traffic measured? This changes the paper's framing of "local".
+      (The MLX memory split question is moot while the executor is remote.)
 - [ ] Where the brief builder's role map lives across a session, so advice maps back
       correctly after context compaction.
 - [ ] Whether the re-identification attacker runs at scoring time only, or also as a live
       check that blocks a brief before sending.
 - [ ] CLI name: keep `bench`, or rename (e.g. `lso`)?
-- [ ] Safe `parallel` for the local model: measure MLX throughput at 1, 2, 4 concurrent sessions.
+- [ ] Safe `parallel` for the executor endpoint: measure throughput at 1, 2, 4 concurrent sessions.
 - [ ] Search budget in rollouts, from the pilot's run time and variance.
 - [ ] Does the proposer get A4's successful trajectories on the same task, or only the
       candidate's own runs? Showing A4 helps reflection but moves the search toward
@@ -661,3 +675,5 @@ llm_second_opinion/
 | 2026-09-29 | `agents:` entries implemented; the entry's contents (not its name) are in the config hash, so existing hashes changed. Builds use `--provenance=false`, so unchanged rebuilds keep their image IDs. |
 | 2026-09-29 | MLflow is mandatory for every experiment run (default local server, health check before starting; `--no-mlflow` only for tests and CI) and a core dependency. |
 | 2026-09-29 | Item traces are built by the harness from the agent's logs after each run (pi: JSON events plus a timeline extension), not only by the plugin's OTel exporter; arm runs get summary metrics and the git commit. |
+| 2026-10-02 | Executor (Qwen3.8 27B) served from an OpenAI-compatible endpoint configured in a gitignored `.env`, which `bench` loads; endpoints gain `headers` and `header_env` (secret headers by variable name), excluded from the config hash with `base_url`; `${VAR}` interpolates mapping keys. pi options gain `thinking_level_map` and `compat`. |
+| 2026-10-02 | Experiments select tasks with `split` and `task_ids`, outside the config hash. `experiments/baselines.yaml`: A0 and A4 on `dev`, 3 seeds. |

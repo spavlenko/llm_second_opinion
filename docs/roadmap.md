@@ -43,8 +43,12 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] `runner`: work-item expansion, parallel workers (`--parallel`), timeouts, retries
 - [x] `grading`: apply patch and test patch in a fresh container, run `eval_command`
 - [x] `grading`: F2P and P2P test lists (with the importer)
-- [ ] Measure the memory split between the local model and the VM
-- [ ] Measure MLX throughput at `parallel` 1, 2, 4
+- [x] Endpoint headers (`headers`, secret `header_env`), `.env` loading, `.env.example`;
+      pi `thinking_level_map` and `compat` options
+- [x] Task selection in experiments (`split`, `task_ids`); `experiments/baselines.yaml` (A0, A4 on `dev`)
+- [ ] ~~Measure the memory split between the local model and the VM~~ (moot while the executor is remote)
+- [ ] Measure executor endpoint throughput at `parallel` 1, 2, 4
+- [ ] First real A0 item on one `dev` task; check the trace in MLflow
 
 ## Week 4 — tracking and operations
 
