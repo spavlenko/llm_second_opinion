@@ -2,10 +2,12 @@
 
 The agent layer is the task image, unchanged, with `/opt/lso-agent` mounted read-only from a
 Docker volume filled from the pi bundle image (`agents/pi/`): Node, a pinned pi, and the
-harness's pi extensions. A volume rather than an image per task: the bundle is ~560 MB, and
-copied into each task image it is stored once per task. pi runs in JSON mode
-against one OpenAI-compatible provider, `lso`, configured from the run's executor endpoint.
-The turn limit is enforced by `agents/pi/limits.ts`; the wall-clock limit by `timeout`.
+harness's pi extensions, including the advisor plugin bundled from `plugin/`. A volume rather
+than an image per task: the bundle is ~560 MB, and copied into each task image it is stored
+once per task. pi runs in JSON mode against one OpenAI-compatible provider, `lso`, configured
+from the run's executor endpoint. The turn limit is enforced by `agents/pi/limits.ts`; the
+wall-clock limit by `timeout`. Advisor arms also load the plugin, which reads
+/run/advisor.json and appends to the run's events.jsonl.
 """
 
 from __future__ import annotations
@@ -31,10 +33,17 @@ from llm_second_opinion.contracts import (
 )
 from llm_second_opinion.runtime import Container
 from llm_second_opinion.tasks import Task
-from llm_second_opinion.tracing import Span, clip, ms_to_ns
+from llm_second_opinion.tracing import Span, advisor_spans, clip, ms_to_ns, nest
 
 DEFAULT_VERSION = "0.99.1"
-BUNDLE_DIR = Path(__file__).resolve().parents[4] / "agents/pi"
+REPO = Path(__file__).resolve().parents[4]
+BUNDLE_DIR = REPO / "agents/pi"
+# The advisor plugin's sources, bundled into one extension file when the bundle image is built.
+PLUGIN_CONTEXTS = {
+    "advisor-core": REPO / "plugin/advisor-core/src",
+    "pi-binding": REPO / "plugin/pi-binding/src",
+    "plugin-scripts": REPO / "plugin/scripts",
+}
 BUNDLE_IMAGE = "llm-second-opinion/pi-bundle"
 BUNDLE_VOLUME = "llm-second-opinion-pi"  # + the bundle image's short ID
 MOUNT = "/opt/lso-agent"
@@ -42,6 +51,8 @@ MOUNT = "/opt/lso-agent"
 RUN_DIR = "/run/lso"
 PI = f"{MOUNT}/bin/pi"
 EXTENSIONS = (f"{MOUNT}/extensions/limits.ts", f"{MOUNT}/extensions/timeline.ts")
+ADVISOR_EXTENSION = f"{MOUNT}/extensions/lso-advisor.js"
+ADVISOR_CONFIG = "/run/advisor.json"
 PROVIDER = "lso"
 
 # Until prompt slots exist (docs/spec.md, research design), the executor's instructions.
@@ -73,7 +84,7 @@ class PiOptions(Strict):
 
 class PiAdapter:
     name = "pi"
-    capabilities: frozenset[str] = frozenset()  # "advisor" once pi-binding is in the layer
+    capabilities: frozenset[str] = frozenset({"advisor"})
     uses_models = True
     artifacts = (
         f"{RUN_DIR}/agent/models.json",
@@ -81,6 +92,7 @@ class PiAdapter:
         f"{RUN_DIR}/pi.jsonl",
         f"{RUN_DIR}/pi.stderr",
         f"{RUN_DIR}/timeline.jsonl",
+        f"{RUN_DIR}/advice.jsonl",  # the plugin's full record of each consult (advisor arms)
     )
 
     def __init__(self, spec: AgentSpec):
@@ -101,15 +113,19 @@ class PiAdapter:
             if self._volume_name is None:
                 tag = f"{BUNDLE_IMAGE}:{self.version}"
                 # Without provenance, an unchanged bundle keeps its image ID (and volume).
-                _docker("build", "-q", "--provenance=false", "--build-arg",
-                        f"PI_VERSION={self.version}", "-t", tag, str(BUNDLE_DIR))  # fmt: skip
-                name = f"{BUNDLE_VOLUME}-{_image_id(tag)[7:19]}"
+                contexts = [
+                    a for k, v in PLUGIN_CONTEXTS.items() for a in ("--build-context", f"{k}={v}")
+                ]
+                # The ID this build printed, not the tag's: another checkout may retag meanwhile.
+                image = _docker("build", "-q", "--provenance=false", "--build-arg",
+                        f"PI_VERSION={self.version}", *contexts, "-t", tag, str(BUNDLE_DIR)).strip()  # fmt: skip
+                name = f"{BUNDLE_VOLUME}-{image.removeprefix('sha256:')[:12]}"
                 # The marker is written last, so an interrupted fill is redone.
                 fill = (
                     f"test -f /v/.complete || {{ rm -rf /v/* && cp -a {MOUNT}/. /v/ "
                     "&& touch /v/.complete; }"
                 )
-                _docker("run", "--rm", "-v", f"{name}:/v", tag, "sh", "-c", fill)
+                _docker("run", "--rm", "-v", f"{name}:/v", image, "sh", "-c", fill)
                 self._volume_name = name
             return self._volume_name
 
@@ -133,8 +149,17 @@ class PiAdapter:
             "LSO_EXIT_FILE": exit_file,
             "LSO_TIMELINE": f"{RUN_DIR}/timeline.jsonl",
         }
+        advisor = config.advisor is not None and config.advisor_model is not None
+        if advisor:
+            pi_env |= {
+                "LSO_ADVISOR_CONFIG": ADVISOR_CONFIG,
+                "LSO_ADVICE_LOG": f"{RUN_DIR}/advice.jsonl",
+                # advisor.json keeps the endpoint as configured; the plugin reaches a host-local
+                # one through the host gateway, as pi does the executor.
+                "LSO_ADVISOR_BASE_URL": container_url(config.advisor_model.base_url),
+            }
         done = box.exec(
-            self.command(config.executor),
+            self.command(config.executor, advisor=advisor),
             workdir=task.workdir,
             timeout_s=limits.wall_minutes * 60,
             env=pi_env,
@@ -155,12 +180,14 @@ class PiAdapter:
             detail=detail,
         )
 
-    def command(self, executor: ModelEndpoint) -> str:
-        """pi in JSON mode with only the harness's extensions; the prompt is read from a file."""
+    def command(self, executor: ModelEndpoint, advisor: bool = False) -> str:
+        """pi in JSON mode with only the harness's extensions (and the advisor plugin on advisor
+        arms); the prompt is read from a file."""
         thinking = self.options.thinking or executor.reasoning_effort
+        extensions = [*EXTENSIONS, ADVISOR_EXTENSION] if advisor else EXTENSIONS
         args = [
             PI, "--mode", "json", "--provider", PROVIDER, "--model", executor.model,
-            "--no-extensions", *[a for e in EXTENSIONS for a in ("-e", e)],
+            "--no-extensions", *[a for e in extensions for a in ("-e", e)],
             "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
             "--offline", "--session-dir", f"{RUN_DIR}/sessions",
         ]  # fmt: skip
@@ -206,9 +233,13 @@ class PiAdapter:
         events_path, timeline_path = item_dir / "pi.jsonl", item_dir / "timeline.jsonl"
         if not (events_path.exists() and timeline_path.exists()):
             return []
-        return pi_spans(
+        turns = pi_spans(
             parse_jsonl(events_path.read_text()), parse_jsonl(timeline_path.read_text())
         )
+        # The advisor plugin's consults, from the run's events (the contract) and the plugin's
+        # own advice log (system prompt and advice text).
+        advice = {r["request_id"]: r for r in _records(item_dir / "advice.jsonl")}
+        return nest(turns, advisor_spans(_records(item_dir / "events.jsonl"), advice))
 
 
 def pi_spans(events: list[dict], timeline: list[dict]) -> list[Span]:
@@ -294,6 +325,10 @@ def _model_span(message: dict, inputs: list[dict], start: int, end: int) -> Span
     )
 
 
+def _records(path: Path) -> list[dict]:
+    return parse_jsonl(path.read_text()) if path.exists() else []
+
+
 def _at(marks: dict[str, list[int]], event: str, i: int, default: int = 0) -> int:
     times = marks.get(event, [])
     return times[i] if i < len(times) else default
@@ -364,7 +399,3 @@ def _docker(*args: str, input: str | None = None) -> str:
     if done.returncode != 0:
         raise RuntimeError(f"docker {args[0]} failed: {done.stderr.strip()[-2000:]}")
     return done.stdout
-
-
-def _image_id(ref: str) -> str:
-    return _docker("image", "inspect", "--format", "{{.Id}}", ref).strip()
