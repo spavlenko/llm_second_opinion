@@ -10,3 +10,6 @@ Answer the question that was asked:
 Name files and functions when you can. Include a short code snippet only when a change is
 hard to describe in words. If the brief lacks something you need, say what to look at to
 find it. Be brief: the developer has a small context window.
+
+Answer length limit, in tokens, with your reasoning counted toward it: {{max_answer_tokens}}.
+Finish within it; an answer cut off at the limit loses its last steps.
