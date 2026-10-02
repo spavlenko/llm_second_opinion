@@ -85,7 +85,11 @@ code) are the first variants. The executor's tool is named `consult`, with argum
 once, in `harness/src/llm_second_opinion/prompts.py`). The harness checks them when the
 experiment loads: any `{{...}}` not in the slot's list fails with the file and the name, as
 does an empty slot or an `advice_injection` without `{{advice}}`. The plugin renders them;
-`{{name}}` is written exactly so, with no spaces and no escaping.
+`{{name}}` is written exactly so, with no spaces and no escaping. A section with nothing in it
+is dropped when rendering, in every slot: a heading line (text ending in `:`, no placeholder)
+followed by a line holding only a placeholder that renders empty, or a single line of such a
+heading and the empty placeholder (`Hypothesis: {{hypothesis}}`), goes with one blank line next
+to it. So a turn-0 `plan` brief has no empty "What they have tried:".
 
 | Slot | Placeholders | Rendered as |
 | --- | --- | --- |
@@ -164,7 +168,12 @@ Harness triggers are checked at the end of each turn, at most one per turn, in t
 trigger may not fire in the turn of a consult nor in the `cooldown_turns` turns after it.
 `max_consults` covers every consult, the executor's and the harness's, and counts attempts
 (an advisor error uses one up); a consult refused for budget emits `budget_exhausted` the
-first time only. `max_answer_tokens` is sent as the advisor request's `max_tokens`.
+first time only. `max_answer_tokens` is sent as the advisor request's `max_tokens`, and the
+default `advisor_system` states it ("Answer length limit, in tokens, with your reasoning
+counted toward it: 400.", or "unlimited"), since reasoning models spend part of it before the
+answer. An answer the provider cut there (`finish_reason` "length") is still injected, with
+"[advice truncated: the advisor hit its answer length limit]" appended on its own line;
+`advisor_response.advice_text` keeps it as received.
 
 **Where advice goes.** For the consult tool, the rendered `advice_injection` is the tool
 result. For harness triggers it is a custom message (rendered by pi as a user message): the
@@ -624,7 +633,7 @@ Each call appends one record to the item's `usage.jsonl`:
 | `trigger_fired` | intervention, reason, turn |
 | `brief_built` | level, tokens, identifiers redacted, role-map size, role map (placeholder to identifier, for the placeholders in this brief) |
 | `advisor_request` | request id, input tokens (an estimate: 4 characters a token), brief text, prompt hash |
-| `advisor_response` | request id, output tokens, cached tokens, prompt and reasoning tokens (the provider's counts; null when not reported), latency (ms), the advice text exactly as received |
+| `advisor_response` | request id, output tokens, cached tokens, prompt and reasoning tokens (the provider's counts; null when not reported), finish reason (`stop`, `length`, ...; null when not reported), latency (ms), the advice text exactly as received |
 | `advisor_error` | request id, message, HTTP status (null when no response came back), latency (ms) |
 | `advice_applied` | request id, turn it was injected at, the exact text the executor was given |
 | `budget_exhausted` | consults used, limit |
@@ -956,3 +965,5 @@ llm_second_opinion/
 | 2026-10-02 | "Local" means hardware the experimenter controls, not only the Mac running the harness. The executor runs on the user's second machine and is trusted: exposure counts only what reaches the cloud advisor (`advisor_request`), and the executor's traffic is metered for cost and time only. |
 | 2026-10-03 | Plugin on the data-retention contracts. `policy_rendered` is emitted by the session once, before anything else (the binding calls it at `before_agent_start`; every session entry point also calls it, so it comes first in any binding). `brief_built.role_map` holds only the placeholders that appear in that brief; `advice.jsonl` gets the whole map as of each consult. `advisor_request.input_tokens` stays the estimate; the provider's `prompt_tokens` and `reasoning_tokens` go on `advisor_response`. |
 | 2026-10-03 | Advisor calls send `X-LSO-Request-Id` and, when the endpoint sets them, `temperature`, `top_p` and `seed` (from `sampling_seed`); the request body is otherwise unchanged. `advisor_error.status` is null for a network error, timeout or abort, and the HTTP status otherwise, including a 2xx with an unreadable body. |
+| 2026-10-03 | `advisor_response.finish_reason` (the provider's `choices[0].finish_reason`) joins the event contract: a real Kimi K3 run with `max_answer_tokens: 400` ended mid-sentence at exactly 400 completion tokens, 43 of them reasoning, with nothing in the events to show it. Advice cut at the limit is still injected, with a visible truncation marker; the default `advisor_system` now states the limit and that reasoning counts toward it. |
+| 2026-10-03 | Template rendering drops empty sections (a heading line plus a placeholder that renders empty) in every slot, so briefs carry no empty headings such as "What they have tried:" on a turn-0 `plan`. |
