@@ -46,7 +46,7 @@ local executor model asks a cloud advisor for help (see
 | Configuration | YAML validated by Pydantic, Python API underneath | YAML for everyday use and sweeps; code for anything unusual |
 | Modes | Resumable batch plus single-task debug, one code path | A bug seen in debug is the same bug that happens in batch |
 | Platform | One Apple Silicon Mac, arm64 Linux containers | Matches the available hardware; no x86 emulation |
-| Local model | Qwen3.8 (27B) behind an OpenAI-compatible endpoint, set in `.env` | Currently served off the Mac (not MLX on it); any compatible server works |
+| Local model | Qwen3.8 (27B) behind an OpenAI-compatible endpoint, set in `.env` | Served from the user's own second machine; trusted, so its traffic is not exposure. Any compatible server works |
 | Advisor model | Kimi K3 via an OpenAI-compatible API | Provider is configuration, not code |
 | Tasks | arm64-validated C++ subset, frozen manifest | Every arm sees an identical, verified task set |
 | Research variable | The help policy: prompt sets and help-seeking approach, both in config | Prompts and triggers can be iterated without code changes and are hashed with the results |
@@ -870,10 +870,9 @@ llm_second_opinion/
 
 - [ ] Container runtime: Colima is the default because it exposes the Docker API the Python
       SDK expects. Revisit Apple's `container` tool if Docker API support is not needed.
-- [ ] The executor is now served off the Mac (an OpenAI-compatible endpoint in `.env`), not by
-      MLX on it. Does the executor's traffic count as exposure, or is that endpoint treated as
-      trusted and only advisor traffic measured? This changes the paper's framing of "local".
-      (The MLX memory split question is moot while the executor is remote.)
+- [x] The executor is served from the user's own second machine (an OpenAI-compatible endpoint
+      in `.env`), not by MLX on the Mac. It is trusted, local infrastructure: its traffic is
+      not exposure, and only what reaches the cloud advisor is measured. (Resolved 2026-10-02.)
 - [x] Where the brief builder's role map lives across a session, so advice maps back
       correctly after context compaction. In the plugin's memory for the whole pi process;
       advice is mapped back before injection, so compaction never sees placeholders. (A pi
@@ -940,3 +939,4 @@ llm_second_opinion/
 | 2026-10-02 | Advice injection in pi: consult tool → tool result; `plan` → `before_agent_start` custom message (before the first model call, from the issue alone, not a review of an executor plan); other harness triggers → a `turn_end` custom message entry with `continue: true`. `executor_guidance` via `before_agent_start`'s `appendSystemPrompt` (no CLI flag). An advisor arm's `advisor.json` must carry its prompt set; the plugin has no built-in prompts. |
 | 2026-10-02 | The plugin is bundled with esbuild from its TypeScript sources into one extension file in a first stage of the pi bundle image (named build contexts), not built on the host. The plugin keeps its own `advice.jsonl` (system and user messages, advice received and injected) next to the contract events, since `advisor_response` carries no text. Advisor spans in item traces come from `events.jsonl` and `advice.jsonl`. |
 | 2026-10-02 | `advisor_response.advice_text` (as received, placeholders intact) and `advice_applied.injected_text` (what the executor saw) join the event contract, so advice uptake and prompt search read `events.jsonl` alone; the plugin's `advice.jsonl` stays as a debugging record. |
+| 2026-10-02 | "Local" means hardware the experimenter controls, not only the Mac running the harness. The executor runs on the user's second machine and is trusted: exposure counts only what reaches the cloud advisor (`advisor_request`), and the executor's traffic is metered for cost and time only. |

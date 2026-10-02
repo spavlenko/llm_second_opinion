@@ -20,8 +20,10 @@ hold on tasks not used to tune them.
 
 ### Setup
 
-- **Executor:** Qwen3.8, run locally with MLX on an Apple Silicon Mac. It does all the work:
-  reading code, editing, building, running tests.
+- **Executor:** Qwen3.8 (27B), run locally on the experimenter's own hardware behind an
+  OpenAI-compatible endpoint (any compatible server works). It does all the work: reading
+  code, editing, building, running tests. Its traffic stays on trusted machines, so exposure
+  counts only what reaches the advisor.
 - **Advisor:** Kimi K3 through an OpenAI-compatible API. It never touches the repository; it
   only sees the briefs the executor sends it.
 - **Agent:** [pi](https://github.com/earendil-works/pi), a coding agent, runs non-interactively
