@@ -16,15 +16,20 @@ from llm_second_opinion.report import (
     current_rows,
     format_pairs,
     format_pareto,
+    format_spend,
     format_table,
     paired_comparisons,
     pareto,
     provenance,
+    recorded_hashes,
+    report_record,
+    spend_summary,
     summarize,
     write_csv,
     write_pairs_csv,
+    write_report_json,
 )
-from llm_second_opinion.runner import Runner
+from llm_second_opinion.runner import Runner, task_image
 from llm_second_opinion.tasks import Manifest
 from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
 
@@ -144,7 +149,9 @@ def run(
     )
     for a in arms:
         advisor = f"advisor {a.advisor.level}" if a.advisor else "no advisor"
-        click.echo(f"  {a.name:<12} {a.agent}/{a.executor:<10} {advisor:<12} {exp.config_hash(a)}")
+        click.echo(
+            f"  {a.name:<12} {a.agent}/{a.executor:<10} {advisor:<12} {runner.hashes[a.name]}"
+        )
     if dry_run:
         return
     try:
@@ -199,31 +206,76 @@ def report(
     baseline: str | None,
     ceiling: str | None,
 ) -> None:
-    """Summarize finished work items per arm from the ledger, with paired comparisons."""
+    """Summarize finished work items per arm from the ledger, with paired comparisons and
+    the total spend. Also writes RUNS_DIR/<experiment>/reports/<time>.json (and report.json)."""
     exp = _load(experiment)
     ledger_path = runs_dir / exp.name / "ledger.sqlite"
     if not ledger_path.exists():
         raise click.ClickException(f"no ledger at {ledger_path}; run the experiment first")
     ledger = Ledger(ledger_path)
     rows = ledger.rows(exp.name)
-    tasks = len(exp.select(Manifest.from_yaml(exp.tasks)).tasks)
+    attempts = ledger.attempts(exp.name)
+    sessions = ledger.sessions(exp.name)
+    selected = exp.select(Manifest.from_yaml(exp.tasks)).tasks
+    images = {t.id: task_image(t) for t in selected}
+    hashes = recorded_hashes(exp, ledger.fingerprints(exp.name))
     try:
-        pairs = paired_comparisons(exp, rows, baseline, ceiling)
+        pairs = paired_comparisons(exp, rows, baseline, ceiling, hashes=hashes, images=images)
     except ConfigError as e:
         raise click.ClickException(str(e)) from e
-    click.echo(provenance(exp, rows, ledger.sessions(exp.name)))
+    summaries = summarize(exp, rows, len(selected), hashes, images, attempts)
+    front = pareto(exp, rows, hashes, images)
+    spent = spend_summary(exp, rows, attempts, ledger.preflight(exp.name), hashes, images)
+    click.echo(provenance(exp, rows, sessions))
     click.echo()
-    click.echo(format_table(summarize(exp, rows, tasks)))
+    click.echo(format_table(summaries))
     click.echo()
     click.echo(format_pairs(pairs))
     click.echo()
-    click.echo(format_pareto(pareto(exp, rows)))
+    click.echo(format_pareto(front))
+    click.echo()
+    click.echo(format_spend(spent))
+    record = report_record(exp, summaries, pairs, front, spent, rows, sessions)
+    click.echo(f"wrote {write_report_json(record, runs_dir / exp.name)}")
     if csv_path:
-        write_csv(current_rows(exp, rows), csv_path)
+        write_csv(current_rows(exp, rows, hashes, images), csv_path)
         click.echo(f"wrote {csv_path}")
     if pairs_csv:
         write_pairs_csv(pairs, pairs_csv)
         click.echo(f"wrote {pairs_csv}")
+
+
+@main.command()
+@EXPERIMENT
+@RUNS_DIR
+@click.option("--arm", help="Regrade only this arm.")
+@click.option("--task", help="Regrade only this task id.")
+@click.option("--parallel", type=click.IntRange(min=1), help="Override execution.parallel.")
+def regrade(
+    experiment: str, runs_dir: Path, arm: str | None, task: str | None, parallel: int | None
+) -> None:
+    """Grade the stored patches of done items again with the current grader.
+
+    No agent runs. Every config hash in the ledger is covered; the previous grade files are
+    kept next to the new ones (grade.v<version>.json), and grade.json records the grader
+    version. MLflow runs keep the grade they were logged with.
+    """
+    exp = _load(experiment)
+    if not (runs_dir / exp.name / "ledger.sqlite").exists():
+        raise click.ClickException(f"no ledger in {runs_dir / exp.name}; run the experiment first")
+    try:
+        runner = Runner(exp, runs_dir, parallel=parallel, echo=click.echo)
+        outcomes = runner.regrade(arm, task)
+    except (ConfigError, KeyError) as e:
+        raise click.ClickException(str(e)) from e
+    counts = Counter(o.status for o in outcomes)
+    resolved = sum(bool(o.resolved) for o in outcomes if o.status == "done")
+    click.echo(
+        f"regraded {counts['done']}, skipped {counts['skipped']}, failed {counts['failed']}; "
+        f"resolved {resolved}/{counts['done']}"
+    )
+    if counts["failed"]:
+        raise click.ClickException(f"{counts['failed']} item(s) could not be regraded")
 
 
 @main.command()

@@ -2,6 +2,7 @@ import pytest
 
 pytest.importorskip("mlflow")
 
+from llm_second_opinion import tracking
 from llm_second_opinion.ledger import ItemKey
 from llm_second_opinion.tracing import Span
 from llm_second_opinion.tracking import Tracker
@@ -40,6 +41,17 @@ def test_items_are_child_runs_of_one_run_per_arm(tmp_path, monkeypatch):
     assert [a.path for a in client.list_artifacts(ids[0])] == ["patch.diff"]
     runs = client.search_runs([tracker.experiment_id])
     assert len(runs) == 4  # one arm run, three items
+    # Every item run names the checkout; the arm run lists every commit that ran in it.
+    commit = client.get_run(ids[0]).data.tags["mlflow.source.git.commit"]
+    assert arm_run.data.tags["lso.git_commits"] == commit
+
+    monkeypatch.setattr(tracking, "_git_tags", lambda: {"mlflow.source.git.commit": "newer"})
+    later = Tracker(uri, "exp")
+    later.log_item(ItemKey("exp", "A0", "t", 3, "h1"), {}, {}, {}, artifacts)
+    later.close()
+    tags = client.get_run(arm_run.info.run_id).data.tags
+    assert tags["mlflow.source.git.commit"] == "newer"
+    assert tags["lso.git_commits"] == f"{commit},newer"
 
 
 def test_trace_is_linked_to_the_item_run_with_recorded_times(tmp_path, monkeypatch):

@@ -121,6 +121,7 @@ class Experiment(Strict):
     )
     arms: list[Arm] = Field(min_length=1)
     _prompt_sets: dict[str, PromptSet] = PrivateAttr(default_factory=dict)
+    _manifest_version: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _check_arms(self) -> Experiment:
@@ -203,41 +204,57 @@ class Experiment(Strict):
                 raise ConfigError(str(e)) from e
         return self._prompt_sets[name]
 
-    def config_hash(self, arm: Arm) -> str:
+    @property
+    def manifest_version(self) -> str | None:
+        """The task manifest's version, read once; None while the file does not exist (only
+        in config checks: running or reporting reads the manifest first)."""
+        if self._manifest_version is None and self.tasks.is_file():
+            self._manifest_version = Manifest.from_yaml(self.tasks).version
+        return self._manifest_version
+
+    def config_hash(self, arm: Arm, fingerprint: Mapping[str, str] | None = None) -> str:
         """Hash of everything that changes an arm's behaviour.
 
         Excludes the arm's name, the name of its `agents` entry, and how a model is reached
         (base URL, headers), so renaming an arm or an agent entry, moving a server, or
         changing credentials keeps results. An advisor arm's prompt set counts by its text
-        (the set's hash), not its name or files.
+        (the set's hash), not its name or files. Covers the manifest's version, and
+        `fingerprint`: what the adapter runs that the config does not name, such as its
+        fixed task prompt and the agent bundle's image ID (`AgentAdapter.fingerprint`). Unset
+        optional fields of limits and models are left out, so a new optional field keeps
+        existing hashes. The task image is not in it: it is part of the item's ledger key.
         """
         arm_payload = arm.model_dump(mode="json", exclude={"name", "agent"})
         if arm.advisor:
             arm_payload["advisor"]["prompts"] = self.prompt_set(arm.advisor.prompts).hash
+
+        def model(key: str) -> dict:
+            return self.models[key].model_dump(mode="json", exclude=_ROUTING, exclude_none=True)
+
         payload = {
             "arm": arm_payload,
             "agent": self.agent_spec(arm).model_dump(mode="json"),
-            # Unset optional limits are left out, so adding one keeps existing hashes.
             "limits": self.limits.model_dump(mode="json", exclude_none=True),
-            "executor": self.models[arm.executor].model_dump(mode="json", exclude=_ROUTING),
-            "advisor_model": (
-                self.models[ADVISOR_MODEL].model_dump(mode="json", exclude=_ROUTING)
-                if arm.advisor
-                else None
-            ),
+            "executor": model(arm.executor),
+            "advisor_model": model(ADVISOR_MODEL) if arm.advisor else None,
+            "manifest": self.manifest_version,
+            "adapter": dict(fingerprint or {}),
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
-    def run_config(self, arm: Arm, task: str, seed: int) -> RunConfig:
-        """The advisor.json contents for one work item."""
+    def run_config(
+        self, arm: Arm, task: str, seed: int, config_hash: str | None = None
+    ) -> RunConfig:
+        """The advisor.json contents for one work item; `config_hash` is the arm's hash with
+        its adapter's fingerprint (the runner's), else the hash without one."""
         return RunConfig(
             run=RunIdentity(
                 experiment=self.name,
                 arm=arm.name,
                 task=task,
                 seed=seed,
-                config_hash=self.config_hash(arm),
+                config_hash=config_hash or self.config_hash(arm),
             ),
             executor=self.models[arm.executor],
             advisor_model=self.models[ADVISOR_MODEL] if arm.advisor else None,

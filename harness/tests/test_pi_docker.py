@@ -56,7 +56,7 @@ def mock(repo, tmp_path):
         server.shutdown()
 
 
-def run_pi(repo, tmp_path, base_url, model=None, advisor=None, **limits):
+def run_pi(repo, tmp_path, base_url, model=None, advisor=None, fail_ok=False, **limits):
     arm = {"name": "pi", "agent": "pi", "executor": "mock"} | (
         {"advisor": advisor} if advisor else {}
     )
@@ -77,10 +77,12 @@ def run_pi(repo, tmp_path, base_url, model=None, advisor=None, **limits):
     )
     runner = Runner(exp, tmp_path / "runs", echo=lambda _: None)  # with the usage preflight
     [outcome] = runner.run(task="toy-add")
-    item = tmp_path / "runs/pi/pi/toy-add/seed-0"
-    if outcome.status == "failed":
-        raise AssertionError(runner.ledger.rows("pi")[0]["error"])
+    [item] = (tmp_path / "runs/pi/pi/toy-add/seed-0").glob("*/attempt-1")
     outcome.row = runner.ledger.rows("pi")[0]
+    if outcome.status == "failed":
+        if fail_ok:
+            return outcome, None, item
+        raise AssertionError(outcome.row["error"])
     return outcome, json.loads((item / "result.json").read_text()), item
 
 
@@ -115,7 +117,8 @@ def test_pi_is_metered_through_the_proxy_without_secrets(
     repo, tmp_path, toy_image, mock, monkeypatch
 ):
     monkeypatch.setenv("LSO_TEST_KEY", "sk-docker-test-not-real")
-    model = {"api_key_env": "LSO_TEST_KEY", "header_env": {"X-Secret": "LSO_TEST_KEY"}}
+    model = {"api_key_env": "LSO_TEST_KEY", "header_env": {"X-Secret": "LSO_TEST_KEY"},
+             "temperature": 0.3}  # fmt: skip
     outcome, result, item = run_pi(repo, tmp_path, mock(), model)
     assert outcome.resolved
     records = read_usage(item / "usage.jsonl")
@@ -130,7 +133,12 @@ def test_pi_is_metered_through_the_proxy_without_secrets(
     assert row["cost_usd"] == pytest.approx((1900 * 1.0 + 50 * 2.0) / 1e6)
     models_json = (item / "models.json").read_text()
     assert "/items/" in json.loads(models_json)["providers"]["lso"]["baseUrl"]
-    for name in ("advisor.json", "models.json"):
+    first = json.loads((item / "executor-request.json").read_text())
+    assert first["messages"][0]["role"] == "system" and first["tools"]
+    params = [json.loads(line) for line in (item / "requests.jsonl").read_text().splitlines()]
+    assert [p["role"] for p in params] == ["executor", "executor"]
+    assert "bash" in params[0]["tools"] and params[0]["temperature"] == 0.3
+    for name in ("advisor.json", "models.json", "requests.jsonl", "executor-request.json"):
         text = (item / name).read_text()
         assert "sk-docker-test-not-real" not in text and "LSO_TEST_KEY" not in text
     assert "127.0.0.1" not in models_json  # the real endpoint stays on the host
@@ -150,10 +158,14 @@ def test_turn_limit_stops_pi(repo, tmp_path, toy_image, mock):
     assert outcome.resolved  # the fix landed in the first turn
 
 
-def test_model_error_is_a_crash(repo, tmp_path, toy_image, mock):
-    outcome, result, _ = run_pi(repo, tmp_path, mock([]))  # every request gets a 404
-    assert result["exit_reason"] == "crash" and result["detail"]
-    assert not outcome.resolved
+def test_a_model_endpoint_failure_is_infrastructure(repo, tmp_path, toy_image, mock):
+    # Every request gets a 404: an outage, so the item fails (retries: 0) and is not counted.
+    outcome, _, item = run_pi(repo, tmp_path, mock([]), fail_ok=True)
+    assert outcome.status == "failed" and "model endpoint failed: 404" in outcome.row["error"]
+    assert json.loads((item / "agent-result.json").read_text())["exit_reason"] == "crash"
+    assert (item / "pi.jsonl").exists() and (item / "timeline.jsonl").exists()
+    [record] = read_usage(item / "usage.jsonl")  # the failed call, with no tokens
+    assert (record.status, record.prompt_tokens) == (404, 0)
 
 
 def test_wall_clock_limit(repo, tmp_path, toy_image, mock):
