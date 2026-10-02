@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -11,6 +12,17 @@ from llm_second_opinion.contracts import AgentResult, RunConfig
 from llm_second_opinion.runtime import Container
 from llm_second_opinion.tasks import Task
 from llm_second_opinion.tracing import Span
+
+
+class AgentInfraError(RuntimeError):
+    """The agent stopped because of infrastructure, not its own failing: e.g. its model
+    endpoint failed after the agent's own retries. The runner retries the item and, when
+    retries run out, records it `failed`, not done. `result` is what the agent left (saved
+    with the attempt for reading)."""
+
+    def __init__(self, message: str, result: AgentResult | None = None):
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass(frozen=True)
@@ -41,19 +53,39 @@ class AgentAdapter(Protocol):
         """The task image plus the agent and its plugin; called for every item, so cache."""
         ...
 
+    def fingerprint(self) -> dict[str, str]:
+        """What the adapter runs that the experiment config does not name (its fixed task
+        prompt, the agent bundle's image ID): part of the arm's config hash."""
+        ...
+
+    def provenance(self) -> dict[str, Any]:
+        """What ran, for each attempt's item.json (e.g. the bundle image ID)."""
+        ...
+
     def run(
         self, box: Container, task: Task, config: RunConfig, limits: Limits, env: dict[str, str]
     ) -> AgentResult:
         """Work on the task inside `box` and return the final diff.
 
         The runner has already written `config` to /run/advisor.json; `env` holds the API keys
-        of an agent that is not metered (and none for one that is).
+        of an agent that is not metered (and none for one that is). Raises AgentInfraError
+        when the run ended because of infrastructure rather than the agent.
         """
         ...
 
     def spans(self, item_dir: Path) -> list[Span]:
         """The agent's part of the item's trace, from the artifacts in `item_dir`."""
         ...
+
+    def metrics(self, item_dir: Path) -> dict[str, Any]:
+        """Trajectory metrics from the agent's own logs in `item_dir` (turns, tool calls,
+        test runs, first edit, ...); see `metrics.py` for those every agent gets."""
+        ...
+
+
+def prompt_hash(text: str) -> str:
+    """16 hex chars of SHA-256, as for prompt sets."""
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 M = TypeVar("M", bound=BaseModel)

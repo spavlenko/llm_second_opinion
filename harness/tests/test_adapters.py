@@ -6,9 +6,17 @@ import shlex
 import pytest
 
 from llm_second_opinion.adapters import ADAPTERS
-from llm_second_opinion.adapters.pi import PiAdapter, container_url, exit_reason, parse_jsonl
+from llm_second_opinion.adapters.pi import (
+    PiAdapter,
+    container_url,
+    endpoint_failure,
+    exit_reason,
+    parse_jsonl,
+    pi_metrics,
+)
 from llm_second_opinion.config import AgentSpec, ConfigError, Experiment
 from llm_second_opinion.contracts import ExitReason, ModelEndpoint
+from llm_second_opinion.metrics import extract
 from llm_second_opinion.runner import Runner
 
 
@@ -133,6 +141,99 @@ def assistant_end(stop: str, error: str | None = None) -> dict:
 )
 def test_exit_reason(timed_out, code, limit, events, reason):
     assert exit_reason(timed_out, code, limit, events, "stderr")[0] == reason
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [assistant_end("error", "503 status code (no body)")],
+        [assistant_end("error", '404: {"message":"recordings exhausted"}')],
+        [assistant_end("error", "Connection error.")],
+        [assistant_end("error", "fetch failed: ECONNREFUSED 192.168.1.5:8080")],
+        [assistant_end("error", "Request timed out.")],
+        [
+            {"type": "auto_retry_start", "attempt": 1, "errorMessage": "529 overloaded"},
+            {"type": "auto_retry_end", "success": False, "attempt": 3, "finalError": "529"},
+            assistant_end("error", "529 overloaded"),
+        ],
+    ],
+)
+def test_an_endpoint_outage_is_infrastructure(events):
+    assert exit_reason(False, 0, {}, events, "")[0] == ExitReason.CRASH
+    assert endpoint_failure(events).startswith("model endpoint failed")
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [],  # pi exited non-zero on its own
+        [assistant_end("error", "400: context length exceeded")],
+        [assistant_end("error", "Unknown: tool schema invalid")],
+        [assistant_end("error", '403: {"type":"token_limit"}')],  # the runner's token_limit
+        [assistant_end("error", "503 down"), assistant_end("stop")],  # recovered
+    ],
+)
+def test_a_genuine_crash_is_not_infrastructure(events):
+    assert endpoint_failure(events) is None
+
+
+def test_sampling_parameters_reach_models_json():
+    endpoint = ENDPOINT.model_copy(update={"temperature": 0.0, "top_p": 0.95, "sampling_seed": 7})
+    [model] = PiAdapter(AgentSpec(adapter="pi")).models_json(endpoint)["providers"]["lso"]["models"]
+    assert model["samplingParams"] == {"temperature": 0.0, "top_p": 0.95, "seed": 7}
+    [plain] = PiAdapter(AgentSpec(adapter="pi")).models_json(ENDPOINT)["providers"]["lso"]["models"]
+    assert "samplingParams" not in plain
+
+
+def test_fingerprint_names_the_prompt_and_the_bundle(monkeypatch):
+    from llm_second_opinion.adapters import pi
+
+    builds = []
+    monkeypatch.setattr(pi, "_docker", lambda *a, **k: builds.append(a) or "sha256:abc\n")
+    adapter = PiAdapter(AgentSpec(adapter="pi"))
+    fingerprint = adapter.fingerprint()
+    assert fingerprint["bundle_image"] == "sha256:abc" and len(fingerprint["prompt"]) == 16
+    assert adapter.provenance()["pi_version"] == "0.99.1"
+    assert len(builds) == 1  # built once per process
+
+
+def test_metrics_from_a_recorded_pi_run(repo):
+    item = repo / "harness/tests/fixtures/pi-item-consult"
+    m = extract(item, PiAdapter(AgentSpec(adapter="pi")).metrics(item))
+    assert (m["turns"], m["tool_calls"]) == (4, 3)
+    assert m["tool_calls_by_name"] == {"bash": 2, "consult": 1}
+    assert (m["test_runs"], m["test_runs_failed"]) == (1, 1)
+    assert (m["first_test_turn"], m["first_edit_turn"], m["first_consult_turn"]) == (0, 2, 1)
+    assert 0 <= m["first_test_s"] <= m["first_consult_s"] <= m["first_edit_s"]
+    assert (m["compactions"], m["auto_retries"]) == (0, 0)
+    assert (m["max_context_tokens"], m["final_context_tokens"]) == (1000, 1000)
+    assert m["consults"] == 1 and m["consults_by_trigger"] == {"consult": 1}
+    assert m["patch_touches_advised_files"] is True
+    assert m["advised_files_touched"] == ["math.sh"]
+
+
+def test_pi_metrics_count_compactions_retries_and_shell_edits():
+    def bash(i, command):
+        return {"type": "tool_execution_start", "toolCallId": i, "toolName": "bash",
+                "args": {"command": command}}  # fmt: skip
+
+    events = [
+        {"type": "turn_start"},
+        bash("a", "grep -n x src/a.cpp"),
+        {"type": "auto_retry_start"},
+        {"type": "auto_retry_end", "success": True},
+        {"type": "turn_end"},
+        {"type": "turn_start"},
+        {"type": "compaction_start", "reason": "threshold"},
+        bash("b", "/opt/lso/run-tests 2>&1 | tail -3"),
+        {"type": "tool_execution_end", "toolCallId": "b", "isError": False,
+         "result": {"content": [{"type": "text", "text": "50% tests passed, 2 tests failed out of 4"}]}},
+        bash("c", "sed -i 's/a/b/' src/a.cpp"),
+        {"type": "turn_end"},
+    ]  # fmt: skip
+    m = pi_metrics(events, [])
+    assert (m["compactions"], m["auto_retries"], m["test_runs_failed"]) == (1, 1, 1)
+    assert (m["first_edit_turn"], m["first_edit_s"]) == (1, None)
 
 
 def test_parse_jsonl_splits_on_lf_only_and_skips_a_cut_record():

@@ -13,15 +13,23 @@ wall-clock limit by `timeout`. Advisor arms also load the plugin, which reads
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from llm_second_opinion.adapters.base import Layer, parse_options, workspace_diff
+from llm_second_opinion.adapters.base import (
+    AgentInfraError,
+    Layer,
+    parse_options,
+    prompt_hash,
+    workspace_diff,
+)
 from llm_second_opinion.config import AgentSpec, Limits
 from llm_second_opinion.contracts import (
     AgentInfo,
@@ -99,6 +107,7 @@ class PiAdapter:
         self.version = spec.version or DEFAULT_VERSION
         self.options = parse_options(PiOptions, spec)
         self._lock = threading.Lock()
+        self._image_id: str | None = None
         self._volume_name: str | None = None
 
     # --- image -----------------------------------------------------------------------
@@ -106,19 +115,38 @@ class PiAdapter:
     def build_layer(self, task_image: str) -> Layer:
         return Layer(task_image, {self._volume(): MOUNT})
 
-    def _volume(self) -> str:
-        """The bundle volume, built and filled once per process (Docker caches the image
-        build; a volume is reused while the bundle image is unchanged)."""
+    def bundle_image(self) -> str:
+        """The bundle image's ID, built once per process (Docker caches the build; without
+        provenance, an unchanged bundle keeps its ID). The ID this build printed, not the
+        tag's: another checkout may retag meanwhile."""
         with self._lock:
-            if self._volume_name is None:
+            if self._image_id is None:
                 tag = f"{BUNDLE_IMAGE}:{self.version}"
-                # Without provenance, an unchanged bundle keeps its image ID (and volume).
                 contexts = [
                     a for k, v in PLUGIN_CONTEXTS.items() for a in ("--build-context", f"{k}={v}")
                 ]
-                # The ID this build printed, not the tag's: another checkout may retag meanwhile.
-                image = _docker("build", "-q", "--provenance=false", "--build-arg",
+                self._image_id = _docker("build", "-q", "--provenance=false", "--build-arg",
                         f"PI_VERSION={self.version}", *contexts, "-t", tag, str(BUNDLE_DIR)).strip()  # fmt: skip
+            return self._image_id
+
+    def fingerprint(self) -> dict[str, str]:
+        """In the config hash: the fixed task prompt, and the bundle image (pi, the harness's
+        extensions, and the advisor plugin as built)."""
+        return {"prompt": prompt_hash(PROMPT), "bundle_image": self.bundle_image()}
+
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "bundle_image": self.bundle_image(),
+            "pi_version": self.version,
+            "task_prompt_hash": prompt_hash(PROMPT),
+        }
+
+    def _volume(self) -> str:
+        """The bundle volume, filled once per process; reused while the bundle image is
+        unchanged."""
+        image = self.bundle_image()
+        with self._lock:
+            if self._volume_name is None:
                 name = f"{BUNDLE_VOLUME}-{image.removeprefix('sha256:')[:12]}"
                 # The marker is written last, so an interrupted fill is redone.
                 fill = (
@@ -171,7 +199,7 @@ class PiAdapter:
         # At the limit, pi has already started (and aborted) the next turn; count the
         # completed ones, as the extension did.
         turns = limit.get("turns") or sum(e.get("type") == "turn_end" for e in events)
-        return AgentResult(
+        result = AgentResult(
             diff=workspace_diff(box, task.workdir),
             exit_reason=reason,
             agent=AgentInfo(name=self.name, version=self.version),
@@ -179,6 +207,10 @@ class PiAdapter:
             duration_s=time.monotonic() - start,
             detail=detail,
         )
+        outage = endpoint_failure(events) if reason == ExitReason.CRASH else None
+        if outage:
+            raise AgentInfraError(outage, result)
+        return result
 
     def command(self, executor: ModelEndpoint, advisor: bool = False) -> str:
         """pi in JSON mode with only the harness's extensions (and the advisor plugin on advisor
@@ -217,6 +249,15 @@ class PiAdapter:
             model["maxTokens"] = opts.max_output_tokens
         if opts.compat:
             model["compat"] = opts.compat
+        # pi merges samplingParams into every request body as is (last, so they win).
+        sampling = {
+            "temperature": executor.temperature,
+            "top_p": executor.top_p,
+            "seed": executor.sampling_seed,
+        }
+        sampling = {k: v for k, v in sampling.items() if v is not None}
+        if sampling:
+            model["samplingParams"] = sampling
         provider: dict = {
             "baseUrl": container_url(executor.base_url),
             "api": "openai-completions",
@@ -240,6 +281,88 @@ class PiAdapter:
         # own advice log (system prompt and advice text).
         advice = {r["request_id"]: r for r in _records(item_dir / "advice.jsonl")}
         return nest(turns, advisor_spans(_records(item_dir / "events.jsonl"), advice))
+
+    def metrics(self, item_dir: Path) -> dict[str, Any]:
+        events_path = item_dir / "pi.jsonl"
+        if not events_path.exists():
+            return {}
+        return pi_metrics(
+            parse_jsonl(events_path.read_text()), _records(item_dir / "timeline.jsonl")
+        )
+
+
+TEST_COMMAND = "/opt/lso/run-tests"
+# A failing test run when its exit status is hidden (piped through `tail`), as the plugin's
+# on_test_failure trigger reads it.
+_TESTS_FAILED = re.compile(
+    r"\b[1-9]\d* tests failed out of|The following tests FAILED|run-tests: build failed"
+)
+_SHELL_EDIT = re.compile(
+    r"\bsed\b[^|;&]*\s-[a-zA-Z]*i|\bperl\b[^|;&]*\s-[a-zA-Z]*i|\bgit\s+apply\b|"
+    r"(^|[\s;&|(])patch\s"
+)
+EDIT_TOOLS = {"edit", "write"}
+
+
+def pi_metrics(events: list[dict], timeline: list[dict]) -> dict[str, Any]:
+    """Trajectory metrics from pi's JSON events, with times from the timeline extension
+    (seconds since the first turn started; None without a timeline). Turns count from 0."""
+    tool_start = {m["id"]: m["t"] for m in timeline if m.get("event") == "tool_start"}
+    t0 = timeline[0]["t"] if timeline else None
+
+    def seconds(call_id: str) -> float | None:
+        t = tool_start.get(call_id)
+        return None if t is None or t0 is None else round((t - t0) / 1000, 3)
+
+    tools: Counter[str] = Counter()
+    calls: dict[str, dict] = {}  # tool call id -> {name, command, turn}
+    first: dict[str, dict] = {}  # edit, test -> {turn, s}
+    test_runs = test_failures = compactions = retries = retry_failures = 0
+    turn = -1
+    for e in events:
+        kind = e.get("type")
+        if kind == "turn_start":
+            turn += 1
+        elif kind == "tool_execution_start":
+            name = e.get("toolName") or "?"
+            tools[name] += 1
+            args = e.get("args") if isinstance(e.get("args"), dict) else {}
+            command = str(args.get("command") or "") if name == "bash" else ""
+            calls[e.get("toolCallId")] = {"name": name, "command": command}
+            mark = {"turn": max(turn, 0), "s": seconds(e.get("toolCallId"))}
+            if name in EDIT_TOOLS or _SHELL_EDIT.search(command):
+                first.setdefault("edit", mark)
+            if TEST_COMMAND in command:
+                test_runs += 1
+                first.setdefault("test", mark)
+        elif kind == "tool_execution_end":
+            call = calls.get(e.get("toolCallId"), {})
+            if TEST_COMMAND in call.get("command", ""):
+                text = _text((e.get("result") or {}).get("content"))
+                test_failures += bool(e.get("isError") or _TESTS_FAILED.search(text))
+        elif kind == "compaction_start":
+            compactions += 1
+        elif kind == "auto_retry_start":
+            retries += 1
+        elif kind == "auto_retry_end" and e.get("success") is False:
+            retry_failures += 1
+    edit, test = first.get("edit", {}), first.get("test", {})
+    return {
+        "turns": sum(e.get("type") == "turn_end" for e in events),
+        "tool_calls": sum(tools.values()),
+        "tool_calls_by_name": dict(sorted(tools.items())),
+        "test_runs": test_runs,
+        "test_runs_failed": test_failures,
+        "compactions": compactions,
+        "auto_retries": retries,
+        "auto_retry_failures": retry_failures,
+        "first_edit_turn": edit.get("turn"),
+        "first_edit_s": edit.get("s"),
+        "first_test_turn": test.get("turn"),
+        "first_test_s": test.get("s"),
+        # For the metrics every agent gets (events.jsonl times are Unix seconds).
+        "agent_start_ts": t0 / 1000 if t0 is not None else None,
+    }
 
 
 def pi_spans(events: list[dict], timeline: list[dict]) -> list[Span]:
@@ -356,6 +479,40 @@ def exit_reason(
     if error:
         return ExitReason.CRASH, error
     return ExitReason.FINISHED, None
+
+
+_HTTP_STATUS = re.compile(r"^\s*(\d{3})\b")
+# Statuses about the request itself (a context too long, a malformed tool call): the agent's
+# doing, so a crash. Any other status means the endpoint failed.
+_REQUEST_STATUSES = {400, 413, 422}
+# Transport failures as pi and its SDKs word them (cf. pi-ai's retryable error pattern).
+_TRANSPORT = re.compile(
+    r"connection.?(error|refused|reset|lost|closed)|ECONNREFUSED|ECONNRESET|ETIMEDOUT|"
+    r"ENOTFOUND|EAI_AGAIN|getaddrinfo|fetch failed|socket hang up|other side closed|"
+    r"network.?error|timed? out|overloaded|service.?unavailable|rate.?limit|"
+    r"too many requests|upstream.?connect|reset before headers",
+    re.IGNORECASE,
+)
+
+
+def endpoint_failure(events: list[dict]) -> str | None:
+    """Why the run ended on its model endpoint failing, after pi's own retries, or None if it
+    did not: pi gave up retrying (`auto_retry_end` with `success: false`), or the final
+    assistant message ended in an HTTP error (other than one about the request itself) or a
+    connection error. The proxy's token-budget refusal is not a failure: the runner records
+    `token_limit`."""
+    for e in events:
+        if e.get("type") == "auto_retry_end" and e.get("success") is False:
+            error = str(e.get("finalError") or "")
+            if "token_limit" not in error:
+                return f"model endpoint failed after {e.get('attempt')} attempt(s): {error}"
+    error = last_error(events)
+    if not error or "token_limit" in error:
+        return None
+    status = _HTTP_STATUS.match(error)
+    if status:
+        return None if int(status[1]) in _REQUEST_STATUSES else f"model endpoint failed: {error}"
+    return f"model endpoint failed: {error}" if _TRANSPORT.search(error) else None
 
 
 def last_error(events: list[dict]) -> str | None:

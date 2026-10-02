@@ -1,0 +1,13 @@
+diff --git a/math.sh b/math.sh
+index 452d308..b71e46d 100644
+--- a/math.sh
++++ b/math.sh
+@@ -1,7 +1,7 @@
+ # Integer helpers for POSIX sh.
+ 
+ add() {
+-  echo $(($1 - $2))
++  echo $(($1 + $2))
+ }
+ 
+ max() {
