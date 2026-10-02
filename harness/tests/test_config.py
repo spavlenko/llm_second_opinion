@@ -225,7 +225,9 @@ def test_run_config_for_work_item(tmp_path):
 
 def test_load_dotenv_sets_unset_names_only(tmp_path):
     path = tmp_path / ".env"
-    path.write_text("# endpoints\n\nexport A=1\nB = 'two words'\nC=\"x=y\"\nKEEP=from-file\n")
+    path.write_text(
+        "# endpoints\n\nexport A=1\nB = 'two words'\nC=\"x=y\"\nKEEP=from-file\nBLANK=\n"
+    )
     env = {"KEEP": "exported"}
     assert load_dotenv(path, env) == ["A", "B", "C"]
     assert env == {"KEEP": "exported", "A": "1", "B": "two words", "C": "x=y"}

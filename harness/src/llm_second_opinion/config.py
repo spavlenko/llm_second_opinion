@@ -277,7 +277,8 @@ def interpolate_env(value: Any, env: Mapping[str, str]) -> Any:
 
 def load_dotenv(path: Path, env: dict[str, str] | os._Environ[str] = os.environ) -> list[str]:
     """Set `NAME=value` lines from a .env file into `env`, without overriding variables that
-    are already set. Values may be quoted; `#` starts a comment line. Returns the names set."""
+    are already set. Blank values are skipped, so a template left unfilled reads as unset.
+    Values may be quoted; `#` starts a comment line. Returns the names set."""
     if not path.is_file():
         return []
     loaded = []
@@ -290,7 +291,7 @@ def load_dotenv(path: Path, env: dict[str, str] | os._Environ[str] = os.environ)
         name, value = match.groups()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
             value = value[1:-1]
-        if name not in env:
+        if value and name not in env:  # a blank `NAME=` is a placeholder, not a value
             env[name] = value
             loaded.append(name)
     return loaded
