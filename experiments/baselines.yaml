@@ -5,7 +5,7 @@
 #   bench run experiments/baselines.yaml --arm A0
 #   bench report experiments/baselines.yaml
 name: baselines
-tasks: ../tasks/manifests/mswe-mini-cpp-v1.yaml
+tasks: ../tasks/manifests/mswe-mini-cpp-v2.yaml
 split: dev
 seeds: 3
 limits: {wall_minutes: 40, max_turns: 80}

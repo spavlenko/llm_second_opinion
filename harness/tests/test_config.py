@@ -167,7 +167,7 @@ def test_load_dotenv_does_not_echo_a_bad_line(tmp_path):
 def test_split_and_task_ids_select_tasks_without_changing_the_hash(repo, tmp_path):
     from llm_second_opinion.tasks import Manifest
 
-    manifest_path = repo / "tasks/manifests/mswe-mini-cpp-v1.yaml"
+    manifest_path = repo / "tasks/manifests/mswe-mini-cpp-v2.yaml"
     manifest = Manifest.from_yaml(manifest_path)
     dev = [t.id for t in manifest.tasks if t.split == "dev"]
     text = BASE.replace("tasks: manifest.yaml", f"tasks: {manifest_path}")

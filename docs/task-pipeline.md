@@ -10,8 +10,8 @@ cd harness
 .venv/bin/bench tasks import --dataset mini                  # 50 candidates -> mswe-mini-cpp
 .venv/bin/bench tasks build mswe-mini-cpp --parallel 2 --jobs 5
 .venv/bin/bench tasks validate mswe-mini-cpp --parallel 2
-.venv/bin/bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v1 \
-  --out ../tasks/manifests/mswe-mini-cpp-v1.yaml
+.venv/bin/bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v2 \
+  --out ../tasks/manifests/mswe-mini-cpp-v2.yaml
 ```
 
 Every stage resumes: a record per candidate goes in `runs/tasks/mswe-mini-cpp/`
@@ -118,5 +118,11 @@ Measured on an M-series Mac with Docker Desktop (12 CPUs, 8 GB VM):
   rebuilds; `docker image prune` reclaims those.
 
 Smoke subset (`mswe-mini-cpp-v1-smoke.yaml`): nlohmann/json 18, Catch2 1616, simdjson 524.
+
+`tasks/manifests/mswe-mini-cpp-v2.yaml` (frozen 2026-10-02) replaces v1: the images for
+`nlohmann__json-4512` and `fmtlib__fmt-3248` had been deleted from Docker, and their rebuilds
+got new image IDs. Both were validated again (2 runs each; same fail-to-pass and pass-to-pass
+lists). Everything else is identical to v1: tasks, test lists, split, and smoke subset. No
+model had run on v1, so no results are split across versions.
 `experiments/mswe-smoke-gold.yaml` runs their gold patches through `bench run`, and all 3
 resolve.

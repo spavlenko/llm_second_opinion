@@ -3,7 +3,7 @@
 # docs/task-pipeline.md).
 #   bench run experiments/mswe-smoke-gold.yaml && bench report experiments/mswe-smoke-gold.yaml
 name: mswe-smoke-gold
-tasks: ../tasks/manifests/mswe-mini-cpp-v1-smoke.yaml
+tasks: ../tasks/manifests/mswe-mini-cpp-v2-smoke.yaml
 seeds: 1
 limits: {wall_minutes: 10, max_turns: 10}
 execution: {parallel: 3, cpus: 4, memory_gb: 2, grade_minutes: 20}

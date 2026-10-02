@@ -25,6 +25,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Gold-patch validation, run twice for flakiness; test lists re-derived on arm64
 - [x] Frozen manifest writer, with dropped instances and reasons
 - [x] First manifest (`mswe-mini-cpp-v1`: 49 tasks, dev 24 / test 25); smoke task set (3 tasks)
+- [x] `mswe-mini-cpp-v2`: v1 with two rebuilt, revalidated images (the originals were deleted)
 - [x] `dev`/`test` split recorded in the manifest (fixed seed, stratified by repository)
 - [ ] Recipe for yhirose/cpp-httplib, then import `full`
 

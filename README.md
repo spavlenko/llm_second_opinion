@@ -188,7 +188,7 @@ Build the C++ task set (arm64 images, gold-patch validation, frozen manifest wit
 bench tasks import --dataset mini
 bench tasks build mswe-mini-cpp --parallel 2
 bench tasks validate mswe-mini-cpp --parallel 2
-bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v1 --out ../tasks/manifests/mswe-mini-cpp-v1.yaml
+bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v2 --out ../tasks/manifests/mswe-mini-cpp-v2.yaml
 ```
 
 ## License

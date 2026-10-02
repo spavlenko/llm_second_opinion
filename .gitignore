@@ -32,3 +32,6 @@ runs/
 
 # Task pipeline caches (dataset downloads, git mirrors)
 .cache/
+
+# Claude Code agent worktrees
+.claude/worktrees/
