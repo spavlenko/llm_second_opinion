@@ -120,11 +120,15 @@ Built and tested:
   containers hold no secrets), enforces an optional token budget, and refuses endpoints that
   do not report usage. Tokens and cost (from a price table) reach the ledger, MLflow, and
   `bench report`.
+- **Advisor plugin:** a pi extension with the consult tool and harness triggers (plan review,
+  stuck heuristic, failed test run, periodic), cooldown and budget, briefs at levels L0–L3
+  with identifiers redacted to placeholders and mapped back in the advice, and every request
+  logged exactly; advisor spans in the item traces.
 - **Mock model server:** CI and development run without a GPU or API keys.
 
 Next:
 - the local model setup and the A0/A4 baselines
-- then the advisor plugin, help policies, and prompt search
+- then the pilot of help policies, exposure scorers, and prompt search
 
 Progress is tracked in [docs/roadmap.md](docs/roadmap.md).
 

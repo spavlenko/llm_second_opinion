@@ -56,7 +56,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 
 - [x] MLflow tracking: runs per arm and item, artifacts, pinned inputs
 - [x] MLflow mandatory for `bench run`; item traces from agent logs (pi); arm summary metrics and git commit
-- [ ] Advisor spans (triggers, briefs, consults) in the item traces
+- [x] Advisor spans (triggers, briefs, consults) in the item traces
 - [x] SQLite ledger and resume
 - [ ] Debug mode, `bench shell`, `bench replay`
 - [x] `bench report`: per-arm resolve rate with Wilson CI, exit reasons, time, turns; CSV
@@ -73,23 +73,26 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 
 ## Weeks 5–6 — advisor plugin
 
-- [ ] `advisor-core`: brief builder at L2, consult budget, advisor client, exposure log, event emitter
-- [ ] `pi-binding`: consult tool, lifecycle hooks, advice injection, reading `advisor.json`
-- [ ] Planning review and consult tool interventions
+- [x] `advisor-core`: brief builder at L2, consult budget, advisor client, exposure log, event emitter
+- [x] `pi-binding`: consult tool, lifecycle hooks, advice injection, reading `advisor.json`
+- [x] Plugin bundled into the pi bundle image (esbuild stage); advisor arms load it; e2e Docker
+      test with the mock server for both roles
+- [x] Planning review and consult tool interventions
 - [ ] OTel exporter to MLflow
 - [x] Prompt slots (`executor_guidance`, `consult_tool`, `brief`, `advisor_system`,
       `advice_injection`) with `prompts/default/`; placeholder validation (harness side;
       variants `prompts/structured/`, `prompts/hints-only/`)
-- [ ] Placeholder rendering in `advisor-core` (lists in spec.md, Research design)
+- [x] Placeholder rendering in `advisor-core` (lists in spec.md, Research design)
 - [x] `prompts:` sets in config (directory or base + overrides), hashed by text, written into
       `advisor.json`; sweeps over `advisor.prompts` and `advisor.interventions`
-- [ ] `consult_requested` event; `prompt_hash` on `advisor_request`
+- [x] `consult_requested` event; `prompt_hash` on `advisor_request`
 
 ## Week 7 — levels, stuck trigger, exposure scorers
 
-- [ ] Levels L0, L1, L3
-- [ ] Heuristic stuck trigger
-- [ ] Triggers `on_test_failure` and `periodic`; consult cooldown and advisor answer-token cap
+- [x] Levels L0, L1, L3
+- [x] Heuristic stuck trigger
+- [x] Triggers `on_test_failure` and `periodic`; consult cooldown and advisor answer-token cap
+- [ ] First real advisor item (Kimi K3) on one `dev` task: check briefs at each level by hand
 - [ ] Leakage and re-identification scorers
 - [ ] SWE-bench-Live import
 
