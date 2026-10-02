@@ -34,8 +34,42 @@
               "type": "null"
             }
           ],
-          "default": null,
-          "description": "Cap on each advisor answer; None means no cap."
+          "default": 4000,
+          "description": "Safety ceiling on each advisor answer (sent as max_tokens); reaching it is logged. The working limit is the prompt's target, `answer_target_words`."
+        },
+        "answer_target_words": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 250,
+          "description": "Answer length the advisor is asked for, in the prompt."
+        },
+        "max_brief_tokens": {
+          "default": 3000,
+          "description": "Safety ceiling on a brief; cutting it is logged.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "field_target_words": {
+          "default": 80,
+          "description": "Length the consult tool asks for in each field the executor writes.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "orient_after": {
+          "default": 3,
+          "description": "Own read actions before the `orient` trigger fires.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "rules": {
+          "$ref": "#/$defs/ConsultRules"
         },
         "cooldown_turns": {
           "default": 0,
@@ -66,6 +100,11 @@
         "prompts",
         "max_consults",
         "max_answer_tokens",
+        "answer_target_words",
+        "max_brief_tokens",
+        "field_target_words",
+        "orient_after",
+        "rules",
         "cooldown_turns",
         "periodic_every",
         "stuck"
@@ -73,13 +112,59 @@
       "title": "AdvisorSettings",
       "type": "object"
     },
+    "ConsultRules": {
+      "additionalProperties": false,
+      "description": "Anti-delegation: the executor must do its own work between consults. Strictness is an\narm setting, so experiments can compare strict and loose rules.",
+      "properties": {
+        "min_own_actions": {
+          "default": 1,
+          "description": "Own tool calls since the last consult before the next.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_cooldown_turns": {
+          "default": 2,
+          "description": "Turns after a consult before the consult tool may be used.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "require_hypothesis": {
+          "default": true,
+          "description": "The consult tool refuses a request without `tried` and `hypothesis` written by the executor.",
+          "type": "boolean"
+        },
+        "max_advice_code_lines": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 5,
+          "description": "Code blocks in advice longer than this are cut before injection (0: no code at all; None: no limit). advice_text keeps the original."
+        }
+      },
+      "title": "ConsultRules",
+      "type": "object",
+      "required": [
+        "min_own_actions",
+        "tool_cooldown_turns",
+        "require_hypothesis",
+        "max_advice_code_lines"
+      ]
+    },
     "Intervention": {
       "enum": [
         "plan",
         "consult",
         "stuck",
         "on_test_failure",
-        "periodic"
+        "periodic",
+        "orient",
+        "before_done"
       ],
       "title": "Intervention",
       "type": "string"

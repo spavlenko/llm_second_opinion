@@ -8,6 +8,7 @@
 export type Event =
   | PolicyRendered
   | ConsultRequested
+  | ConsultRefused
   | TriggerFired
   | BriefBuilt
   | AdvisorRequest
@@ -19,7 +20,7 @@ export type Event =
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "Intervention".
  */
-export type Intervention = "plan" | "consult" | "stuck" | "on_test_failure" | "periodic";
+export type Intervention = "plan" | "consult" | "stuck" | "on_test_failure" | "periodic" | "orient" | "before_done";
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "Level".
@@ -91,6 +92,29 @@ export interface ConsultRequested {
   turn: number;
 }
 /**
+ * The consult tool turned a request down (anti-delegation rules or budget).
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "ConsultRefused".
+ */
+export interface ConsultRefused {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "consult_refused";
+  /**
+   * Which rule refused it, e.g. `min_own_actions`.
+   */
+  reason: string;
+  turn: number;
+}
+/**
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "TriggerFired".
  */
@@ -128,6 +152,10 @@ export interface BriefBuilt {
   tokens: number;
   identifiers_redacted: number;
   role_map_size: number;
+  /**
+   * The brief was cut at max_brief_tokens.
+   */
+  truncated: boolean;
   /**
    * Placeholder to real identifier, for every placeholder in this brief. Stays on the machine; the leakage and re-identification scorers need it.
    */
@@ -238,6 +266,10 @@ export interface AdviceApplied {
    * The exact text the executor was given.
    */
   injected_text: string;
+  /**
+   * Lines of code cut from the advice by max_advice_code_lines.
+   */
+  code_lines_removed: number;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -381,9 +413,26 @@ export interface AdvisorSettings {
   prompts: string;
   max_consults: number;
   /**
-   * Cap on each advisor answer; None means no cap.
+   * Safety ceiling on each advisor answer (sent as max_tokens); reaching it is logged. The working limit is the prompt's target, `answer_target_words`.
    */
   max_answer_tokens: number | null;
+  /**
+   * Answer length the advisor is asked for, in the prompt.
+   */
+  answer_target_words: number | null;
+  /**
+   * Safety ceiling on a brief; cutting it is logged.
+   */
+  max_brief_tokens: number;
+  /**
+   * Length the consult tool asks for in each field the executor writes.
+   */
+  field_target_words: number;
+  /**
+   * Own read actions before the `orient` trigger fires.
+   */
+  orient_after: number;
+  rules: ConsultRules;
   /**
    * Turns after a consult before a harness trigger may fire.
    */
@@ -393,6 +442,31 @@ export interface AdvisorSettings {
    */
   periodic_every: number | null;
   stuck: StuckThresholds;
+}
+/**
+ * Anti-delegation: the executor must do its own work between consults. Strictness is an
+ * arm setting, so experiments can compare strict and loose rules.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "ConsultRules".
+ */
+export interface ConsultRules {
+  /**
+   * Own tool calls since the last consult before the next.
+   */
+  min_own_actions: number;
+  /**
+   * Turns after a consult before the consult tool may be used.
+   */
+  tool_cooldown_turns: number;
+  /**
+   * The consult tool refuses a request without `tried` and `hypothesis` written by the executor.
+   */
+  require_hypothesis: boolean;
+  /**
+   * Code blocks in advice longer than this are cut before injection (0: no code at all; None: no limit). advice_text keeps the original.
+   */
+  max_advice_code_lines: number | null;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema

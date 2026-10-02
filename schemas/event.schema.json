@@ -34,6 +34,11 @@
         "injected_text": {
           "description": "The exact text the executor was given.",
           "type": "string"
+        },
+        "code_lines_removed": {
+          "description": "Lines of code cut from the advice by max_advice_code_lines.",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -43,7 +48,8 @@
         "type",
         "request_id",
         "turn",
-        "injected_text"
+        "injected_text",
+        "code_lines_removed"
       ],
       "title": "AdviceApplied",
       "type": "object"
@@ -291,6 +297,10 @@
           "minimum": 0,
           "type": "integer"
         },
+        "truncated": {
+          "description": "The brief was cut at max_brief_tokens.",
+          "type": "boolean"
+        },
         "role_map": {
           "additionalProperties": {
             "type": "string"
@@ -308,6 +318,7 @@
         "tokens",
         "identifiers_redacted",
         "role_map_size",
+        "truncated",
         "role_map"
       ],
       "title": "BriefBuilt",
@@ -353,6 +364,49 @@
         "limit"
       ],
       "title": "BudgetExhausted",
+      "type": "object"
+    },
+    "ConsultRefused": {
+      "additionalProperties": false,
+      "description": "The consult tool turned a request down (anti-delegation rules or budget).",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "consult_refused",
+          "default": "consult_refused",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Which rule refused it, e.g. `min_own_actions`.",
+          "type": "string"
+        },
+        "turn": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "reason",
+        "turn"
+      ],
+      "title": "ConsultRefused",
       "type": "object"
     },
     "ConsultRequested": {
@@ -404,7 +458,9 @@
         "consult",
         "stuck",
         "on_test_failure",
-        "periodic"
+        "periodic",
+        "orient",
+        "before_done"
       ],
       "title": "Intervention",
       "type": "string"
@@ -527,6 +583,7 @@
       "advisor_response": "#/$defs/AdvisorResponse",
       "brief_built": "#/$defs/BriefBuilt",
       "budget_exhausted": "#/$defs/BudgetExhausted",
+      "consult_refused": "#/$defs/ConsultRefused",
       "consult_requested": "#/$defs/ConsultRequested",
       "policy_rendered": "#/$defs/PolicyRendered",
       "trigger_fired": "#/$defs/TriggerFired"
@@ -539,6 +596,9 @@
     },
     {
       "$ref": "#/$defs/ConsultRequested"
+    },
+    {
+      "$ref": "#/$defs/ConsultRefused"
     },
     {
       "$ref": "#/$defs/TriggerFired"

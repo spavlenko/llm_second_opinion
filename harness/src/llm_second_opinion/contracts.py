@@ -34,6 +34,8 @@ class Intervention(StrEnum):
     STUCK = "stuck"  # harness: the stuck heuristic
     ON_TEST_FAILURE = "on_test_failure"  # harness: after a failed test run
     PERIODIC = "periodic"  # harness: every `periodic_every` turns
+    ORIENT = "orient"  # harness: once, after `orient_after` own reads or before the first edit
+    BEFORE_DONE = "before_done"  # harness: once, when the executor stops with a change made
 
 
 class PromptSlot(StrEnum):
@@ -80,6 +82,28 @@ class StuckThresholds(Strict):
     no_diff_turns: int = Field(default=8, ge=1)
 
 
+class ConsultRules(Strict):
+    """Anti-delegation: the executor must do its own work between consults. Strictness is an
+    arm setting, so experiments can compare strict and loose rules."""
+
+    min_own_actions: int = Field(
+        default=1, ge=0, description="Own tool calls since the last consult before the next."
+    )
+    tool_cooldown_turns: int = Field(
+        default=2, ge=0, description="Turns after a consult before the consult tool may be used."
+    )
+    require_hypothesis: bool = Field(
+        default=True, description="The consult tool refuses a request without `tried` and "
+        "`hypothesis` written by the executor.",
+    )
+    max_advice_code_lines: int | None = Field(
+        default=5,
+        ge=0,
+        description="Code blocks in advice longer than this are cut before injection (0: no "
+        "code at all; None: no limit). advice_text keeps the original.",
+    )
+
+
 class AdvisorSettings(Strict):
     level: Level
     interventions: list[Intervention] = Field(
@@ -90,8 +114,26 @@ class AdvisorSettings(Strict):
     )
     max_consults: int = Field(default=5, ge=0)
     max_answer_tokens: int | None = Field(
-        default=None, ge=1, description="Cap on each advisor answer; None means no cap."
+        default=4000,
+        ge=1,
+        description="Safety ceiling on each advisor answer (sent as max_tokens); reaching it is "
+        "logged. The working limit is the prompt's target, `answer_target_words`.",
     )
+    answer_target_words: int | None = Field(
+        default=250, ge=1, description="Answer length the advisor is asked for, in the prompt."
+    )
+    max_brief_tokens: int = Field(
+        default=3000, ge=1, description="Safety ceiling on a brief; cutting it is logged."
+    )
+    field_target_words: int = Field(
+        default=80,
+        ge=1,
+        description="Length the consult tool asks for in each field the executor writes.",
+    )
+    orient_after: int = Field(
+        default=3, ge=1, description="Own read actions before the `orient` trigger fires."
+    )
+    rules: ConsultRules = Field(default_factory=ConsultRules)
     cooldown_turns: int = Field(
         default=0, ge=0, description="Turns after a consult before a harness trigger may fire."
     )
@@ -164,6 +206,14 @@ class ConsultRequested(_Event):
     turn: int = Field(ge=0)
 
 
+class ConsultRefused(_Event):
+    """The consult tool turned a request down (anti-delegation rules or budget)."""
+
+    type: Literal["consult_refused"] = "consult_refused"
+    reason: str = Field(description="Which rule refused it, e.g. `min_own_actions`.")
+    turn: int = Field(ge=0)
+
+
 class TriggerFired(_Event):
     type: Literal["trigger_fired"] = "trigger_fired"
     intervention: Intervention
@@ -177,6 +227,7 @@ class BriefBuilt(_Event):
     tokens: int = Field(ge=0)
     identifiers_redacted: int = Field(ge=0)
     role_map_size: int = Field(ge=0)
+    truncated: bool = Field(description="The brief was cut at max_brief_tokens.")
     role_map: dict[str, str] = Field(
         description="Placeholder to real identifier, for every placeholder in this brief. Stays "
         "on the machine; the leakage and re-identification scorers need it."
@@ -224,6 +275,9 @@ class AdviceApplied(_Event):
     request_id: str
     turn: int = Field(ge=0)
     injected_text: str = Field(description="The exact text the executor was given.")
+    code_lines_removed: int = Field(
+        ge=0, description="Lines of code cut from the advice by max_advice_code_lines."
+    )
 
 
 class PolicyRendered(_Event):
@@ -246,6 +300,7 @@ class BudgetExhausted(_Event):
 Event = Annotated[
     PolicyRendered
     | ConsultRequested
+    | ConsultRefused
     | TriggerFired
     | BriefBuilt
     | AdvisorRequest
