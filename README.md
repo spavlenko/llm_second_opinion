@@ -191,9 +191,12 @@ bench mock-server --recordings harness/tests/fixtures/pi-toy-add.jsonl --host 0.
 bench run experiments/toy-pi.yaml --task toy-add
 ```
 
-Results land in `runs/<experiment>/`: `ledger.sqlite` and one directory per arm, task, and
-seed with `advisor.json`, `result.json`, `patch.diff`, `events.jsonl`, `grade.log`,
-`usage.jsonl` (one line per model call, from the metering proxy), and the agent's own logs.
+Results land in `runs/<experiment>/`: `ledger.sqlite` and one directory per attempt,
+`<arm>/<task>/seed-<n>/<config_hash>/attempt-<k>/`, with `item.json` (what ran, from which
+commit), `advisor.json`, `result.json`, `patch.diff`, `events.jsonl`, `grade.json` and
+`grade.log`, `metrics.json`, `usage.jsonl` and `requests.jsonl` (one line per model call,
+from the metering proxy), and the agent's own logs. `bench report` also writes
+`report.json`; `bench regrade` grades stored patches again with the current grader.
 
 Build the C++ task set (arm64 images, gold-patch validation, frozen manifest with a
 `dev`/`test` split):

@@ -71,6 +71,34 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Test-split guard: `bench run` needs `--final` for `test` tasks (ledger `sessions`, MLflow
       tag `lso.final`); `bench report` shows variants tried and final batches
 
+## Data retention (2026-10-03)
+
+- [x] One directory per attempt (`seed-<n>/<config_hash>/attempt-<k>/`), starting empty;
+      ledger `attempts` table (spend, status, error per attempt); counted attempt in `items`
+- [x] Total spend in `bench report` (all attempts and preflight) next to the counted items'
+- [x] Grading and tracking retried on their own from the saved result (also on resume);
+      agent artifacts copied out however the run ends; interrupted attempts recorded
+- [x] Executor endpoint outages are infrastructure errors (retried, then `failed`), not crashes
+- [x] Proxy records failed calls, the attempt, the plugin's request id; `requests.jsonl` and
+      the first executor request in full
+- [x] Sampling parameters (`temperature`, `top_p`, `sampling_seed`) to pi's `samplingParams`
+      and into the config hash
+- [x] `grade.json` (F2P/P2P detail, build failure, missing tests, agent's test-file edits,
+      grader version); `build_failed` grade reason; full build log kept
+- [x] Grading resets test-patch files to base before the test patch (as SWE-bench);
+      `bench regrade` re-grades stored patches
+- [x] Config hash: manifest version, adapter fingerprint (task prompt, bundle image); task
+      image in the ledger key; `item.json` provenance per attempt; git commit on every MLflow
+      item run, commits list on arm runs
+- [x] Ledger and CSV columns: cached and reasoning tokens, failed calls, prompt hash, level,
+      interventions, grading detail; `report.json` per `bench report`
+- [x] Trajectory metrics (`metrics.json`, MLflow): turns, tool calls, test runs, compactions,
+      retries, context length, first edit, consult, and test run, advice-file uptake
+- [ ] Regrade the calibration runs made with grader version 1 (`bench regrade`)
+- [ ] Plugin emits the new event fields (`policy_rendered`, `brief_built.role_map`, advisor
+      token counts and error status) and sends `X-LSO-Request-Id`; then the plugin Docker
+      test passes again
+
 ## Weeks 5–6 — advisor plugin
 
 - [x] `advisor-core`: brief builder at L2, consult budget, advisor client, exposure log, event emitter
