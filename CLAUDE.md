@@ -3,8 +3,8 @@
 - `docs/spec.md` is the source of truth for what we are building. Read it before starting work.
   When a decision changes or a new one is made, update the spec and add a row to its Decision log.
 - `docs/roadmap.md` tracks progress. Tick items as they land; add items rather than dropping them.
-- `docs/lab-notes.md` is the lab notebook: record anything interesting or unexpected, dated and
-  with evidence, as it happens. `docs/related-work.md` is the literature survey.
+- `docs/lab-notes.md` is the lab notebook: record interesting or unexpected findings, one short
+  line each. `docs/related-work.md` is the literature survey.
 
 ## Commands
 
