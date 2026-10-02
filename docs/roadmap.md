@@ -62,8 +62,11 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Tokens and cost in ledger, MLflow, and `bench report` (per arm, per resolved task);
       price table in the experiment
 - [ ] Deterministic scorers (capability, cost)
-- [ ] Paired comparisons in `bench report`: differences with paired bootstrap CI, McNemar;
+- [x] Paired comparisons in `bench report`: differences with paired bootstrap CI, McNemar;
       lift over A0 and share of the A0–A4 gap closed; Pareto front of resolve rate vs cost
+      (front waits for the ledger's cost columns); `--pairs-csv`; paired metrics in MLflow
+- [x] Test-split guard: `bench run` needs `--final` for `test` tasks (ledger `sessions`, MLflow
+      tag `lso.final`); `bench report` shows variants tried and final batches
 
 ## Weeks 5–6 — advisor plugin
 
@@ -71,9 +74,11 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] `pi-binding`: consult tool, lifecycle hooks, advice injection, reading `advisor.json`
 - [ ] Planning review and consult tool interventions
 - [ ] OTel exporter to MLflow
-- [ ] Prompt slots (`executor_guidance`, `consult_tool`, `brief`, `advisor_system`,
-      `advice_injection`) with `prompts/default/`; placeholder validation
-- [ ] `prompts:` sets in config (directory or base + overrides), hashed by text, written into
+- [x] Prompt slots (`executor_guidance`, `consult_tool`, `brief`, `advisor_system`,
+      `advice_injection`) with `prompts/default/`; placeholder validation (harness side;
+      variants `prompts/structured/`, `prompts/hints-only/`)
+- [ ] Placeholder rendering in `advisor-core` (lists in spec.md, Research design)
+- [x] `prompts:` sets in config (directory or base + overrides), hashed by text, written into
       `advisor.json`; sweeps over `advisor.prompts` and `advisor.interventions`
 - [ ] `consult_requested` event; `prompt_hash` on `advisor_request`
 
