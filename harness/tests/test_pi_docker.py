@@ -15,6 +15,7 @@ import pytest
 
 from llm_second_opinion.adapters.pi import PiAdapter
 from llm_second_opinion.config import AgentSpec, Experiment
+from llm_second_opinion.contracts import parse_events
 from llm_second_opinion.metering import read_usage
 from llm_second_opinion.mock_server import MockServer
 from llm_second_opinion.runner import Runner
@@ -55,7 +56,13 @@ def mock(repo, tmp_path):
         server.shutdown()
 
 
-def run_pi(repo, tmp_path, base_url, model=None, **limits):
+def run_pi(repo, tmp_path, base_url, model=None, advisor=None, **limits):
+    arm = {"name": "pi", "agent": "pi", "executor": "mock"} | (
+        {"advisor": advisor} if advisor else {}
+    )
+    models = {"mock": {"base_url": base_url, "model": "mock"} | (model or {})}
+    if advisor:  # the same mock server answers for the advisor, in recording order
+        models["advisor"] = {"base_url": base_url, "model": "mock-advisor"}
     exp = Experiment.model_validate(
         {
             "name": "pi",
@@ -63,9 +70,9 @@ def run_pi(repo, tmp_path, base_url, model=None, **limits):
             "seeds": 1,
             "limits": {"wall_minutes": 5, "max_turns": 10} | limits,
             "execution": {"cpus": 1, "memory_gb": 1, "retries": 0},
-            "models": {"mock": {"base_url": base_url, "model": "mock"} | (model or {})},
-            "prices": {"mock": {"input_per_mtok": 1.0, "output_per_mtok": 2.0}},
-            "arms": [{"name": "pi", "agent": "pi", "executor": "mock"}],
+            "models": models,
+            "prices": {m: {"input_per_mtok": 1.0, "output_per_mtok": 2.0} for m in models},
+            "arms": [arm],
         }
     )
     runner = Runner(exp, tmp_path / "runs", echo=lambda _: None)  # with the usage preflight
@@ -153,3 +160,42 @@ def test_wall_clock_limit(repo, tmp_path, toy_image, mock):
     outcome, result, _ = run_pi(repo, tmp_path, mock([bash_call("sleep 120")]), wall_minutes=0.1)
     assert result["exit_reason"] == "time_limit"
     assert not outcome.resolved
+
+
+def test_pi_consults_the_advisor_through_the_plugin(repo, tmp_path, toy_image, mock):
+    recordings = repo / "harness/tests/fixtures/pi-toy-add-consult.jsonl"
+    base_url = mock([json.loads(line) for line in recordings.read_text().splitlines()])
+    advisor = {"level": "L1", "interventions": ["consult"], "max_consults": 2}
+    outcome, result, item = run_pi(repo, tmp_path, base_url, advisor=advisor)
+    assert outcome.resolved
+    assert result["exit_reason"] == "finished"
+
+    events = parse_events((item / "events.jsonl").read_text())  # validates every event
+    assert [e.type for e in events] == [
+        "consult_requested", "brief_built", "advisor_request", "advisor_response", "advice_applied",
+    ]  # fmt: skip
+    requested, brief, request, response, applied = events
+    assert requested.reason == "Why does add_numbers() in math.sh print -1 for 2 and 3?"
+    assert brief.level == "L1" and brief.identifiers_redacted >= 2
+    # L1: identifiers left the container only as placeholders.
+    assert "add_numbers" not in request.brief_text and "math.sh" not in request.brief_text
+    assert "<function_1>" in request.brief_text
+    assert request.prompt_hash == json.loads((item / "advisor.json").read_text())["prompts"]["hash"]
+    assert response.output_tokens == 12 and applied.request_id == request.request_id
+
+    # The advice reached pi as the tool result, with the placeholder mapped back.
+    [advice] = [json.loads(line) for line in (item / "advice.jsonl").read_text().splitlines()]
+    assert "add_numbers subtracts" in advice["injected"]
+    pi_events = (item / "pi.jsonl").read_text()
+    assert "add_numbers subtracts" in pi_events
+
+    # Both roles were metered; the advisor call is in the trace under the consult tool.
+    assert [r.role for r in read_usage(item / "usage.jsonl")] == [
+        "executor", "advisor", "executor", "executor",
+    ]  # fmt: skip
+    turns = PiAdapter(AgentSpec(adapter="pi")).spans(item)
+    [tool] = [s for s in turns[0].children if s.name == "consult"]
+    [consult] = tool.children
+    assert consult.name == "advisor: consult"
+    assert [c.name for c in consult.children] == ["brief", "advisor"]
+    assert consult.children[1].outputs.startswith("<function_1> subtracts")

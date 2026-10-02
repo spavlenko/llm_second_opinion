@@ -62,8 +62,8 @@ without changing the harness.
 
 A **help policy** is everything that decides how the executor gets help from the advisor. It
 has two parts, prompts and approach, and both are experiment variables set in config, not in
-code. (Status: prompt sets, sweeps, and paired comparisons are built in the harness; the
-plugin that renders and uses the prompts is built in weeks 5–7.)
+code. (Status: prompt sets, sweeps, and paired comparisons are built in the harness, and the
+plugin renders and uses the prompts; see [The advisor plugin](#the-advisor-plugin).)
 
 **Prompts: what is said.** Five prompt slots, each a text file under `prompts/`:
 
@@ -96,7 +96,7 @@ does an empty slot or an `advice_injection` without `{{advice}}`. The plugin ren
 | | `{{error}}` | The latest failing build or test output, trimmed and abstracted; empty if none |
 | | `{{hypothesis}}` | The consult call's `hypothesis`; empty for a harness trigger |
 | | `{{question}}` | The consult call's `question`; for a harness trigger, a fixed question for that trigger |
-| | `{{code}}` | Code excerpts at the arm's level; empty at L0 |
+| | `{{code}}` | Code excerpts at the arm's level; empty at L0 and L1 |
 | | `{{level}}` | `L0`–`L3` |
 | | `{{trigger}}` | What started the consult: `consult` (the executor) or the intervention's name |
 | `advisor_system` | `{{level}}` | `L0`–`L3` |
@@ -115,6 +115,73 @@ Slot texts are stored with line endings normalised to `\n` and trailing whitespa
   machine) together with the `brief` prompt.
 - **Budget:** `max_consults`, a cap on advisor answer tokens, and a cooldown in turns between
   consults.
+
+### The advisor plugin
+
+How the plugin (`plugin/`) carries out a policy. Turns are counted from 0 (the first model
+call is in turn 0).
+
+**Abstraction levels.** Each level adds to the one below. Redaction replaces an identifier with
+a role placeholder (`<function_1>`, `<type_2>`, `<variable_3>`, `<macro_1>`, `<namespace_1>`,
+`<file_1>`, `<identifier_1>`); the role map lives for the whole run, so the same name always gets
+the same placeholder, and placeholders in the advice are mapped back before it reaches the
+executor.
+
+| Level | What the advisor sees |
+| --- | --- |
+| L0 | Natural language only. The issue and the executor's words with code blocks dropped (`[code omitted]`), inline code dropped unless it is a single name, and every identifier and file name redacted. No error text and no test names: `{{error}}` is a one-line category ("The build fails.", "2 test(s) fail.", "A command fails."). Recent actions in words ("ran the tests (failing)", "edited `<file_1>`"), no commands. |
+| L1 | L0 plus error messages: the error lines of the latest failing output (up to 8; compiler errors, failing ctest lines with test names), identifiers redacted. |
+| L2 | L1 plus code: the issue's code blocks, redacted; up to 3 excerpts of ±3 lines around the `file:line` locations in the error output (or the last edit when there are none), with every non-keyword name redacted; up to 20 error lines; shell commands in recent actions, redacted. |
+| L3 | Everything verbatim: the issue as written, error output, excerpts with real paths, commands. |
+
+Prose redaction catches code-like tokens: qualified names (`a::b`), calls (`f()`, `f(x)`),
+`snake_case`, `camelCase`, `PascalCase` with two humps or more, `ALL_CAPS_WITH_UNDERSCORES`,
+names quoted as compilers quote them (`'Serializer'`), absolute paths and source file names.
+Ordinary words stay. Code redaction replaces every name that is not a C++ keyword or a
+well-known standard name; names under `std::` are public and kept at every level; string
+literals become `"…"` and comments `// …`. `brief_built.identifiers_redacted` counts the
+placeholders in the brief and `role_map_size` the names mapped so far; `tokens` is an estimate
+(4 characters a token), which is the exposure measure (cost comes from the metering proxy).
+
+**Triggers.** The executor's consult tool needs only budget. Harness triggers:
+
+- `plan`: once, before the first model call. The question is a fixed "How should I approach
+  this task?" over the issue text, so there is no executor plan to review yet.
+- `on_test_failure`: a `bash` call that runs `/opt/lso/run-tests` and fails: non-zero exit, or
+  (when piped through `tail`) ctest's "N tests failed out of" with N > 0, "The following tests
+  FAILED", or run-tests' "build failed".
+- `stuck`, any of: the same tool call (name and arguments) `repeat_calls` times in a row; the
+  same error `same_error` times since the last consult (error lines compared with numbers and
+  whitespace normalised); `no_diff_turns` turns in a row without a file edit (the edit and
+  write tools, or an in-place shell edit such as `sed -i`, `git apply`, `patch`).
+- `periodic`: at the end of every `periodic_every`-th turn.
+
+Harness triggers are checked at the end of each turn, at most one per turn, in the order
+`on_test_failure`, `stuck`, `periodic`. Every consult resets the stuck counters. A harness
+trigger may not fire in the turn of a consult nor in the `cooldown_turns` turns after it.
+`max_consults` covers every consult, the executor's and the harness's, and counts attempts
+(an advisor error uses one up); a consult refused for budget emits `budget_exhausted` the
+first time only. `max_answer_tokens` is sent as the advisor request's `max_tokens`.
+
+**Where advice goes.** For the consult tool, the rendered `advice_injection` is the tool
+result. For harness triggers it is a custom message (rendered by pi as a user message): the
+plan review's is added by the `before_agent_start` handler, next to the prompt; the others are
+appended at the turn's end (`turn_end` boundary entry with `continue: true`, so the model sees
+it in its next request even when the turn would have ended the run). `executor_guidance` is
+appended to pi's system prompt from `before_agent_start` (`appendSystemPrompt`), so no CLI
+flag is needed. The task text for briefs is the issue inside the adapter's prompt
+(`<issue>…</issue>`).
+
+**What is logged.** Every consult emits, in order, `consult_requested` (the executor's question)
+or `trigger_fired`, `brief_built`, `advisor_request` (before sending: the exact user message
+and the prompt hash), then `advisor_response` or `advisor_error`, and `advice_applied` when the
+advice was injected (with the turn it was injected in). The system message is the
+`advisor_system` slot, which holds no task data. The plugin also writes `advice.jsonl`
+(`LSO_ADVICE_LOG`): per request, the system and user messages, the advice as received, and the
+text injected, for reading runs and for prompt search; it is not a contract. An advisor failure
+(HTTP error, the proxy's `token_limit` refusal, timeout after 5 minutes) is an
+`advisor_error`, and the executor gets "The advisor could not be reached" as the tool result;
+it never stops the agent.
 
 **Config.** Prompt sets are named once per experiment and chosen per arm. A set is a
 directory, or an earlier set with some slots replaced. `advisor.prompts` and
@@ -328,7 +395,7 @@ inside a run.
 | `config` | Pydantic models for experiments, arms, models, limits, and task sets; YAML loading; a stable hash per arm config |
 | `tasks`, `pipeline` | Internal task format and frozen manifests; the Multi-SWE-bench importer, arm64 image builds from per-repo recipes, gold-patch validation, freezing with a `dev`/`test` split. SWE-bench-Live import is to come |
 | `runtime` | Container lifecycle through the Docker API (Colima or Docker Desktop), CPU and memory caps, exec with timeouts, file copy in and out |
-| `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter (pi in JSON mode, bundle mounted from a volume, turn limit by a harness extension). The advisor plugin joins the pi bundle when it exists |
+| `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter (pi in JSON mode, bundle mounted from a volume with the advisor plugin, turn limit by a harness extension) |
 | `runner` | Expands arms × tasks × seeds into work items; parallel workers, retries, and resume through the ledger |
 | `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id, tokens per role, model calls, cost |
 | `metering` | The metering proxy (per-item routes, secrets added on the host, `usage.jsonl`, token budget), the usage preflight, and cost from the price table |
@@ -343,8 +410,8 @@ inside a run.
 
 | Package | Responsibility |
 | --- | --- |
-| `advisor-core` | Prompt slots rendered from `advisor.json`; trigger engine (planning review, consult tool, heuristic stuck detection, test failure, periodic); brief builder for L0–L3 with redaction and a local role map; consult budget; OpenAI-compatible advisor client; exposure log; event emitter. No pi imports. |
-| `pi-binding` | Registers the consult tool, subscribes to pi lifecycle events, injects advice into the session, reads the run config |
+| `advisor-core` | `config` (reads and checks `advisor.json`), `template` (`{{name}}` rendering), `observe` (tool calls as agent-neutral observations; test runs, errors, edits), `triggers` (trigger engine, cooldown, consult budget), `redact` (role map, prose and code redaction), `brief` (L0–L3 brief builder), `client` (OpenAI-compatible advisor client), `session` (one run's advisor: observations in, consults out, every event emitted), `events` (`EventWriter`). No pi imports. |
+| `pi-binding` | The pi extension: reads `advisor.json` (`LSO_ADVISOR_CONFIG`), registers the `consult` tool when `consult` is an intervention, maps pi's `before_agent_start`, `turn_start`, `tool_result`, and `turn_end` to the session, injects advice. `scripts/bundle-pi.mjs` (esbuild) bundles it with advisor-core into one file, `lso-advisor.js`; pi provides `typebox` and its own packages at run time |
 | OTel exporter | Sends spans for turns, tool calls, triggers, and consults to MLflow |
 
 ## Contracts and interfaces
@@ -406,7 +473,18 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
   bundle into each task image would store it once per task (Docker does not share those
   layers). Node runs from the bundle by absolute path and is not put on the agent's `PATH`.
   Official Node binaries need glibc 2.28, which all task images have (the oldest is Debian
-  buster); the toy image is Debian slim for the same reason.
+  buster); the toy image is Debian slim for the same reason. A first build stage bundles the
+  advisor plugin from its sources (passed as named build contexts `advisor-core`,
+  `pi-binding`, `plugin-scripts`) into `extensions/lso-advisor.js`, so the bundle needs no
+  network at run time and no Node on the host. The adapter names the volume after the image
+  ID that its own build printed, not the tag's, since another checkout may retag.
+- *Advisor.* Advisor arms (capability `advisor`) add `-e extensions/lso-advisor.js` and set
+  `LSO_ADVISOR_CONFIG=/run/advisor.json`, `LSO_ADVICE_LOG=/run/lso/advice.jsonl` (an item
+  artifact), and `LSO_ADVISOR_BASE_URL` (the advisor endpoint as the container reaches it).
+  The plugin calls that URL as given and sends `Authorization` only if `api_key_env` names a
+  set variable, plus `headers` and the set `header_env` values; under metering all three are
+  empty and the proxy adds credentials. Its events go to `events_path`, which the runner
+  copies out as `events.jsonl`.
 - *Model.* The executor endpoint becomes pi's only provider (`lso`, OpenAI-compatible) in a
   `models.json` under `/run/lso/agent` (`PI_CODING_AGENT_DIR`), kept as an item artifact.
   pi is metered, so its base URL is the item's proxy route and it has no key (`apiKey:
@@ -528,10 +606,12 @@ Each call appends one record to the item's `usage.jsonl`:
 
 | Event | Key fields |
 | --- | --- |
+| `consult_requested` | the executor's question, turn |
 | `trigger_fired` | intervention, reason, turn |
 | `brief_built` | level, tokens, identifiers redacted, role-map size |
-| `advisor_request` | request id, input tokens, brief text |
+| `advisor_request` | request id, input tokens, brief text, prompt hash |
 | `advisor_response` | request id, output tokens, cached tokens, latency (ms) |
+| `advisor_error` | request id, message |
 | `advice_applied` | request id, turn it was injected at |
 | `budget_exhausted` | consults used, limit |
 
@@ -675,7 +755,7 @@ notes, measurements, and problems found: [task-pipeline.md](task-pipeline.md).
    shuffle within each repository (default half to `test`; a repository with one task goes
    to `dev`). A smoke subset (the three quickest `dev` tasks from different repositories) is
    written next to it.
-5. **Agent layer.** Not a per-task image: the agent's bundle (Node, pi, and later the plugin)
+5. **Agent layer.** Not a per-task image: the agent's bundle (Node, pi, and the advisor plugin)
    is mounted read-only from a Docker volume at run time (see the pi adapter).
 
 Task images are local to the machine that built them: the manifest pins each by image ID, and
@@ -723,8 +803,14 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
   calls (arguments, result, error). The agent span also has the metering proxy's counts
   beside the sum of the agent's own, for comparison. pi's JSON events have no times for tool calls, so the
   harness extension `agents/pi/timeline.ts` records turn, model, and tool start and end times.
-  Traces are built after the fact, so every agent gets them, with or without the plugin; the
-  plugin will add advisor spans (triggers, briefs, consults). Long values are clipped to 20k
+  Traces are built after the fact, so every agent gets them, with or without the plugin.
+  Advisor arms add a span per consult from `events.jsonl` (`tracing.advisor_spans`): `advisor:
+  <trigger>` (inputs: reason and turn; output: the injected text; attributes: level, brief
+  tokens, identifiers redacted, request id, prompt hash, applied turn) with a `brief` span (the
+  exact text sent) and an `advisor` model span (system and user messages, the advice, tokens,
+  latency, or the error), plus a span for a consult refused for budget. A consult is placed
+  under the deepest span open when it started: the `consult` tool span for the executor's,
+  between turns for a turn-end trigger. Long values are clipped to 20k
   characters, keeping both ends; the artifacts keep everything.
 - **Pinned inputs.** Each run logs the manifest version, image digests, local model ID and
   MLX quantization, advisor model ID and reasoning effort, plugin and harness versions, and the seed.
@@ -770,6 +856,10 @@ llm_second_opinion/
   including grading. Their images take minutes to build, so CI keeps using the toy set.
 - **Tests.** Unit tests on both sides, plus contract tests that check the plugin's events
   against the schemas. Plugin tests are type-checked (`tsconfig.test.json`) before vitest runs.
+  `test_pi_docker.py` runs pi with the plugin on `toy-add` against one mock server for both
+  roles, through the metering proxy (`fixtures/pi-toy-add-consult.jsonl`: the executor calls
+  `consult`, the advisor answers, the executor fixes the bug), and checks the events, the
+  redaction at L1, the advice reaching pi, metering per role, and the trace.
 - **Generated types.** `plugin/scripts/gen-types.mjs` merges `schemas/*.schema.json` into
   `advisor-core/src/contracts.ts` (committed); `pnpm check:types` fails on drift.
 - **Local MLflow.** `scripts/mlflow-server.sh` runs a tracking server on 127.0.0.1:5050 with
@@ -784,8 +874,13 @@ llm_second_opinion/
       MLX on it. Does the executor's traffic count as exposure, or is that endpoint treated as
       trusted and only advisor traffic measured? This changes the paper's framing of "local".
       (The MLX memory split question is moot while the executor is remote.)
-- [ ] Where the brief builder's role map lives across a session, so advice maps back
-      correctly after context compaction.
+- [x] Where the brief builder's role map lives across a session, so advice maps back
+      correctly after context compaction. In the plugin's memory for the whole pi process;
+      advice is mapped back before injection, so compaction never sees placeholders. (A pi
+      session resume would start a new map; runs do not resume.)
+- [ ] Redaction is heuristic: a project name that reads as an ordinary word (`parse`, `value`)
+      stays in prose at L0–L2, and the same file can get two placeholders (`a.hpp` and
+      `src/a.hpp`). The leakage scorer should measure what slips through.
 - [ ] Whether the re-identification attacker runs at scoring time only, or also as a live
       check that blocks a brief before sending.
 - [ ] CLI name: keep `bench`, or rename (e.g. `lso`)?
@@ -841,3 +936,6 @@ llm_second_opinion/
 | 2026-10-02 | Usage rules: a 2xx call without usage fails the item (error replies without usage are not recorded); a stream the client abandons is read to the end for its usage; each attempt starts a fresh `usage.jsonl`. Usage preflight through the proxy before a batch, `--no-preflight` for the mock server and tests only; the mock server answers the preflight without using a recording and makes up marked usage for recordings without it. |
 | 2026-10-02 | Token budget `limits.max_tokens` (prompt + completion over all roles): once reached the proxy answers 403 `token_limit` and the runner records exit reason `token_limit`. Unset optional limits are left out of the config hash, so existing hashes are unchanged. |
 | 2026-10-02 | Cost: `prices` per models key (input, output, optional cached input, USD per million tokens), outside the config hash; reasoning tokens priced as output; `cost_usd` null if a model that made calls has no price. Ledger columns `executor_prompt_tokens`, `executor_completion_tokens`, `advisor_prompt_tokens`, `advisor_completion_tokens`, `model_calls`, `cost_usd` (added to old ledgers in place); MLflow item metrics, arm sums and medians, and proxy vs agent counts on the agent span; `bench report` shows tokens and cost per arm and per resolved task. |
+| 2026-10-02 | Advisor plugin built: advisor-core (config check, `{{name}}` rendering with each slot's placeholder list, trigger engine, redaction with a per-run role map, L0–L3 brief builder, OpenAI-compatible client, session) and pi-binding (pi extension). Levels, trigger rules, cooldown and budget semantics as in [The advisor plugin](#the-advisor-plugin); `{{code}}` is empty at L0 and L1. `max_consults` counts attempts, including failed ones. |
+| 2026-10-02 | Advice injection in pi: consult tool → tool result; `plan` → `before_agent_start` custom message (before the first model call, from the issue alone, not a review of an executor plan); other harness triggers → a `turn_end` custom message entry with `continue: true`. `executor_guidance` via `before_agent_start`'s `appendSystemPrompt` (no CLI flag). An advisor arm's `advisor.json` must carry its prompt set; the plugin has no built-in prompts. |
+| 2026-10-02 | The plugin is bundled with esbuild from its TypeScript sources into one extension file in a first stage of the pi bundle image (named build contexts), not built on the host. The plugin keeps its own `advice.jsonl` (system and user messages, advice received and injected) next to the contract events, since `advisor_response` carries no text. Advisor spans in item traces come from `events.jsonl` and `advice.jsonl`. |

@@ -1,16 +1,21 @@
 {
   "name": "@llm-second-opinion/pi-binding",
   "version": "0.0.1",
-  "description": "pi extension that wires advisor-core into pi sessions.",
+  "description": "pi extension that wires advisor-core into pi sessions; bundled into one file for the agent bundle.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p .",
-    "test": "vitest run --passWithNoTests"
+    "build": "tsc -p . && node ../scripts/bundle-pi.mjs",
+    "test": "tsc -p tsconfig.test.json && vitest run"
   },
   "dependencies": {
     "@llm-second-opinion/advisor-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.99.1",
+    "ajv": "^8.20.0",
+    "typebox": "1.3.27"
   }
 }

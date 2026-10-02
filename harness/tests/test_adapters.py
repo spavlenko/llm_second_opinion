@@ -62,6 +62,19 @@ ENDPOINT = ModelEndpoint(
 )
 
 
+def argv(command: str) -> list[str]:
+    return shlex.split(command.split(" -- ")[0].removeprefix("exec "))
+
+
+def test_advisor_arms_load_the_plugin():
+    pi = PiAdapter(AgentSpec(adapter="pi"))
+    assert "advisor" in pi.capabilities
+    assert not any(a.endswith("lso-advisor.js") for a in argv(pi.command(ENDPOINT)))
+    advised = argv(pi.command(ENDPOINT, advisor=True))
+    extensions = [advised[i + 1] for i, a in enumerate(advised) if a == "-e"]
+    assert extensions[-1] == "/opt/lso-agent/extensions/lso-advisor.js"
+
+
 def test_command_uses_only_harness_extensions_and_the_executor():
     pi = PiAdapter(AgentSpec(adapter="pi", options={"tools": ["read", "bash"]}))
     argv = shlex.split(pi.command(ENDPOINT).split(" -- ")[0].removeprefix("exec "))
