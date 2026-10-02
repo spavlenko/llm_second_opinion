@@ -2,4 +2,6 @@ packages:
   - advisor-core
   - pi-binding
 allowBuilds:
+  '@google/genai': false
   esbuild: true
+  protobufjs: false
