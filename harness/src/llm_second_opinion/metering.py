@@ -6,7 +6,11 @@ real endpoint per role) and gives the agent proxy URLs, `/items/<id>/<role>/v1`.
 forwards each call with the API key and secret headers from the host environment, so
 containers hold no secrets, and appends one `UsageRecord` per call. Counts come only from the
 provider's `usage`: streaming requests are made to include it, and a successful call without
-it marks the item failed. Nothing is estimated.
+it marks the item failed. Nothing is estimated. A call that fails (an error status, or no
+answer at all) is recorded too, with zero tokens. Next to `usage.jsonl`, `requests.jsonl` has
+each request's parameters (everything but the messages; tools by name), and
+`executor-request.json` the first executor request in full (system prompt and tool schemas).
+Request bodies hold no secrets: keys and secret headers exist only in the proxy's headers.
 
 Not the mock server's upstream mode: that one is single-threaded, buffers whole responses,
 and drops streaming; here parallel items stream through unchanged.
@@ -40,12 +44,19 @@ UPSTREAM_TIMEOUT_S = 600  # per socket read; a reasoning model can think for min
 DRAIN_TIMEOUT_S = 600  # how long an item waits for its in-flight calls after the agent stops
 ROLES: tuple[Role, ...] = ("executor", "advisor")
 PREFLIGHT_HEADER = "X-LSO-Preflight"  # lets the mock server answer without using a recording
+# The advisor plugin's request id, which joins a usage record to its advisor_request event.
+# Read by the proxy, not forwarded.
+REQUEST_ID_HEADER = "X-LSO-Request-Id"
+REQUESTS_FILE = "requests.jsonl"
+FIRST_REQUEST_FILE = "executor-request.json"
+_SECRET_FIELDS = {"api_key", "apikey", "authorization", "key"}  # never written, if a body has one
 
 _ROUTE = re.compile(r"^/items/(?P<item>[0-9a-f]+)/(?P<role>executor|advisor)/v1(?P<rest>/.*)?$")
 # Not forwarded: hop-by-hop headers, and what the proxy sets itself.
 _DROP_REQUEST = {
     "connection", "keep-alive", "proxy-authorization", "proxy-connection", "te", "trailer",
     "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", "authorization",
+    REQUEST_ID_HEADER.lower(),
 }  # fmt: skip
 _DROP_RESPONSE = {
     "connection", "keep-alive", "proxy-authenticate", "te", "trailer", "transfer-encoding",
@@ -153,27 +164,36 @@ def force_stream_usage(body: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass
 class ItemMeter:
-    """One item's routes, usage file, running totals, and budget. Shared by handler threads."""
+    """One item attempt's routes, usage file, running totals, and budget. Shared by handler
+    threads. The runner gives every attempt a fresh directory, so files are only appended to."""
 
     id: str
     endpoints: dict[str, ModelEndpoint]
     usage_path: Path
     max_tokens: int | None = None
-    calls: int = 0
+    attempt: int = 1
+    calls: int = 0  # successful calls with usage
+    failed: int = 0  # calls answered with an error status, or not answered
     tokens: int = 0
     refused: int = 0  # calls answered with the budget error
     missing: list[str] = field(default_factory=list)  # successful calls without usage
+    _seq: int = 0
+    _first_executor_request: bool = True
     _in_flight: int = 0
     _closed: bool = False
     _cond: threading.Condition = field(default_factory=threading.Condition)
 
     def __post_init__(self) -> None:
-        # Each attempt starts its own record; the ledger keeps only the last attempt.
         self.usage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.usage_path.write_text("")
+        self.usage_path.touch()
 
-    def begin(self) -> tuple[int, str, str] | None:
-        """Admit a model call, or return the refusal (HTTP status, error type, message).
+    @property
+    def requests_path(self) -> Path:
+        return self.usage_path.with_name(REQUESTS_FILE)
+
+    def begin(self) -> int | tuple[int, str, str]:
+        """Admit a model call and return its sequence number (calls in start order), or
+        return the refusal (HTTP status, error type, message).
 
         The budget refusal is a 403: clients retry 429 and 5xx, and a retry cannot help.
         """
@@ -188,32 +208,56 @@ class ItemMeter:
                 )
                 return 403, "token_limit", message
             self._in_flight += 1
-            return None
+            self._seq += 1
+            return self._seq - 1
 
-    def end(self, role: Role, model: str, tokens: Tokens | None, status: int, start: float,
-            note: str) -> None:  # fmt: skip
-        """Record a finished call: a usage line, or a missing-usage mark for a 2xx call."""
+    def request(
+        self, seq: int, role: Role, path: str, body: Any, request_id: str | None, start: float
+    ) -> None:
+        """Record a call's parameters, and the first executor request in full."""
+        record = {"seq": seq, "ts": start, "role": role, "attempt": self.attempt,
+                  "request_id": request_id, "path": path} | request_params(body)  # fmt: skip
+        with self._cond:
+            with self.requests_path.open("a") as f:
+                f.write(json.dumps(record) + "\n")
+            if role == "executor" and self._first_executor_request and isinstance(body, dict):
+                self._first_executor_request = False
+                full = {k: v for k, v in body.items() if k.lower() not in _SECRET_FIELDS}
+                path = self.usage_path.with_name(FIRST_REQUEST_FILE)
+                path.write_text(json.dumps(full, indent=2))
+
+    def end(self, seq: int, role: Role, model: str, tokens: Tokens | None, status: int,
+            start: float, note: str, request_id: str | None = None) -> None:  # fmt: skip
+        """Record a finished call: a usage line (zero tokens for a call that failed), or a
+        missing-usage mark for a 2xx call without usage."""
         with self._cond:
             try:
-                if tokens is not None:
-                    record = UsageRecord(
-                        seq=self.calls,
-                        ts=start,
-                        role=role,
-                        model=model,
-                        prompt_tokens=tokens.prompt,
-                        completion_tokens=tokens.completion,
-                        cached_tokens=tokens.cached,
-                        reasoning_tokens=tokens.reasoning,
-                        latency_ms=(time.time() - start) * 1000,
-                        status=status,
-                    )
-                    with self.usage_path.open("a") as f:
-                        f.write(record.model_dump_json() + "\n")
-                    self.calls += 1
-                    self.tokens += tokens.prompt + tokens.completion
-                elif 200 <= status < 300:
+                ok = 200 <= status < 300
+                if tokens is None and ok:
                     self.missing.append(f"{role} call {note}: HTTP {status} without usage")
+                    return
+                tokens = tokens or Tokens(0, 0)
+                record = UsageRecord(
+                    seq=seq,
+                    ts=start,
+                    role=role,
+                    model=model,
+                    prompt_tokens=tokens.prompt,
+                    completion_tokens=tokens.completion,
+                    cached_tokens=tokens.cached,
+                    reasoning_tokens=tokens.reasoning,
+                    latency_ms=(time.time() - start) * 1000,
+                    status=status,
+                    request_id=request_id,
+                    attempt=self.attempt,
+                )
+                with self.usage_path.open("a") as f:
+                    f.write(record.model_dump_json() + "\n")
+                if ok:
+                    self.calls += 1
+                else:
+                    self.failed += 1
+                self.tokens += tokens.prompt + tokens.completion
             finally:
                 self._in_flight -= 1
                 self._cond.notify_all()
@@ -231,6 +275,32 @@ class ItemMeter:
                     f"{len(self.missing)} model call(s) without usage, so the item has no "
                     f"exact token count: {'; '.join(self.missing[:3])}"
                 )
+
+
+def request_params(body: Any) -> dict[str, Any]:
+    """A request's parameters without its messages: everything that steers sampling (model,
+    temperature, top_p, seed, max_tokens, reasoning_effort, ...), the tools by name, and the
+    number of messages."""
+    if not isinstance(body, dict):
+        return {"body": None}
+    params: dict[str, Any] = {}
+    for name, value in body.items():
+        if name.lower() in _SECRET_FIELDS:
+            continue
+        if name in ("messages", "input"):
+            params[f"{name}_count"] = len(value) if isinstance(value, list) else 1
+        elif name == "tools" and isinstance(value, list):
+            params["tools"] = [_tool_name(t) for t in value]
+        else:
+            params[name] = value
+    return params
+
+
+def _tool_name(tool: Any) -> str | None:
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function")
+    return (function.get("name") if isinstance(function, dict) else None) or tool.get("name")
 
 
 # --- the proxy -----------------------------------------------------------------------
@@ -266,10 +336,14 @@ class MeteringProxy(ThreadingHTTPServer):
         self.server_close()
 
     def register(
-        self, endpoints: dict[str, ModelEndpoint], usage_path: Path, max_tokens: int | None
+        self,
+        endpoints: dict[str, ModelEndpoint],
+        usage_path: Path,
+        max_tokens: int | None,
+        attempt: int = 1,
     ) -> ItemMeter:
         """Open routes for one item attempt; the id is random, so no item can guess another's."""
-        meter = ItemMeter(secrets.token_hex(8), endpoints, usage_path, max_tokens)
+        meter = ItemMeter(secrets.token_hex(8), endpoints, usage_path, max_tokens, attempt)
         with self._lock:
             self.items[meter.id] = meter
         return meter
@@ -340,6 +414,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         body = self._read_body()
         model = endpoint.model
+        request = None
         if self.command == "POST" and body:
             try:
                 request = json.loads(body)
@@ -350,22 +425,26 @@ class _Handler(BaseHTTPRequestHandler):
                 forced = force_stream_usage(request)
                 if forced is not request:
                     body = json.dumps(forced).encode()
+                request = forced  # what is recorded is what goes upstream
         target = (
             endpoint.base_url.rstrip("/") + (route["rest"] or "") + (f"?{query}" if query else "")
         )
         if self.command != "POST":  # e.g. GET /models: not a model call, nothing to meter
             self._relay(target, endpoint, body, None)
             return
-        refusal = meter.begin()
-        if refusal:
-            self._error(*refusal)
+        seq = meter.begin()
+        if isinstance(seq, tuple):
+            self._error(*seq)
             return
         start = time.time()
+        request_id = self.headers.get(REQUEST_ID_HEADER)
         tokens, status = None, 0
         try:
+            meter.request(seq, role, route["rest"] or "/", request, request_id, start)
             tokens, status = self._relay(target, endpoint, body, StreamUsage())
         finally:
-            meter.end(role, model, tokens, status, start, f"to {route['rest'] or '/'}")
+            note = f"to {route['rest'] or '/'}"
+            meter.end(seq, role, model, tokens, status, start, note, request_id)
 
     def _relay(
         self, target: str, endpoint: ModelEndpoint, body: bytes, usage: StreamUsage | None
@@ -465,10 +544,11 @@ class _Handler(BaseHTTPRequestHandler):
 def preflight(proxy: MeteringProxy, endpoints: Mapping[str, ModelEndpoint], out_dir: Path) -> None:
     """Send one tiny streaming request to each endpoint through the proxy (the path every
     call takes) and refuse the batch if any answer lacks usage. The proxy is asked for
-    usage, not the request, so this also checks that forcing `include_usage` works."""
+    usage, not the request, so this also checks that forcing `include_usage` works. Each
+    endpoint's call is recorded in `out_dir/<key>/usage.jsonl`."""
     problems = []
     for key, endpoint in endpoints.items():
-        meter = proxy.register({"executor": endpoint}, out_dir / f"{key}.usage.jsonl", None)
+        meter = proxy.register({"executor": endpoint}, out_dir / key / "usage.jsonl", None)
         try:
             error = _preflight_call(proxy.url(meter, "executor", "127.0.0.1"), endpoint.model)
             if error is None:
@@ -521,10 +601,13 @@ def read_usage(path: Path) -> list[UsageRecord]:
 
 
 def summarize_usage(records: Iterable[UsageRecord]) -> list[RoleUsage]:
-    """Per-role totals, for `AgentResult.usage`; a role with no calls is left out."""
+    """Per-role totals, for `AgentResult.usage`; a role with no successful call is left out.
+    Failed calls (no 2xx answer) carry no tokens and are not counted as calls."""
     counts = ("prompt_tokens", "completion_tokens", "cached_tokens", "reasoning_tokens")
     totals: dict[str, dict[str, int]] = {}
     for r in records:
+        if not 200 <= r.status < 300:
+            continue
         t = totals.setdefault(r.role, dict.fromkeys(("calls", *counts), 0))
         t["calls"] += 1
         for name in counts:
@@ -553,14 +636,27 @@ def cost_usd(usage: list[RoleUsage], prices: Mapping[str, Price | None]) -> floa
     return total
 
 
-def ledger_fields(usage: list[RoleUsage], cost: float | None) -> dict[str, Any]:
-    """The ledger's token columns for a metered item (zeros for a role without calls)."""
+def failed_calls(records: Iterable[UsageRecord]) -> int:
+    return sum(not 200 <= r.status < 300 for r in records)
+
+
+def ledger_fields(usage: list[RoleUsage], cost: float | None, failed: int = 0) -> dict[str, Any]:
+    """The ledger's spend columns for a metered item or attempt (zeros for a role without
+    calls)."""
     by_role = {u.role: u for u in usage}
     fields: dict[str, Any] = {}
     for role in ROLES:
         u = by_role.get(role)
-        fields[f"{role}_prompt_tokens"] = u.prompt_tokens if u else 0
-        fields[f"{role}_completion_tokens"] = u.completion_tokens if u else 0
+        for kind in ("prompt", "completion", "cached", "reasoning"):
+            fields[f"{role}_{kind}_tokens"] = getattr(u, f"{kind}_tokens") if u else 0
     fields["model_calls"] = sum(u.calls for u in usage)
+    fields["failed_calls"] = failed
     fields["cost_usd"] = cost
     return fields
+
+
+def spend(path: Path, prices: Mapping[str, Price | None]) -> dict[str, Any]:
+    """The spend columns from a usage.jsonl, whatever the outcome of the attempt it records."""
+    records = read_usage(path)
+    usage = summarize_usage(records)
+    return ledger_fields(usage, cost_usd(usage, prices), failed_calls(records))

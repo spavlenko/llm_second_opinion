@@ -38,10 +38,11 @@ from llm_second_opinion.metering import (
     preflight,
     read_usage,
     rewrite,
+    summarize_usage,
     usage_tokens,
 )
 from llm_second_opinion.mock_server import MockServer
-from llm_second_opinion.report import format_table, summarize
+from llm_second_opinion.report import format_spend, format_table, spend_summary, summarize
 from llm_second_opinion.runner import Runner
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -265,13 +266,73 @@ def test_a_call_without_usage_fails_the_item(proxy, upstream, tmp_path):
     assert read_usage(tmp_path / "usage.jsonl") == []
 
 
-def test_an_error_reply_without_usage_is_not_a_missing_count(proxy, upstream, tmp_path):
-    meter = proxy.register({"executor": endpoint(upstream)}, tmp_path / "usage.jsonl", None)
+def test_an_error_reply_is_recorded_with_zero_tokens(proxy, upstream, tmp_path):
+    meter = proxy.register({"executor": endpoint(upstream)}, tmp_path / "usage.jsonl", None, 3)
     upstream.reply_json({"error": {"message": "overloaded"}}, status=503)
     with pytest.raises(urllib.error.HTTPError) as err:
         post(chat_url(proxy, meter), {"model": "m"})
     assert err.value.code == 503
     meter.close(1)  # nothing billed, nothing missing
+    [record] = read_usage(tmp_path / "usage.jsonl")
+    assert (record.status, record.prompt_tokens, record.attempt) == (503, 0, 3)
+    assert (meter.calls, meter.failed) == (0, 1)
+    assert summarize_usage([record]) == []  # not a call that counts
+
+
+def test_a_connection_failure_is_recorded_as_status_0(proxy, tmp_path):
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    down = ModelEndpoint(base_url=f"http://127.0.0.1:{port}/v1", model="m")
+    meter = proxy.register({"executor": down}, tmp_path / "usage.jsonl", None)
+    with pytest.raises(urllib.error.HTTPError) as err:
+        post(chat_url(proxy, meter), {"model": "m"})
+    assert err.value.code == 502
+    meter.close(1)
+    [record] = read_usage(tmp_path / "usage.jsonl")
+    assert (record.status, record.completion_tokens) == (0, 0)
+    assert record.latency_ms >= 0
+
+
+def test_requests_are_recorded_without_messages_or_secrets(proxy, upstream, tmp_path):
+    model = endpoint(upstream, api_key_env="LSO_TEST_KEY", header_env={"X-S": "LSO_TEST_HEADER"})
+    meter = proxy.register(
+        {"executor": model, "advisor": model}, tmp_path / "usage.jsonl", None, attempt=2
+    )
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    tool = {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}}
+    body = {
+        "model": "m", "temperature": 0.2, "top_p": 0.9, "seed": 7, "max_tokens": 100,
+        "reasoning_effort": "high", "tools": [tool],
+        "messages": [{"role": "system", "content": "SYSTEM PROMPT"}, {"role": "user", "content": "hi"}],
+    }  # fmt: skip
+    client_key = {"Authorization": "Bearer sk-client-not-forwarded"}
+    post(chat_url(proxy, meter), body, client_key)
+    post(chat_url(proxy, meter), body | {"messages": []}, client_key)
+    post(chat_url(proxy, meter, "advisor"), {"model": "k"}, {"X-LSO-Request-Id": "r1"})
+    meter.close(1)
+    first, second, advisor = [
+        json.loads(line) for line in meter.requests_path.read_text().splitlines()
+    ]
+    assert first | {"ts": 0} == {
+        "seq": 0, "ts": 0, "role": "executor", "attempt": 2, "request_id": None,
+        "path": "/chat/completions", "model": "m", "temperature": 0.2, "top_p": 0.9, "seed": 7,
+        "max_tokens": 100, "reasoning_effort": "high", "tools": ["bash"], "messages_count": 2,
+    }  # fmt: skip
+    assert second["messages_count"] == 0 and advisor["request_id"] == "r1"
+    full = json.loads((tmp_path / "executor-request.json").read_text())
+    assert full["messages"][0]["content"] == "SYSTEM PROMPT" and full["tools"] == [tool]
+    usage = read_usage(tmp_path / "usage.jsonl")
+    assert [r.request_id for r in usage] == [None, None, "r1"]
+    assert {r.attempt for r in usage} == {2}
+    # The plugin's request id stays on the host.
+    assert all("X-LSO-Request-Id" not in r["headers"] for r in upstream.requests)
+    for path in tmp_path.iterdir():
+        text = path.read_text()
+        for secret in (SECRET, "header-secret", "sk-client-not-forwarded"):
+            assert secret not in text, (path.name, secret)
 
 
 def test_usage_is_read_to_the_end_after_the_client_hangs_up(proxy, upstream, tmp_path):
@@ -311,7 +372,7 @@ def test_preflight_passes_when_streams_report_usage(proxy, upstream, tmp_path):
     upstream.reply_stream(sse({"choices": [], "usage": USAGE}))
     preflight(proxy, {"local": endpoint(upstream)}, tmp_path)
     assert json.loads(upstream.requests[0]["body"])["stream_options"]["include_usage"]
-    assert len(read_usage(tmp_path / "local.usage.jsonl")) == 1
+    assert len(read_usage(tmp_path / "local/usage.jsonl")) == 1
 
 
 def test_preflight_refuses_an_endpoint_without_usage(proxy, upstream, tmp_path):
@@ -447,7 +508,8 @@ def run_metered(exp, tmp_path, preflight=False, tracker=None):
     runner = Runner(exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None, preflight=preflight)
     runner.tracker = tracker
     [outcome] = runner.run()
-    return outcome, runner.ledger.rows(exp.name)[0], tmp_path / "m/A/toy-add/seed-0"
+    [item] = sorted((tmp_path / "m/A/toy-add/seed-0").glob("*/attempt-*"))[-1:]
+    return outcome, runner.ledger.rows(exp.name)[0], item
 
 
 class RecordingTracker:
@@ -599,8 +661,62 @@ def test_max_tokens_is_hashed_only_when_set(repo, upstream):
 
 
 def test_existing_hashes_are_unchanged(repo):
+    # Pinned on 2026-10-03, when the hash gained the manifest version and the adapter's
+    # fingerprint (here without one, as for the gold adapter) and dropped unset model fields.
     exp = Experiment.from_yaml(repo / "experiments/toy-pi.yaml")
-    assert exp.config_hash(exp.arms[0]) == "bce01b09088c1ce6"  # before max_tokens existed
+    assert exp.config_hash(exp.arms[0]) == "54ecd6d407a42959"
+    fingerprint = {"prompt": "p", "bundle_image": "sha256:1"}
+    assert exp.config_hash(exp.arms[0], fingerprint) == "86f4ea1c7ea51290"
+    other = exp.config_hash(exp.arms[0], fingerprint | {"bundle_image": "sha256:2"})
+    assert other != exp.config_hash(exp.arms[0], fingerprint)
+
+
+def test_hash_inputs(repo, upstream, tmp_path):
+    exp = metered_experiment(repo, upstream)
+    arm = exp.arms[0]
+    base = exp.config_hash(arm)
+    sampled = exp.model_copy(
+        update={"models": {"local": exp.models["local"].model_copy(update={"temperature": 0.0})}}
+    )
+    assert sampled.config_hash(arm) != base  # sampling changes behaviour
+    assert exp.config_hash(arm, {"prompt": "a"}) != exp.config_hash(arm, {"prompt": "b"})
+    manifest = tmp_path / "toy-v9.yaml"
+    manifest.write_text(
+        (repo / "tasks/manifests/toy-v1.yaml").read_text().replace("toy-v1", "toy-v9")
+    )
+    assert metered_experiment(repo, upstream, tasks=manifest).config_hash(arm) != base
+
+
+def test_retry_keeps_both_attempts_and_both_spends(repo, tmp_path, upstream, model_agent):
+    class FailsOnce(ModelAgent):
+        def run(self, box, task, config, limits, env):
+            result = super().run(box, task, config, limits, env)
+            if len(self.configs) == 1:
+                raise RuntimeError("container died after a model call")
+            return result
+
+    agent = FailsOnce()
+    ADAPTERS["model-agent"] = lambda spec: agent
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    exp = metered_experiment(repo, upstream, execution={"retries": 1})
+    outcome, row, item = run_metered(exp, tmp_path)
+    assert outcome.status == "done" and item.name == "attempt-2"
+    runner = Runner(exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None)
+    attempts = runner.ledger.attempts("m")
+    assert [(a["attempt"], a["status"]) for a in attempts] == [(1, "failed"), (2, "done")]
+    assert [a["executor_prompt_tokens"] for a in attempts] == [120, 120]
+    assert attempts[0]["cost_usd"] == attempts[1]["cost_usd"] == pytest.approx(420e-6)
+    # Each attempt has its own usage record; the item counts only the second.
+    first = item.parent / "attempt-1"
+    assert [r.attempt for r in read_usage(first / "usage.jsonl")] == [1]
+    assert [r.attempt for r in read_usage(item / "usage.jsonl")] == [2]
+    assert row["executor_prompt_tokens"] == 120 and row["attempt_dir"].endswith("attempt-2")
+    spent = spend_summary(exp, [row], attempts, runner.ledger.preflight("m"))
+    assert spent.counted.cost_usd == pytest.approx(420e-6)
+    assert spent.attempts.cost_usd == pytest.approx(840e-6)
+    assert spent.total.cost_usd == pytest.approx(840e-6)  # no preflight in this test
+    assert "all attempts" in format_spend(spent)
 
 
 def test_prices_must_name_models(repo, upstream):

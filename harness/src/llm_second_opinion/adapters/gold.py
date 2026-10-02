@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 from llm_second_opinion.adapters.base import Layer, parse_options, workspace_diff
 from llm_second_opinion.config import AgentSpec, Limits
@@ -32,6 +33,15 @@ class GoldAdapter:
 
     def spans(self, item_dir: Path) -> list[Span]:
         return []
+
+    def fingerprint(self) -> dict[str, str]:
+        return {}
+
+    def provenance(self) -> dict[str, Any]:
+        return {}
+
+    def metrics(self, item_dir: Path) -> dict[str, Any]:
+        return {}
 
     def run(
         self, box: Container, task: Task, config: RunConfig, limits: Limits, env: dict[str, str]

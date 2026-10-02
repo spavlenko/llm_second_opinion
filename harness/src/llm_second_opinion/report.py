@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import random
 import statistics
+import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from llm_second_opinion.config import ADVISOR_MODEL, ConfigError, Experiment
+from llm_second_opinion.ledger import ROLES, TOKEN_KINDS
 
 ITEM_COLUMNS = [
-    "arm", "task", "seed", "config_hash", "status", "attempts", "resolved", "grade",
-    "exit_reason", "turns", "duration_s", "error", "mlflow_run_id",
-    "executor_prompt_tokens", "executor_completion_tokens", "advisor_prompt_tokens",
-    "advisor_completion_tokens", "model_calls", "cost_usd",
+    "arm", "task", "seed", "config_hash", "image_id", "status", "attempts", "attempt_dir",
+    "resolved", "grade", "exit_reason", "turns", "duration_s", "error", "mlflow_run_id",
+    "prompt_hash", "level", "interventions",
+    "f2p_passed", "f2p_total", "p2p_passed", "p2p_total", "build_failed", "edited_tests",
+    *[f"{role}_{kind}_tokens" for role in ROLES for kind in TOKEN_KINDS],
+    "model_calls", "failed_calls", "cost_usd",
 ]  # fmt: skip
-TOKEN_COLUMNS = ITEM_COLUMNS[-6:-2]
+# Prompt + completion per role (cached tokens are part of the prompt, reasoning tokens of the
+# completion).
+TOKEN_COLUMNS = [f"{role}_{kind}_tokens" for role in ROLES for kind in ("prompt", "completion")]
 
 
 @dataclass
@@ -39,6 +46,18 @@ class ArmSummary:
     advisor_tokens: list[int] = field(default_factory=list)
     # Cost per done item; None where an item was not metered or a model had no price.
     costs: list[float | None] = field(default_factory=list)
+    # Every attempt at this config, whatever its outcome (failed and interrupted included).
+    attempts: int = 0
+    attempt_statuses: Counter[str] = field(default_factory=Counter)
+    attempt_costs: list[float | None] = field(default_factory=list)
+
+    @property
+    def spent(self) -> float | None:
+        """What all attempts at this config cost, counted or not; None unless every metered
+        attempt has a cost."""
+        if not self.attempt_costs or any(c is None for c in self.attempt_costs):
+            return None
+        return sum(self.attempt_costs)
 
     @property
     def cost(self) -> float | None:
@@ -77,18 +96,62 @@ def wilson_interval(successes: int, n: int, z: float = 1.96) -> tuple[float, flo
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def current_rows(exp: Experiment, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ledger rows for the experiment's arms at their current config hash; stale rows are dropped."""
-    hashes = {arm.name: exp.config_hash(arm) for arm in exp.arms}
-    return [r for r in rows if hashes.get(r["arm"]) == r["config_hash"]]
+Hashes = Mapping[str, str]  # arm name -> current config hash (`runner.arm_hashes`)
+Images = Mapping[str, str]  # task id -> the image it runs on now
 
 
-def summarize(exp: Experiment, rows: list[dict[str, Any]], tasks: int) -> list[ArmSummary]:
+def _hashes(exp: Experiment, hashes: Hashes | None) -> Hashes:
+    """The arms' current hashes; without the runner's (which include each adapter's
+    fingerprint), the hash without one: right for adapters that have none, e.g. `gold`."""
+    return hashes if hashes is not None else {arm.name: exp.config_hash(arm) for arm in exp.arms}
+
+
+def recorded_hashes(exp: Experiment, fingerprints: Mapping[str, Mapping[str, str]]) -> Hashes:
+    """The arms' current hashes from the config and the adapter fingerprint each arm last
+    ran with (the ledger's `fingerprints`), so a report needs no Docker to identify the
+    agent bundle. A config edit still makes earlier rows stale; a bundle rebuilt since the
+    last batch counts once a batch has used it."""
+    return {arm.name: exp.config_hash(arm, fingerprints.get(arm.name)) for arm in exp.arms}
+
+
+def current_rows(
+    exp: Experiment,
+    rows: list[dict[str, Any]],
+    hashes: Hashes | None = None,
+    images: Images | None = None,
+) -> list[dict[str, Any]]:
+    """Ledger rows (items or attempts) for the experiment's arms at their current config hash
+    and, given `images`, on each task's current image; stale rows are dropped. A row from
+    before images were recorded (image_id '') is kept."""
+    hashes = _hashes(exp, hashes)
+    return [
+        r
+        for r in rows
+        if hashes.get(r["arm"]) == r["config_hash"]
+        and (images is None or not r.get("image_id") or images.get(r["task"]) == r["image_id"])
+    ]
+
+
+def summarize(
+    exp: Experiment,
+    rows: list[dict[str, Any]],
+    tasks: int,
+    hashes: Hashes | None = None,
+    images: Images | None = None,
+    attempts: list[dict[str, Any]] | None = None,
+) -> list[ArmSummary]:
+    hashes = _hashes(exp, hashes)
     summaries = {
-        arm.name: ArmSummary(arm.name, exp.config_hash(arm), planned=tasks * exp.seeds)
+        arm.name: ArmSummary(arm.name, hashes[arm.name], planned=tasks * exp.seeds)
         for arm in exp.arms
     }
-    for row in current_rows(exp, rows):
+    for row in current_rows(exp, attempts or [], hashes, images):
+        s = summaries[row["arm"]]
+        s.attempts += 1
+        s.attempt_statuses[row["status"]] += 1
+        if row.get("model_calls") is not None:
+            s.attempt_costs.append(row.get("cost_usd"))
+    for row in current_rows(exp, rows, hashes, images):
         s = summaries[row["arm"]]
         if row["status"] == "failed":
             s.failed += 1
@@ -109,7 +172,7 @@ def summarize(exp: Experiment, rows: list[dict[str, Any]], tasks: int) -> list[A
 def format_table(summaries: list[ArmSummary]) -> str:
     header = f"{'arm':<12} {'done':>9} {'failed':>6} {'resolved':>8} {'rate':>6} {'95% CI':>13} "
     header += f"{'min/item':>8} {'turns':>6} {'ktok/item':>9} {'adv ktok':>8} {'cost $':>8} "
-    header += f"{'$/resolved':>10}  exit reasons"
+    header += f"{'$/resolved':>10} {'tries':>5} {'spent $':>8}  exit reasons"
     lines = [header, "-" * len(header)]
     for s in summaries:
         rate = f"{s.rate:.0%}" if s.rate is not None else "-"
@@ -121,11 +184,16 @@ def format_table(summaries: list[ArmSummary]) -> str:
         cost = f"{s.cost:.2f}" if s.cost is not None else "-"
         per_resolved = f"{s.cost_per_resolved:.3f}" if s.cost_per_resolved is not None else "-"
         reasons = ", ".join(f"{k} {v}" for k, v in s.exit_reasons.most_common())
+        spent = f"{s.spent:.2f}" if s.spent is not None else "-"
         lines.append(
             f"{s.arm:<12} {f'{s.done}/{s.planned}':>9} {s.failed:>6} {s.resolved:>8} {rate:>6} "
             f"{ci:>13} {minutes:>8} {turns:>6} {tokens:>9} {advisor:>8} {cost:>8} "
-            f"{per_resolved:>10}  {reasons}"
+            f"{per_resolved:>10} {s.attempts:>5} {spent:>8}  {reasons}"
         )
+    lines.append(
+        "cost $ = the done items' counted attempts; tries and spent $ = every attempt at this "
+        "config, failed and interrupted ones included"
+    )
     return "\n".join(lines)
 
 
@@ -172,10 +240,15 @@ class Paired:
     gap_ci_high: float | None = None
 
 
-def outcomes(exp: Experiment, rows: list[dict[str, Any]]) -> dict[str, dict[tuple, bool]]:
+def outcomes(
+    exp: Experiment,
+    rows: list[dict[str, Any]],
+    hashes: Hashes | None = None,
+    images: Images | None = None,
+) -> dict[str, dict[tuple, bool]]:
     """Resolved or not per arm and (task, seed), for done items at the current config."""
     by_arm: dict[str, dict[tuple, bool]] = defaultdict(dict)
-    for r in current_rows(exp, rows):
+    for r in current_rows(exp, rows, hashes, images):
         if r["status"] == "done":
             by_arm[r["arm"]][(r["task"], r["seed"])] = bool(r["resolved"])
     return by_arm
@@ -187,6 +260,8 @@ def paired_comparisons(
     baseline: str | None = None,
     ceiling: str | None = None,
     resamples: int = RESAMPLES,
+    hashes: Hashes | None = None,
+    images: Images | None = None,
 ) -> list[Paired]:
     """Each arm against `baseline` (default A0 when present) on shared items.
 
@@ -204,7 +279,7 @@ def paired_comparisons(
     ceiling = ceiling or ("A4" if "A4" in names else None)
     if baseline is None:
         return []
-    results = outcomes(exp, rows)
+    results = outcomes(exp, rows, hashes, images)
     base = results.get(baseline, {})
     top = results.get(ceiling, {}) if ceiling and ceiling != baseline else None
     out = []
@@ -386,7 +461,12 @@ class CostPoint:
     on_front: bool = False
 
 
-def pareto(exp: Experiment, rows: list[dict[str, Any]]) -> tuple[str, list[CostPoint]] | None:
+def pareto(
+    exp: Experiment,
+    rows: list[dict[str, Any]],
+    hashes: Hashes | None = None,
+    images: Images | None = None,
+) -> tuple[str, list[CostPoint]] | None:
     """Resolve rate against advisor cost per item, and which arms are on the Pareto front
     (no other arm resolves at least as often for no more cost, and better in one).
 
@@ -394,7 +474,7 @@ def pareto(exp: Experiment, rows: list[dict[str, Any]]) -> tuple[str, list[CostP
     an arm whose executor is the advisor model, its executor tokens too). An arm that never
     calls the advisor model costs 0. None when the ledger has no cost data.
     """
-    done = [r for r in current_rows(exp, rows) if r["status"] == "done"]
+    done = [r for r in current_rows(exp, rows, hashes, images) if r["status"] == "done"]
     if any(r.get("cost_usd") is not None for r in done):
         unit, columns, cloud_columns = "USD", ("cost_usd",), ("cost_usd",)
     elif any(r.get(c) is not None for r in done for c in _TOKENS):
@@ -477,6 +557,171 @@ def provenance(exp: Experiment, rows: list[dict[str, Any]], sessions: list[dict[
     if unguarded:
         lines.append(f"WARNING: {len(unguarded)} batch(es) ran test tasks without --final")
     return "\n".join(lines)
+
+
+def variants_tried(rows: list[dict[str, Any]]) -> int:
+    return len({r["config_hash"] for r in rows})
+
+
+# --- Spend: everything the experiment cost, counted or not ----------------------------
+
+
+@dataclass
+class Spend:
+    """Cost and tokens of a set of calls; `cost_usd` is None when any metered row in it has
+    no cost (a model without a price), so a partial sum never reads as the total."""
+
+    rows: int = 0
+    calls: int = 0
+    failed_calls: int = 0
+    tokens: int = 0  # prompt + completion, all roles
+    cost_usd: float | None = 0.0
+
+    def add(self, calls: int, failed: int, tokens: int, cost: float | None) -> None:
+        self.rows += 1
+        self.calls += calls
+        self.failed_calls += failed
+        self.tokens += tokens
+        self.cost_usd = None if cost is None or self.cost_usd is None else self.cost_usd + cost
+
+
+@dataclass
+class SpendSummary:
+    counted: Spend  # the counted attempts of done items at the current config
+    attempts: Spend  # every attempt in the ledger, all configs and outcomes
+    attempt_statuses: dict[str, int]
+    preflight: Spend
+
+    @property
+    def total(self) -> Spend:
+        total = Spend()
+        for part in (self.attempts, self.preflight):
+            total.rows += part.rows
+            total.calls += part.calls
+            total.failed_calls += part.failed_calls
+            total.tokens += part.tokens
+            total.cost_usd = (
+                None
+                if part.cost_usd is None or total.cost_usd is None
+                else total.cost_usd + part.cost_usd
+            )
+        return total
+
+
+def spend_summary(
+    exp: Experiment,
+    rows: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    preflight: list[dict[str, Any]],
+    hashes: Hashes | None = None,
+    images: Images | None = None,
+) -> SpendSummary:
+    """The spend of the counted items next to the total: every attempt (failed, interrupted,
+    and stale configs included) plus the usage preflight calls."""
+    counted, every = Spend(), Spend()
+    for r in current_rows(exp, rows, hashes, images):
+        if r["status"] == "done" and r.get("model_calls") is not None:
+            counted.add(r["model_calls"], r.get("failed_calls") or 0, _tokens(r), r["cost_usd"])
+    for r in attempts:
+        if r.get("model_calls") is not None:
+            every.add(r["model_calls"], r.get("failed_calls") or 0, _tokens(r), r["cost_usd"])
+    checks = Spend()
+    for r in preflight:
+        tokens = r["prompt_tokens"] + r["completion_tokens"]
+        checks.add(r["calls"], r["failed_calls"], tokens, r["cost_usd"])
+    statuses = Counter(r["status"] for r in attempts)
+    return SpendSummary(counted, every, dict(sorted(statuses.items())), checks)
+
+
+def _tokens(row: dict[str, Any]) -> int:
+    return sum(row.get(c) or 0 for c in TOKEN_COLUMNS)
+
+
+def format_spend(s: SpendSummary) -> str:
+    def line(name: str, p: Spend, unit: str) -> str:
+        cost = f"${p.cost_usd:.4f}" if p.cost_usd is not None else "$ - (a model has no price)"
+        return (
+            f"  {name:<16} {cost:>14}  {p.tokens / 1000:>10.1f} ktok  {p.calls:>6} calls "
+            f"({p.failed_calls} failed)  {p.rows} {unit}"
+        )
+
+    statuses = ", ".join(f"{k} {v}" for k, v in s.attempt_statuses.items()) or "none"
+    return "\n".join(
+        [
+            "spend (metered calls):",
+            line("counted items", s.counted, "item(s) done at the current config"),
+            line("all attempts", s.attempts, f"attempt(s): {statuses}"),
+            line("preflight", s.preflight, "check(s)"),
+            line("total", s.total, "rows"),
+        ]
+    )
+
+
+def report_record(
+    exp: Experiment,
+    summaries: list[ArmSummary],
+    pairs: list[Paired],
+    front: tuple[str, list[CostPoint]] | None,
+    spent: SpendSummary,
+    rows: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """report.json: what `bench report` printed, as data."""
+
+    def arm(s: ArmSummary) -> dict[str, Any]:
+        return {
+            "arm": s.arm,
+            "config_hash": s.config_hash,
+            "planned": s.planned,
+            "done": s.done,
+            "failed": s.failed,
+            "resolved": s.resolved,
+            "rate": s.rate,
+            "interval": s.interval,
+            "mean_duration_s": _mean(s.durations) if s.durations else None,
+            "mean_turns": _mean(s.turns) if s.turns else None,
+            "exit_reasons": dict(s.exit_reasons),
+            "mean_tokens": _mean(s.tokens) if s.tokens else None,
+            "mean_advisor_tokens": _mean(s.advisor_tokens) if s.advisor_tokens else None,
+            "cost_usd": s.cost,
+            "cost_usd_per_resolved": s.cost_per_resolved,
+            "attempts": s.attempts,
+            "attempt_statuses": dict(s.attempt_statuses),
+            "spent_usd": s.spent,
+        }
+
+    return {
+        "experiment": exp.name,
+        "generated": time.time(),
+        "split": exp.split,
+        "arms_in_config": len(exp.arms),
+        "variants_tried": variants_tried(rows),
+        "sessions": len(sessions),
+        "final_sessions": sum(bool(s["final"]) for s in sessions),
+        "unguarded_test_sessions": sum(bool(s["test_tasks"] and not s["final"]) for s in sessions),
+        "arms": [arm(s) for s in summaries],
+        "paired": [asdict(p) for p in pairs],
+        "pareto": ({"unit": front[0], "points": [asdict(p) for p in front[1]]} if front else None),
+        "spend": {
+            "counted": asdict(spent.counted),
+            "all_attempts": asdict(spent.attempts),
+            "attempt_statuses": spent.attempt_statuses,
+            "preflight": asdict(spent.preflight),
+            "total": asdict(spent.total),
+        },
+    }
+
+
+def write_report_json(record: dict[str, Any], exp_dir: Path) -> Path:
+    """`reports/<UTC time>.json` in the experiment's runs directory, one per `bench report`,
+    and a copy as `report.json` (the latest)."""
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(record["generated"]))
+    out = exp_dir / "reports" / f"{stamp}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(record, indent=2)
+    out.write_text(text)
+    (exp_dir / "report.json").write_text(text)
+    return out
 
 
 def _mean(values: list[float]) -> float:

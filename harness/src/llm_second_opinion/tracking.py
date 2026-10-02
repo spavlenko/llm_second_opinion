@@ -6,7 +6,6 @@ grading), and each arm's run gets summary metrics at the end of a batch.
 
 from __future__ import annotations
 
-import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -18,13 +17,15 @@ from mlflow import MlflowClient
 from mlflow.entities import Metric, Param
 
 from llm_second_opinion.ledger import ItemKey
+from llm_second_opinion.source import git_state
 from llm_second_opinion.tracing import Span
 
 _ARM = "lso.arm"
 _HASH = "lso.config_hash"
 _FINAL = "lso.final"  # set on runs from `bench run --final` (test-split tasks)
+_COMMIT = "mlflow.source.git.commit"
+_COMMITS = "lso.git_commits"  # on an arm run: every commit that ran items in it, in order
 DEFAULT_URI = "http://127.0.0.1:5050"  # scripts/mlflow-server.sh
-REPO = Path(__file__).resolve().parents[3]
 
 
 class TrackingError(RuntimeError):
@@ -78,6 +79,8 @@ class Tracker:
                 "mlflow.parentRunId": parent,
                 _ARM: key.arm,
                 _HASH: key.config_hash,
+                "lso.image_id": key.image_id,
+                **self._git,
                 **self._final,
             },
         )
@@ -165,8 +168,18 @@ class Tracker:
             )
             if found:
                 run_id = found[0].info.run_id
+                # A resume may run a newer checkout: the run names the latest commit and
+                # lists every one used.
+                for name, value in self._git.items():
+                    self.client.set_tag(run_id, name, value)
+                commits = [c for c in found[0].data.tags.get(_COMMITS, "").split(",") if c]
+                commit = self._git.get(_COMMIT)
+                if commit and commit not in commits:
+                    self.client.set_tag(run_id, _COMMITS, ",".join([*commits, commit]))
             else:
                 tags = {_ARM: arm, _HASH: config_hash, "lso.level": "arm", **self._git}
+                if _COMMIT in self._git:
+                    tags[_COMMITS] = self._git[_COMMIT]
                 run_id = self.client.create_run(
                     self.experiment_id, run_name=arm, tags=tags
                 ).info.run_id
@@ -179,17 +192,7 @@ class Tracker:
 
 def _git_tags() -> dict[str, str]:
     """The harness checkout's commit, and whether it had uncommitted changes."""
-
-    def git(*args: str) -> str:
-        done = subprocess.run(
-            ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=False
-        )
-        return done.stdout.strip() if done.returncode == 0 else ""
-
-    commit = git("rev-parse", "HEAD")
-    if not commit:
+    state = git_state()
+    if not state["commit"]:
         return {}
-    return {
-        "mlflow.source.git.commit": commit,
-        "lso.git_dirty": str(bool(git("status", "--porcelain"))),
-    }
+    return {_COMMIT: str(state["commit"]), "lso.git_dirty": str(state["dirty"])}

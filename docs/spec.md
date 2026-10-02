@@ -421,7 +421,7 @@ inside a run.
 | `runner` | Expands arms × tasks × seeds into work items; parallel workers, retries, and resume through the ledger |
 | `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id, tokens per role, model calls, cost |
 | `metering` | The metering proxy (per-item routes, secrets added on the host, `usage.jsonl`, token budget), the usage preflight, and cost from the price table |
-| `grading` | Applies the agent's patch and the test patch in a fresh container, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output) |
+| `grading` | Applies the agent's patch in a fresh container, resets the files the test patch touches to the base commit (as SWE-bench does), applies the test patch, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output). Writes `grade.json`: reason, `build_failed`, per-test outcomes, F2P and P2P tallies with the failing tests, listed tests that did not run, duration, the agent's edits to test files, and the grader version. Reasons: `resolved`, `empty_patch`, `patch_failed`, `test_patch_failed`, `build_failed` (run-tests' build-failure marker; tests whose targets did not build count as not run), `tests_failed`, `timeout`. A failed build's whole `/tmp/build.log` is kept as `build.log` (run-tests prints only its tail) |
 | `tracking`, `tracing` | MLflow, mandatory for `bench run`: a run per arm with pinned inputs, git commit, and summary metrics; a child run per item with metrics, artifacts, and a trace built from the agent's logs |
 | `report` | Per-arm resolve rates with Wilson 95% intervals, exit reasons, time and turns; per-item CSV |
 | `scorers` | Capability, cost, harm, identifier leakage, re-identification, and the calibrated advice judge |
@@ -511,7 +511,13 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
   `models.json` under `/run/lso/agent` (`PI_CODING_AGENT_DIR`), kept as an item artifact.
   pi is metered, so its base URL is the item's proxy route and it has no key (`apiKey:
   "none"`, which the proxy replaces). Host-local URLs would be rewritten to
-  `host.docker.internal`.
+  `host.docker.internal`. The endpoint's `temperature`, `top_p`, and `sampling_seed` (as
+  `seed`) go into the model's `samplingParams`, which pi merges into every request body
+  as is.
+- *Fingerprint.* What pi runs that the config does not name is part of the arm's config
+  hash: the fixed task prompt (its hash) and the bundle image's ID (`AgentAdapter.
+  fingerprint`). The ID is the one the build printed; an unchanged bundle keeps it (build
+  cache, no provenance), a rebuilt one is a new configuration, as with task images.
 - *Isolation.* `--no-extensions` (so no MCP or codemode), no skills, prompt templates, themes,
   or context files (`AGENTS.md`/`CLAUDE.md` in a task repository), `--offline`, no telemetry.
   Tools are pi's defaults (read, bash, edit, write) unless the options say otherwise.
@@ -519,9 +525,14 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
   turns, records the limit in `/run/lso/exit.json`, and aborts; the turn the abort cuts short
   is not counted. The wall-clock limit is `timeout` around `exec pi`.
 - *Exit reason.* `time_limit` if the timeout fired; `turn_limit` if the extension recorded
-  it; `crash` if pi exited non-zero or the last assistant message ended in an error (for
-  example the model endpoint failing after pi's retries); otherwise `finished`. Turns are
-  pi's `turn_end` events.
+  it; `crash` if pi exited non-zero or the last assistant message ended in an error;
+  otherwise `finished`. Turns are pi's `turn_end` events. A crash caused by the model
+  endpoint is an outage, not the agent failing: pi gave up retrying (`auto_retry_end` with
+  `success: false`), or the final error is an HTTP status other than 400, 413, or 422 (those
+  are about the request itself, e.g. a context too long) or a connection error. The adapter
+  then raises `AgentInfraError`, which the runner retries like any infrastructure error and
+  finally records as `failed`, never as a done, unresolved item; the agent's result is kept
+  as `agent-result.json`. The proxy's `token_limit` refusal is not an outage.
 - *Prompt.* Until prompt slots exist, a fixed instruction with the issue text: fix the
   source, do not change existing tests, `/opt/lso/run-tests` rebuilds and runs the tests.
 - *Options.* `thinking` (default: the endpoint's `reasoning_effort`), `tools`,
@@ -581,27 +592,40 @@ Each call appends one record to the item's `usage.jsonl`:
 | `model` | Model id as sent |
 | `prompt_tokens`, `completion_tokens` | From the provider's `usage` (streaming: `stream_options.include_usage` is forced on); the Responses API's `input_tokens`/`output_tokens` are read too |
 | `cached_tokens`, `reasoning_tokens` | `prompt_tokens_details.cached_tokens` (or Moonshot's top-level `cached_tokens`) and `completion_tokens_details.reasoning_tokens`; 0 when absent |
-| `latency_ms`, `status` | Wall time and HTTP status |
+| `latency_ms`, `status` | Wall time and HTTP status (0 when no answer came back) |
+| `request_id` | The plugin's request id (header `X-LSO-Request-Id`, read by the proxy and not forwarded) on advisor calls, joining the record to its `advisor_request` event |
+| `attempt` | The item attempt the call belongs to |
+
+Next to it, `requests.jsonl` has one line per call (same `seq`, role, attempt, request id,
+path) with every request parameter except the messages: model, temperature, top_p, seed,
+max_tokens, reasoning_effort, stream options, and the tools by name, plus the number of
+messages. `executor-request.json` holds the first executor request of the attempt in full
+(system prompt and tool schemas). Executor traffic is trusted, so this is not exposure;
+neither file can hold a key, since keys exist only in the headers the proxy adds (a body
+field named like a key is dropped too).
 
 - **Only providers that report usage.** Counts come from the provider, never from estimates,
   so every endpoint must return `usage`, including in streams. Before a batch starts, the
   runner sends one tiny streaming request ("Reply with the single word OK.", no
   `stream_options`, so the proxy's forcing is checked too) through the proxy to each distinct
   endpoint the batch uses (the executors and, for advisor arms, `advisor`), and refuses to run
-  if a response has no `usage`; those calls go to `runs/<experiment>/preflight/`.
+  if a response has no `usage`; those calls go to `runs/<experiment>/preflight/<batch
+  time>/<model key>/` and into the ledger's `preflight` table.
   `bench run --no-preflight` skips it, for the mock server and tests only (the mock server
   also answers the preflight without using up a recording). If a successful (2xx) call during
   a run still arrives without usage, the item fails (it is not recorded as done; the infra
-  retry applies), so no estimated number enters the results. Error responses without usage
-  (a 503, say) are not billed calls and are not recorded.
+  retry applies), so no estimated number enters the results. A call that fails (an error
+  status such as a 503, or no answer: status 0) is recorded with zero tokens and its
+  latency; it is not counted in `calls` or `model_calls` (`failed_calls` counts it).
 - **Token budget.** `limits.max_tokens` (optional) caps prompt plus completion tokens over all
   roles of an item. Once the item's total reaches it, the proxy answers further calls with
   HTTP 403 (`type: token_limit`; clients retry 429 and 5xx, and a retry cannot help), the
   agent stops on the error, and the runner records the exit reason `token_limit`. The call
   that crosses the budget completes and counts. An unset `max_tokens` is left out of the
   config hash, so existing hashes did not change.
-- Each attempt starts a fresh `usage.jsonl`; the ledger keeps the last attempt, so tokens spent
-  by an attempt that failed on infrastructure are not counted.
+- Each attempt has its own directory and so its own `usage.jsonl`. The item's ledger row
+  carries the counted attempt's spend; the `attempts` table carries every attempt's,
+  failed and interrupted ones included, so the total spend is never lost.
 - `usage.jsonl` is the fourth contract (`usage.schema.json`, `UsageRecord`). The runner fills
   `AgentResult.usage` (`RoleUsage` per role that made calls; empty when not metered) from it.
 - **Cost.** The experiment's `prices` (`<models key>: {input_per_mtok, output_per_mtok,
@@ -609,16 +633,18 @@ Each call appends one record to the item's `usage.jsonl`:
   by the model it used. Cached prompt tokens use the cached price when one is set; reasoning
   tokens are part of the completion tokens and use the output price. `cost_usd` is null when a
   model that made calls has no price.
-- **Where the totals go.** Ledger columns `executor_prompt_tokens`,
-  `executor_completion_tokens`, `advisor_prompt_tokens`, `advisor_completion_tokens`,
-  `model_calls`, `cost_usd` (null when not metered; older ledgers gain them on open). MLflow:
+- **Where the totals go.** Ledger columns `<role>_{prompt,completion,cached,reasoning}_tokens`
+  for `executor` and `advisor`, `model_calls`, `failed_calls`, `cost_usd` (null when not
+  metered; older ledgers gain them on open), on items and on attempts; the preflight's in
+  the ledger's `preflight` table. MLflow:
   the same as item metrics, and per arm `tokens_sum`/`tokens_median`,
   `advisor_tokens_sum`/`advisor_tokens_median`, `cost_usd_sum`/`cost_usd_median`, and
   `cost_usd_per_resolved`. The item trace's agent span carries the proxy's counts
   (`proxy.<role>.*`) next to the totals of the agent's own model spans (`agent.tokens.*`, as
   pi reports them), so the two can be compared. `bench report` shows tokens per item (all
   roles and advisor), total cost, and cost per resolved task per arm; the arm's cost is shown
-  only when every done item has one.
+  only when every done item has one, and the **total spend** separately: every attempt (all
+  configs and outcomes) plus the preflight calls.
 - The advisor plugin's `advisor_request`/`advisor_response` events stay the record of what was
   sent (exposure); the proxy is the record of what was used (cost). Both count the same advisor
   calls, which gives a cross-check.
@@ -683,10 +709,17 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   `bench run --parallel N` overrides `parallel`.
 - **Config hash**: 16 hex chars of SHA-256 over the arm (minus its name), the agent entry,
   the limits, the executor and advisor model settings (minus `base_url`, `headers`, and
-  `header_env`), and for an advisor arm the prompt set's text hash in place of its name.
-  Renaming an arm or a prompt set, or moving a server or a prompt file, keeps results;
-  changing behaviour invalidates them. Unset optional limits (`max_tokens`) are left out, so
-  adding an optional limit keeps existing hashes; prices are not hashed.
+  `header_env`; sampling settings included), for an advisor arm the prompt set's text hash
+  in place of its name, the manifest's version, and the adapter's fingerprint (pi: the
+  hash of its fixed task prompt and the bundle image ID). Renaming an arm or a prompt set,
+  or moving a server or a prompt file, keeps results; changing behaviour invalidates them.
+  Unset optional fields of limits and models are left out, so a new optional field keeps
+  existing hashes; prices are not hashed. The hash is per arm; the task image is per item,
+  so it is part of the ledger key instead (a rebuilt task image is a new item, under the
+  same hash). The runner records each arm's fingerprint per batch in the ledger, and
+  `bench report` hashes with the recorded one, so reporting needs no Docker.
+- **Sampling** (optional, per model): `temperature`, `top_p`, `sampling_seed` (sent as
+  `seed`, if the server honours it; unrelated to the experiment's `seeds`). In the hash.
 
 The same experiment can be built in Python for cases YAML does not cover:
 
@@ -710,12 +743,25 @@ Every work item (arm, task, seed) goes through the same eight steps in batch and
 7. Results, cost, events, test logs, and the patch go to MLflow; the ledger marks the item done.
 8. Scorers run over the stored records and can be re-run later without re-running agents.
 
+**Attempts.** Every attempt at an item gets a directory of its own,
+`runs/<experiment>/<arm>/<task>/seed-<n>/<config_hash>/attempt-<k>/`, which starts empty and
+is never reused (k follows every attempt there, in the ledger or on disk), and a row in the
+ledger's `attempts` table. An attempt runs in phases: the agent (its result saved as
+`result.json`, written last), grading (`grade.json`), then metrics and tracking. If
+grading or tracking fails, only that phase is retried, from the saved result, and a later
+`bench run` also finishes such an attempt without running the agent again. The agent's
+artifacts are copied out of its container however the run ends, so an infrastructure error
+still leaves `pi.jsonl`, `events.jsonl`, and `timeline.jsonl`. An attempt a dead process
+left running is marked `interrupted` at the next `bench run`, with its spend read from its
+`usage.jsonl`. `bench regrade` grades the stored patches of done items again with the
+current grader (every config hash; the old grade files are kept as `grade.v<n>.json`).
+
 Work items run on `execution.parallel` worker threads (default 1), in seed-major order so a
 partial batch covers every arm and task evenly. One Mac serves one local model, so raise
 `parallel` only when the model servers take concurrent requests (e.g. the cloud-only A4 arm,
 or a local server with batching); container caps also have to fit the VM. An infrastructure
-error (Docker, git, I/O) is retried `retries` times and then recorded as `failed` without
-stopping the batch. On Ctrl-C, items in flight finish and queued ones are left for the next
+error (Docker, git, I/O, the model endpoint failing) is retried `retries` times and then
+recorded as `failed` without stopping the batch. On Ctrl-C, items in flight finish and queued ones are left for the next
 run. An interrupted item restarts from step 3; there are no mid-run checkpoints.
 
 Timeouts use `timeout` inside the container. It exits 124 (coreutils) or 143 (BusyBox), so a
@@ -734,7 +780,8 @@ command counts as timed out only if it also used the full time.
 | `bench shell ITEM` | Open a shell in a kept container |
 | `bench replay ITEM` | Step through a stored run's events: turns, triggers, briefs, advice |
 | `bench score EXP.yaml` | Re-run scorers over stored runs |
-| `bench report EXP.yaml [--csv F] [--pairs-csv F] [--baseline A0] [--ceiling A4]` | Variants tried and final batches; per-arm table from the ledger (stale config hashes ignored); paired comparisons with the baseline; Pareto front against advisor cost; per-item and per-pair CSV. Plots to come |
+| `bench report EXP.yaml [--csv F] [--pairs-csv F] [--baseline A0] [--ceiling A4]` | Variants tried and final batches; per-arm table from the ledger (stale config hashes and task images ignored), with every attempt's count and spend; paired comparisons with the baseline; Pareto front against advisor cost; total spend (counted items, all attempts, preflight); per-item and per-pair CSV; `report.json` (also kept as `reports/<time>.json`). Plots to come |
+| `bench regrade EXP.yaml [--arm A] [--task ID] [--parallel N]` | Grade the stored patches of done items again with the current grader, without running agents; the ledger's grade columns follow |
 | `bench schemas [--check]` | Regenerate (or verify) the contract JSON Schemas |
 | `bench mock-server --recordings F [--upstream URL]` | Serve recorded completions; record from a real endpoint |
 
@@ -800,21 +847,43 @@ and results from different versions are never mixed.
 
 A small SQLite ledger tracks what has run; MLflow stores what happened.
 
-- **Ledger.** One row per work item, keyed by experiment, arm, task, seed, and config hash.
-  It stores status, attempts, and the MLflow run and trace IDs, and the metered tokens per
-  role, model calls, and cost (nullable columns, added in place to older ledgers). Changing an
-  arm's config changes its hash, so stale results are never reused. A second table,
-  `sessions`, has one row per `bench run` batch: start time, split, number of test tasks, and
-  `--final`.
-- **Item directory.** `runs/<experiment>/<arm>/<task>/seed-<n>/` holds `advisor.json`,
-  `result.json`, `patch.diff`, `events.jsonl`, `grade.log`, and for metered agents
-  `usage.jsonl`, whether or not MLflow is on. The ledger is `runs/<experiment>/ledger.sqlite`;
-  preflight calls are recorded in `runs/<experiment>/preflight/`.
+- **Ledger** (`runs/<experiment>/ledger.sqlite`). Changing an arm's config changes its hash,
+  so stale results are never reused. Tables:
+  - `items`: one row per work item, keyed by experiment, arm, task, seed, config hash, and
+    the task's `image_id`. Status (`running`, `done`, `failed`, `interrupted`), attempts, the
+    counted attempt's directory (`attempt_dir`), grade, exit reason, turns, duration, error,
+    MLflow run ID; the counted attempt's spend (`<role>_{prompt,completion,cached,
+    reasoning}_tokens`, `model_calls`, `failed_calls`, `cost_usd`); `prompt_hash`, `level`,
+    `interventions`; `f2p_passed`, `f2p_total`, `p2p_passed`, `p2p_total`, `build_failed`,
+    `edited_tests`. Older ledgers are migrated in place (their rows get `image_id` '').
+  - `attempts`: one row per attempt: the item key, `attempt` (k), `dir`, `started`,
+    `agent_ended`, `ended`, status (`running`, `done`, `failed`, `interrupted`), error, exit
+    reason, and the same spend columns.
+  - `sessions`: one row per `bench run` batch: start time, split, number of test tasks,
+    `--final`. `fingerprints`: each arm's adapter fingerprint per batch. `preflight`: the
+    usage preflight's calls, tokens, and cost per endpoint and batch.
+- **Item directory.** One per attempt, `runs/<experiment>/<arm>/<task>/seed-<n>/
+  <config_hash>/attempt-<k>/`, whether or not MLflow is on: `item.json` (harness commit and
+  dirty flag, agent bundle image ID and pi version, task image and image ID, base commit,
+  manifest version, config and prompt hashes, host, `parallel`, and the agent's and
+  grading's start and end times), `advisor.json`, `result.json` (or `agent-result.json` when
+  the attempt failed on infrastructure), `patch.diff`, `events.jsonl`, `grade.json`,
+  `grade.log` (and `build.log`), `metrics.json`, the agent's artifacts, and for metered
+  agents `usage.jsonl`, `requests.jsonl`, and `executor-request.json`. Directories from
+  before attempts (`seed-<n>/` itself) are left as they are.
+- **Metrics** (`metrics.json`, also MLflow item metrics). From the agent's logs (pi): turns,
+  tool calls by name, test runs (`/opt/lso/run-tests`) and how many failed, compactions,
+  auto-retries, and the turn and time of the first edit and first test run. For every
+  agent: largest and final executor prompt (`max_context_tokens`, `final_context_tokens`,
+  from the proxy), consults by trigger, the first consult's turn and time, advisor errors,
+  advice applied, and whether the final patch touches files the advice named. Times are
+  seconds since the agent started; turns count from 0.
 - **MLflow is mandatory.** Every experiment run is tracked; `bench run` checks the server's
   `/health` first and will not start without it. MLflow is a core dependency.
 - **MLflow layout.** One MLflow experiment per experiment file; one parent run per arm
   (tagged with the config hash and reused on resume) holding the pinned inputs as params, the
-  harness's git commit and whether the checkout was dirty as tags, and summary metrics updated
+  harness's git commit and whether the checkout was dirty as tags (re-tagged on resume, with
+  every commit used listed in `lso.git_commits`; item runs carry their own commit tag), and summary metrics updated
   after every batch (`resolve_rate` with its Wilson interval, items done and failed, median
   turns and duration, `exit_<reason>` counts, token and cost sums and medians, cost per
   resolved task); one child run per task and seed with `resolved`, `turns`, `duration_s`, the
@@ -970,3 +1039,8 @@ llm_second_opinion/
 | 2026-10-03 | Size limits are prompt targets, not truncation: the consult tool and `advisor_system` state the targets (policy text, tunable); hard ceilings (`max_brief_tokens` ~3000, answer ~4000) are safety nets, logged when hit. Executor-written brief fields get a per-field target and ceiling. |
 | 2026-10-03 | Anti-delegation rules on by default, strictness an arm setting: earned consults (own actions + cooldown, `consult_refused`), required `tried`/`hypothesis`, `max_advice_code_lines`; dependence scorers (advice-copy share, own work before first consult, consult rate, brief synthesis share) guard the optimizer. |
 | 2026-10-03 | Redaction ends with a sweep of the whole brief: every role-map name left raw is replaced (whole names; plain lowercase words under 8 letters exempt), and the task's organisation and repository names are seeded as `<project_N>` (case-insensitive; generic format names such as `json` exempt). |
+| 2026-10-03 | Data retention. Every attempt has its own directory (`seed-<n>/<config_hash>/attempt-<k>/`) and a ledger `attempts` row with its spend, whatever its outcome; the item row names the counted attempt. `bench report` shows the total spend (all attempts and the preflight) next to the counted items'. Grading and tracking are retried on their own from the saved result; the agent's artifacts are copied out however its run ends. |
+| 2026-10-03 | A model endpoint failing after pi's retries is an infrastructure error (retried, then `failed`), not a `crash` counted as an unresolved done item. The proxy records failed calls (status, or 0 for no answer; zero tokens), the attempt on every usage record, the plugin's `X-LSO-Request-Id` (not forwarded), every request's parameters (`requests.jsonl`), and the first executor request in full. |
+| 2026-10-03 | Config hashes changed on purpose: the hash gains the manifest version and the adapter's fingerprint (pi: task-prompt hash and bundle image ID), sampling settings join the model settings, and unset optional model fields are left out. The task image is per item, so it joins the ledger key rather than the per-arm hash. No real model had run yet, so nothing of value goes stale; the pinning tests are updated to the new values. `bench report` uses the fingerprint the last batch recorded, so it needs no Docker. |
+| 2026-10-03 | Grading resets test-patch files to base, as SWE-bench does: files the test patch touches are checked out from the base commit (or removed, if it adds them) before it is applied, so an agent's edits to them no longer fail the item as `test_patch_failed`. `grade.json` lists the agent's edits to test files (ledger `edited_tests`) and the grader version (2); `bench regrade` re-grades stored patches. Not resolved splits into `build_failed` and `tests_failed`; `grade.json` keeps F2P/P2P detail; run-tests is unchanged (the full build log is read from the grading container), so task images need no rebuild. |
+| 2026-10-03 | Per-attempt `item.json` (provenance), `metrics.json` (trajectory metrics, also in MLflow), `report.json` per `bench report`; per-item CSV gains cached and reasoning tokens, prompt hash, level, interventions, grading detail. |

@@ -107,14 +107,16 @@ arms:
 
 
 def test_arms_without_an_advisor_keep_their_hash(repo):
-    # Pinned before prompt sets existed: arms without an advisor must not change hash.
+    # Pinned on 2026-10-03 (manifest version and adapter fingerprint added, unset model
+    # fields dropped; no real model had run). Arms without an advisor have no prompt set,
+    # so prompt-set changes must never move these.
     env = {"LOCAL_MODEL_URL": "u", "LOCAL_SESSION_HEADER": "h", "LOCAL_SESSION": "s",
            "LOCAL_AUTH_HEADER": "a"}  # fmt: skip
     baselines = Experiment.from_yaml(repo / "experiments/baselines.yaml", env=env)
-    assert baselines.config_hash(baselines.arm("A0")) == "0e4bdcb0e04f7875"
-    assert baselines.config_hash(baselines.arm("A4")) == "4ecff0bc11feccd8"
+    assert baselines.config_hash(baselines.arm("A0")) == "dea64de9a35b7abb"
+    assert baselines.config_hash(baselines.arm("A4")) == "27f3c087ef938c75"  # pi-advisor compat
     toy = Experiment.from_yaml(repo / "experiments/toy.yaml")
-    assert toy.config_hash(toy.arm("gold")) == "9b874eb43bd087ae"
+    assert toy.config_hash(toy.arm("gold")) == "84562adef09adc5f"
 
 
 def test_config_hash_follows_prompt_text_not_set_name(tmp_path):
