@@ -172,9 +172,12 @@ def test_pi_consults_the_advisor_through_the_plugin(repo, tmp_path, toy_image, m
 
     events = parse_events((item / "events.jsonl").read_text())  # validates every event
     assert [e.type for e in events] == [
+        "policy_rendered",
         "consult_requested", "brief_built", "advisor_request", "advisor_response", "advice_applied",
     ]  # fmt: skip
-    requested, brief, request, response, applied = events
+    policy, requested, brief, request, response, applied = events
+    assert policy.prompt_hash == request.prompt_hash and policy.consult_tool
+    assert brief.role_map["<function_1>"] == "add_numbers"
     assert requested.reason == "Why does add_numbers() in math.sh print -1 for 2 and 3?"
     assert brief.level == "L1" and brief.identifiers_redacted >= 2
     # L1: identifiers left the container only as placeholders.

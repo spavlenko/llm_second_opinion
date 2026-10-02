@@ -8,7 +8,7 @@ import {
   approxTokens,
   buildBrief,
 } from "./brief.js";
-import type { AdvisorClientLike } from "./client.js";
+import { type AdvisorClientLike, AdvisorClientError } from "./client.js";
 import type { AdvisorRunConfig } from "./config.js";
 import type { Intervention, PromptSet } from "./contracts.js";
 import type { EventInput } from "./events.js";
@@ -46,6 +46,8 @@ export interface AdviceRecord {
   advice: string | null;
   injected: string | null;
   error: string | null;
+  /** Placeholder to real identifier, the whole session's map as of this consult. */
+  role_map: Record<string, string>;
 }
 
 export interface AdvisorSessionOptions {
@@ -54,6 +56,8 @@ export interface AdvisorSessionOptions {
   client: AdvisorClientLike;
   readFile?: (path: string) => string | null;
   log?: (record: AdviceRecord) => void;
+  /** Milliseconds, for advisor_error latency when the client reports none. */
+  now?: () => number;
 }
 
 export class AdvisorSession {
@@ -66,6 +70,7 @@ export class AdvisorSession {
   private failedTests: string[] = [];
   private lastEdit: BriefContext["lastEdit"] = null;
   private requests = 0;
+  private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
     this.engine = new TriggerEngine(opts.config.advisor);
@@ -97,6 +102,21 @@ export class AdvisorSession {
       level,
       max_answer_tokens: max_answer_tokens ?? "unlimited",
     }).trim();
+  }
+
+  /** policy_rendered, once, before anything else the session emits: the help-policy text the
+   * executor sees. The guidance is what the binding appends to the system prompt; the tool
+   * description is null when the consult tool is not registered. The binding calls it at session
+   * start, and every entry point below calls it too, so it always comes first. */
+  renderPolicy(): void {
+    if (this.policyDone) return;
+    this.policyDone = true;
+    this.opts.emit({
+      type: "policy_rendered",
+      prompt_hash: this.prompts.hash,
+      executor_guidance: this.executorGuidance(),
+      consult_tool: this.consultEnabled ? this.consultToolDescription() : null,
+    });
   }
 
   /** The task text the briefs summarize (the issue, from the executor's first prompt). */
@@ -134,16 +154,19 @@ export class AdvisorSession {
 
   /** Before the first model call: the plan review, if configured. */
   async atStart(signal?: AbortSignal): Promise<Advice | null> {
+    this.renderPolicy();
     return this.onDecision(this.engine.start(), {}, signal);
   }
 
   /** At the end of a turn: a harness trigger, if one is due. */
   async atTurnEnd(signal?: AbortSignal): Promise<Advice | null> {
+    this.renderPolicy();
     return this.onDecision(this.engine.turnEnd(), {}, signal);
   }
 
   /** The consult tool. Returns the text for the tool result: the advice, or why there is none. */
   async consultTool(args: ConsultArgs, signal?: AbortSignal): Promise<{ text: string; advice: Advice | null }> {
+    this.renderPolicy();
     this.opts.emit({ type: "consult_requested", reason: args.question ?? "", turn: this.engine.turn });
     const decision = this.engine.requestConsult();
     const advice = await this.onDecision(
@@ -194,6 +217,7 @@ export class AdvisorSession {
       tokens: brief.tokens,
       identifiers_redacted: brief.identifiersRedacted,
       role_map_size: this.roles.size,
+      role_map: this.roles.mapFor(brief.text),
     });
     return brief;
   }
@@ -212,23 +236,35 @@ export class AdvisorSession {
       advice: null,
       injected: null,
       error: null,
+      role_map: this.roles.toObject(),
     };
+    const now = this.opts.now ?? (() => performance.now());
+    const start = now();
     // Recorded before it is sent: what left the machine is in events.jsonl even if the run dies.
     this.opts.emit({
       type: "advisor_request",
       request_id: requestId,
+      // An estimate (4 characters a token); advisor_response.prompt_tokens is the provider's count.
       input_tokens: approxTokens(system) + brief.tokens,
       brief_text: brief.text,
       prompt_hash: this.prompts.hash,
     });
     try {
-      const done = await this.opts.client.complete({ system, user: brief.text, maxTokens: this.settings.max_answer_tokens, signal });
+      const done = await this.opts.client.complete({
+        system,
+        user: brief.text,
+        maxTokens: this.settings.max_answer_tokens,
+        requestId,
+        signal,
+      });
       this.opts.emit({
         type: "advisor_response",
         request_id: requestId,
         output_tokens: done.outputTokens,
         cached_tokens: done.cachedTokens,
         latency_ms: done.latencyMs,
+        prompt_tokens: done.promptTokens,
+        reasoning_tokens: done.reasoningTokens,
         advice_text: done.text,
       });
       const advice = this.roles.restore(done.text.trim());
@@ -240,7 +276,14 @@ export class AdvisorSession {
       return { requestId, text };
     } catch (e) {
       const message = (e as Error).message || String(e);
-      this.opts.emit({ type: "advisor_error", request_id: requestId, message });
+      const known = e instanceof AdvisorClientError;
+      this.opts.emit({
+        type: "advisor_error",
+        request_id: requestId,
+        message,
+        status: known ? e.status : null,
+        latency_ms: known && e.latencyMs !== null ? e.latencyMs : Math.max(0, now() - start),
+      });
       this.log({ ...record, error: message });
       return null;
     }

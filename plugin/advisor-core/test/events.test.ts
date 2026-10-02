@@ -15,17 +15,28 @@ describe("EventWriter", () => {
   it("writes events that match event.schema.json", () => {
     const path = join(mkdtempSync(join(tmpdir(), "events-")), "events.jsonl");
     const writer = new EventWriter(path, () => 1700000000.5);
+    writer.emit({ type: "policy_rendered", prompt_hash: "0123456789abcdef", executor_guidance: "Consult wisely.", consult_tool: null });
     writer.emit({ type: "consult_requested", reason: "build fails, unsure why", turn: 11 });
     writer.emit({ type: "trigger_fired", intervention: "stuck", reason: "same error x3", turn: 12 });
-    writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9 });
+    writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9, role_map: { "<function_1>": "parse" } });
     writer.emit({ type: "advisor_request", request_id: "r1", input_tokens: 812, brief_text: "brief", prompt_hash: "0123456789abcdef" });
-    writer.emit({ type: "advisor_error", request_id: "r0", message: "HTTP 503" });
-    writer.emit({ type: "advisor_response", request_id: "r1", output_tokens: 300, cached_tokens: 0, latency_ms: 2100, advice_text: "check <function_1>" });
+    writer.emit({ type: "advisor_error", request_id: "r0", message: "HTTP 503", status: 503, latency_ms: 40 });
+    writer.emit({ type: "advisor_error", request_id: "r0", message: "request failed", status: null, latency_ms: 3 });
+    writer.emit({
+      type: "advisor_response",
+      request_id: "r1",
+      output_tokens: 300,
+      cached_tokens: 0,
+      latency_ms: 2100,
+      prompt_tokens: 820,
+      reasoning_tokens: null,
+      advice_text: "check <function_1>",
+    });
     writer.emit({ type: "advice_applied", request_id: "r1", turn: 13, injected_text: "Advisor: check parse()" });
     writer.emit({ type: "budget_exhausted", consults_used: 5, limit: 5 });
 
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(lines.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     for (const event of lines) {
       expect(validate(event), JSON.stringify(validate.errors)).toBe(true);
     }

@@ -35,6 +35,9 @@ const endpoint = (base_url: string, extra: Partial<ModelEndpoint> = {}): ModelEn
   api_key_env: null,
   headers: {},
   header_env: {},
+  temperature: null,
+  top_p: null,
+  sampling_seed: null,
   ...extra,
 });
 
@@ -52,8 +55,15 @@ describe("advisor client", () => {
   it("posts a non-streaming chat completion and reads text and usage", async () => {
     const { url, seen } = await serve(OK);
     const client = new AdvisorClient(endpoint(url, { reasoning_effort: "high" }), { env: {} });
-    const done = await client.complete({ system: "sys", user: "brief", maxTokens: 300 });
-    expect(done).toMatchObject({ text: "Check the NaN branch.", outputTokens: 7, cachedTokens: 64 });
+    const done = await client.complete({ system: "sys", user: "brief", maxTokens: 300, requestId: "r7" });
+    expect(done).toMatchObject({
+      text: "Check the NaN branch.",
+      outputTokens: 7,
+      cachedTokens: 64,
+      promptTokens: 100,
+      reasoningTokens: null,
+    });
+    expect(seen[0]!.headers["x-lso-request-id"]).toBe("r7");
     expect(done.latencyMs).toBeGreaterThanOrEqual(0);
     expect(seen[0]!.url).toBe("/v1/chat/completions");
     expect(seen[0]!.body).toEqual({
@@ -66,6 +76,59 @@ describe("advisor client", () => {
       max_tokens: 300,
       reasoning_effort: "high",
     });
+  });
+
+  it("reasoning tokens from completion_tokens_details; no usage leaves the provider counts null", async () => {
+    const answers = [
+      { usage: { prompt_tokens: 40, completion_tokens: 90, completion_tokens_details: { reasoning_tokens: 80 } } },
+      {},
+    ];
+    const { url, seen } = await serve((res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "x" } }], ...answers.shift() }));
+    });
+    const client = new AdvisorClient(endpoint(url), { env: {} });
+    const req = { system: "", user: "", maxTokens: null };
+    expect(await client.complete(req)).toMatchObject({ promptTokens: 40, outputTokens: 90, reasoningTokens: 80 });
+    expect(await client.complete(req)).toMatchObject({ promptTokens: null, outputTokens: 0, reasoningTokens: null, cachedTokens: 0 });
+    expect(seen[1]!.headers).not.toHaveProperty("x-lso-request-id");
+  });
+
+  it("sampling params are sent when set, and only then", async () => {
+    const { url, seen } = await serve(OK);
+    const req = { system: "", user: "", maxTokens: null };
+    await new AdvisorClient(endpoint(url, { temperature: 0, top_p: 0.9, sampling_seed: 42 }), { env: {} }).complete(req);
+    await new AdvisorClient(endpoint(url, { temperature: 0.7 }), { env: {} }).complete(req);
+    await new AdvisorClient(endpoint(url), { env: {} }).complete(req);
+    expect(seen[0]!.body).toMatchObject({ temperature: 0, top_p: 0.9, seed: 42 });
+    expect(seen[1]!.body).toMatchObject({ temperature: 0.7 });
+    expect(seen[1]!.body).not.toHaveProperty("top_p");
+    expect(seen[1]!.body).not.toHaveProperty("seed");
+    for (const key of ["temperature", "top_p", "seed", "sampling_seed"]) expect(seen[2]!.body).not.toHaveProperty(key);
+  });
+
+  it("errors carry the HTTP status (null without a response) and the elapsed time", async () => {
+    const { url } = await serve((res) => {
+      res.writeHead(429);
+      res.end("slow down");
+    });
+    const req = { system: "", user: "", maxTokens: null };
+    let t = 0;
+    const now = () => (t += 25);
+    const http = await new AdvisorClient(endpoint(url), { env: {}, now }).complete(req).catch((e) => e);
+    expect(http).toBeInstanceOf(AdvisorClientError);
+    expect(http).toMatchObject({ status: 429, latencyMs: 25 });
+    const net = await new AdvisorClient(endpoint("http://127.0.0.1:9/v1"), { env: {} }).complete(req).catch((e) => e);
+    expect(net).toMatchObject({ status: null });
+    expect(net.latencyMs).toBeGreaterThanOrEqual(0);
+    const aborted = await new AdvisorClient(endpoint(url), { env: {} })
+      .complete({ ...req, signal: AbortSignal.abort() })
+      .catch((e) => e);
+    expect(aborted).toMatchObject({ status: null });
+    const bad = await new AdvisorClient(endpoint(url), { env: {}, fetch: async () => new Response("nope") })
+      .complete(req)
+      .catch((e) => e);
+    expect(bad).toMatchObject({ status: 200 });
   });
 
   it("no max_tokens without a cap", async () => {

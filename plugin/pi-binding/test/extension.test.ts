@@ -21,7 +21,7 @@ async function advisor(answers: string[]): Promise<{ url: string; bodies: any[] 
     let data = "";
     req.on("data", (c) => (data += c));
     req.on("end", () => {
-      bodies.push(JSON.parse(data));
+      bodies.push({ ...JSON.parse(data), requestId: req.headers["x-lso-request-id"] });
       res.writeHead(200, { "Content-Type": "application/json" });
       const content = answers.shift() ?? "no more answers";
       res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { completion_tokens: 5 } }));
@@ -53,7 +53,7 @@ function fakePi() {
 }
 
 function writeConfig(dir: string, advisorUrl: string, interventions: string[], advisorSettings = true) {
-  const endpoint = { base_url: "http://unreachable.invalid/v1", model: "m", reasoning_effort: null, api_key_env: null, headers: {}, header_env: {} };
+  const endpoint = { base_url: "http://unreachable.invalid/v1", model: "m", reasoning_effort: null, api_key_env: null, headers: {}, header_env: {}, temperature: null, top_p: null, sampling_seed: null };
   const config = {
     schema_version: "1",
     run: { experiment: "e", arm: "H", task: "t", seed: 0, config_hash: "0123456789abcdef" },
@@ -139,12 +139,22 @@ describe("pi extension", () => {
       .map((l) => JSON.parse(l));
     for (const e of events) expect(validate(e), JSON.stringify(validate.errors)).toBe(true);
     expect(events.map((e) => e.type)).toEqual([
+      "policy_rendered",
       "trigger_fired", "brief_built", "advisor_request", "advisor_response", "advice_applied",
       "consult_requested", "brief_built", "advisor_request", "advisor_response", "advice_applied",
       "trigger_fired", "brief_built", "advisor_request", "advisor_response", "advice_applied",
     ]);
     expect(events.filter((e) => e.type === "advice_applied").map((e) => e.turn)).toEqual([0, 0, 1]);
+    expect(events[0]).toMatchObject({
+      prompt_hash: "abcdefabcdefabcd",
+      executor_guidance: "GUIDANCE: 5 consults.",
+      consult_tool: tools[0].description,
+    });
+    expect(options.appendSystemPrompt).toContain(events[0].executor_guidance);
+    expect(bodies.map((b) => b.requestId)).toEqual(["r1", "r2", "r3"]);
+    expect(events.find((e) => e.type === "brief_built").role_map).toEqual({ "<function_1>": "parse_value" });
     const log = readFileSync(env.LSO_ADVICE_LOG, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(log[0].role_map).toEqual({ "<function_1>": "parse_value" });
     expect(log.map((r) => r.injected)).toEqual([
       "ADVICE: Start with parse_value. (4 left)",
       "ADVICE: Check the empty case. (3 left)",
@@ -159,8 +169,10 @@ describe("pi extension", () => {
     advisorExtension(pi, env);
     const result = await tools[0].execute("c1", { question: "q" }, undefined);
     expect(result.content[0].text).toMatch(/could not be reached/);
-    const types = readFileSync(join(dir, "events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).type);
-    expect(types).toEqual(["consult_requested", "brief_built", "advisor_request", "advisor_error"]);
+    const events = readFileSync(join(dir, "events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    for (const e of events) expect(validate(e), JSON.stringify(validate.errors)).toBe(true);
+    expect(events.map((e) => e.type)).toEqual(["policy_rendered", "consult_requested", "brief_built", "advisor_request", "advisor_error"]);
+    expect(events[4]).toMatchObject({ status: null });
   });
 
   it("no consult tool without the consult intervention; nothing at all without an advisor", () => {

@@ -31,6 +31,9 @@ const endpoint = (model: string) => ({
   api_key_env: null,
   headers: {},
   header_env: {},
+  temperature: null,
+  top_p: null,
+  sampling_seed: null,
 });
 
 const SLOTS = ["executor_guidance", "consult_tool", "brief", "advisor_system", "advice_injection"] as const;
