@@ -96,6 +96,13 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Leakage and re-identification scorers
 - [ ] SWE-bench-Live import
 
+## Before the pilot — devtest findings
+
+- [ ] Size limits as prompt targets + logged safety ceilings (brief in, advice out)
+- [ ] Anti-delegation: earned consults, required hypothesis, advice code cap, strictness per arm
+- [ ] "Plan after orientation" and "before done" triggers
+- [ ] Scorers: rewards (resolve, partial, gold similarity, cost/exposure-penalised), dependence, leakage
+
 ## Week 8 — pilot
 
 - [x] Pilot config `experiments/pilot.yaml`: 10 `dev` tasks (seeded stratified sample, gold
