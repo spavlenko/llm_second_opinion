@@ -37,6 +37,22 @@ class ConfigError(ValueError):
 class Limits(Strict):
     wall_minutes: float = Field(gt=0)
     max_turns: int = Field(gt=0)
+    max_tokens: int | None = Field(
+        None,
+        gt=0,
+        description="Token budget per item: prompt plus completion tokens over all roles, as "
+        "the metering proxy counts them. None means no budget.",
+    )
+
+
+class Price(Strict):
+    """A model's price in USD per million tokens, for cost in the ledger and report."""
+
+    input_per_mtok: float = Field(ge=0)
+    output_per_mtok: float = Field(ge=0, description="Covers reasoning tokens too.")
+    cached_input_per_mtok: float | None = Field(
+        None, ge=0, description="Price of cached prompt tokens; None means the input price."
+    )
 
 
 class Execution(Strict):
@@ -90,6 +106,11 @@ class Experiment(Strict):
     execution: Execution = Field(default_factory=Execution)
     models: dict[str, ModelEndpoint]
     agents: dict[str, AgentSpec] = Field(default_factory=dict)
+    prices: dict[str, Price] = Field(
+        default_factory=dict,
+        description="Prices by key in `models`. Not part of the config hash: cost is derived "
+        "from the metered tokens, so a price can be corrected after a run.",
+    )
     arms: list[Arm] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -105,6 +126,9 @@ class Experiment(Strict):
                 raise ValueError(
                     f"arm {arm.name} has an advisor but models has no {ADVISOR_MODEL!r}"
                 )
+        unknown = sorted(set(self.prices) - set(self.models))
+        if unknown:
+            raise ValueError(f"prices for models not in models: {', '.join(unknown)}")
         return self
 
     @classmethod
@@ -153,7 +177,8 @@ class Experiment(Strict):
         payload = {
             "arm": arm.model_dump(mode="json", exclude={"name", "agent"}),
             "agent": self.agent_spec(arm).model_dump(mode="json"),
-            "limits": self.limits.model_dump(mode="json"),
+            # Unset optional limits are left out, so adding one keeps existing hashes.
+            "limits": self.limits.model_dump(mode="json", exclude_none=True),
             "executor": self.models[arm.executor].model_dump(mode="json", exclude=_ROUTING),
             "advisor_model": (
                 self.models[ADVISOR_MODEL].model_dump(mode="json", exclude=_ROUTING)

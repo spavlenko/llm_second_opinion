@@ -74,6 +74,19 @@ def _load(experiment: str) -> Experiment:
     is_flag=True,
     help="Skip MLflow. Only for harness tests and CI: results would not be tracked.",
 )
+@click.option(
+    "--no-preflight",
+    is_flag=True,
+    help="Skip the check that every endpoint reports token usage. Only for the mock server "
+    "and tests.",
+)
+@click.option(
+    "--proxy-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Address the metering proxy binds. Docker Desktop reaches 127.0.0.1 through "
+    "host.docker.internal; a VM that does not (e.g. Colima) needs one it can reach.",
+)
 @click.option("--dry-run", is_flag=True, help="List the work items and stop.")
 def run(
     experiment: str,
@@ -83,12 +96,21 @@ def run(
     parallel: int | None,
     mlflow: str,
     no_mlflow: bool,
+    no_preflight: bool,
+    proxy_host: str,
     dry_run: bool,
 ) -> None:
     """Run an experiment in containers; resumes where it stopped."""
     exp = _load(experiment)
     try:
-        runner = Runner(exp, runs_dir, parallel=parallel, echo=click.echo)
+        runner = Runner(
+            exp,
+            runs_dir,
+            parallel=parallel,
+            echo=click.echo,
+            preflight=not no_preflight,
+            proxy_host=proxy_host,
+        )
         items = runner.items(arm, task)
     except (ConfigError, ValidationError, OSError, KeyError) as e:
         raise click.ClickException(f"{experiment}: {e}") from e

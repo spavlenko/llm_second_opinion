@@ -8,6 +8,9 @@ Recordings are JSONL, one completion per line, answered in file order:
 
 With `upstream`, requests past the end of the file are proxied to a real endpoint and
 appended to it, which is how recordings are made.
+
+A recording without `usage` is answered with a made-up one (`mock_usage`), and a usage
+preflight request is answered without using up a recording.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
+from llm_second_opinion.metering import PREFLIGHT_HEADER
+
 
 def load_recordings(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
@@ -29,6 +34,22 @@ def load_recordings(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in lines if line.strip()]
     except json.JSONDecodeError as e:
         raise ValueError(f"{path}: {e}") from e
+
+
+def mock_usage(request: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+    """A usage block for a recording that has none: about four characters per token.
+
+    Marked `mock_estimate`, since it is made up here; the metering proxy needs some usage
+    to accept a call, and real runs never see this server.
+    """
+    prompt = len(json.dumps(request.get("messages") or [])) // 4 + 1
+    completion = len(json.dumps([message.get("content"), message.get("tool_calls")])) // 4 + 1
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "mock_estimate": True,
+    }
 
 
 class MockServer(HTTPServer):
@@ -105,7 +126,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "request body is not valid JSON")
             return
         try:
-            entry = self.server.complete(body)
+            # The metering proxy's usage preflight must not use up a recording.
+            preflight = self.headers.get(PREFLIGHT_HEADER)
+            entry = {"message": {"content": "OK"}} if preflight else self.server.complete(body)
         except (OSError, ValueError, LookupError) as e:
             self._error(502, f"upstream request failed: {e}")
             return
@@ -117,11 +140,7 @@ class _Handler(BaseHTTPRequestHandler):
         finish = entry.get("finish_reason") or (
             "tool_calls" if message.get("tool_calls") else "stop"
         )
-        usage = entry.get("usage") or {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        usage = entry.get("usage") or mock_usage(body, message)
         base = {
             "id": f"chatcmpl-mock-{self.server.served}",
             "created": int(time.time()),
