@@ -18,6 +18,9 @@ import { renderTemplate } from "./template.js";
 import { type Decision, TriggerEngine } from "./triggers.js";
 
 export const CONSULT_TOOL = "consult";
+/** Appended to advice the provider cut at max_answer_tokens (finish_reason "length"), so the
+ * executor knows it is incomplete. */
+export const TRUNCATED_MARKER = "[advice truncated: the advisor hit its answer length limit]";
 const RECENT = 12;
 
 /** The consult tool's arguments, as the executor wrote them. */
@@ -265,9 +268,11 @@ export class AdvisorSession {
         latency_ms: done.latencyMs,
         prompt_tokens: done.promptTokens,
         reasoning_tokens: done.reasoningTokens,
+        finish_reason: done.finishReason,
         advice_text: done.text,
       });
-      const advice = this.roles.restore(done.text.trim());
+      const restored = this.roles.restore(done.text.trim());
+      const advice = done.finishReason === "length" ? `${restored}\n${TRUNCATED_MARKER}` : restored;
       const text = renderTemplate(this.prompts.texts.advice_injection, {
         advice,
         consults_left: this.engine.consultsLeft,

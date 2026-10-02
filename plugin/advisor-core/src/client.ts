@@ -17,6 +17,8 @@ export interface Completion {
   /** The provider's own counts, null when its usage leaves them out. */
   promptTokens: number | null;
   reasoningTokens: number | null;
+  /** choices[0].finish_reason: "stop", or "length" when the answer hit max_tokens. */
+  finishReason: string | null;
   latencyMs: number;
 }
 
@@ -129,7 +131,8 @@ export class AdvisorClient implements AdvisorClientLike {
     } catch {
       throw fail(`response is not JSON: ${raw.slice(0, 200)}`, res.status);
     }
-    const text = data?.choices?.[0]?.message?.content;
+    const choice = data?.choices?.[0];
+    const text = choice?.message?.content;
     if (typeof text !== "string") throw fail(`response has no message content: ${raw.slice(0, 200)}`, res.status);
     const usage = data.usage ?? {};
     return {
@@ -138,6 +141,7 @@ export class AdvisorClient implements AdvisorClientLike {
       cachedTokens: Number(usage.prompt_tokens_details?.cached_tokens ?? 0) || 0,
       promptTokens: count(usage.prompt_tokens),
       reasoningTokens: count(usage.completion_tokens_details?.reasoning_tokens),
+      finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : null,
       latencyMs: elapsed(),
     };
   }

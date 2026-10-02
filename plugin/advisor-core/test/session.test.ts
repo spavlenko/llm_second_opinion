@@ -6,7 +6,7 @@ import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } fr
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession } from "../src/session.js";
+import { type AdviceRecord, AdvisorSession, TRUNCATED_MARKER } from "../src/session.js";
 import { promptSet, runConfig, validateEvent } from "./helpers.js";
 
 const PROMPTS: PromptSet = {
@@ -23,12 +23,13 @@ const PROMPTS: PromptSet = {
 
 class FakeClient implements AdvisorClientLike {
   requests: CompletionRequest[] = [];
+  finishReason: string | null = "stop";
   constructor(private readonly answers: (string | Error)[]) {}
   async complete(req: CompletionRequest) {
     this.requests.push(req);
     const a = this.answers.shift() ?? "ok";
     if (a instanceof Error) throw a;
-    return { text: a, outputTokens: 12, cachedTokens: 0, promptTokens: 30, reasoningTokens: 8, latencyMs: 5 };
+    return { text: a, outputTokens: 12, cachedTokens: 0, promptTokens: 30, reasoningTokens: 8, finishReason: this.finishReason, latencyMs: 5 };
   }
 }
 
@@ -94,7 +95,7 @@ describe("advisor session", () => {
     expect(requested).toMatchObject({ reason: "Why does `parse_value()` fail?", turn: 2 });
     expect(brief).toMatchObject({ level: "L1", identifiers_redacted: 4, role_map_size: 2 });
     expect(brief.role_map).toEqual({ "<function_1>": "parse_value", "<file_1>": "src/v.cpp" });
-    expect(response).toMatchObject({ prompt_tokens: 30, reasoning_tokens: 8, output_tokens: 12 });
+    expect(response).toMatchObject({ prompt_tokens: 30, reasoning_tokens: 8, output_tokens: 12, finish_reason: "stop" });
     expect(client.requests[0]!.requestId).toBe("r1");
     expect(request.brief_text).toBe(client.requests[0]!.user);
     expect(request.brief_text).not.toContain("parse_value");
@@ -119,6 +120,20 @@ describe("advisor session", () => {
     expect(ev.map((e) => e.type)).toEqual(["policy_rendered", "consult_requested", "brief_built", "advisor_request", "advisor_error"]);
     expect(ev[4]).toMatchObject({ request_id: "r1", message: "HTTP 503: overloaded", status: null });
     expect((ev[4] as any).latency_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a truncated answer is still injected, with a marker; advice_text stays as received", async () => {
+    const { session, client, records, events } = setup({}, ["Look at <function_1> and then"]);
+    client.finishReason = "length";
+    const { text } = await session.consultTool({ question: "Why does `parse_value()` fail?" });
+    expect(text).toBe(`Look at parse_value and then\n${TRUNCATED_MARKER} (4 left)`);
+    const ev = events();
+    expectValid(ev);
+    expect(ev.find((e) => e.type === "advisor_response")).toMatchObject({
+      finish_reason: "length",
+      advice_text: "Look at <function_1> and then",
+    });
+    expect(records[0]!.advice).toBe("Look at <function_1> and then");
   });
 
   it("advisor_error takes the status and latency from the client's error", async () => {

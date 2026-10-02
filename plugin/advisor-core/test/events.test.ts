@@ -30,6 +30,7 @@ describe("EventWriter", () => {
       latency_ms: 2100,
       prompt_tokens: 820,
       reasoning_tokens: null,
+      finish_reason: "length",
       advice_text: "check <function_1>",
     });
     writer.emit({ type: "advice_applied", request_id: "r1", turn: 13, injected_text: "Advisor: check parse()" });

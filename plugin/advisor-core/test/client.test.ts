@@ -45,7 +45,7 @@ const OK = (res: ServerResponse) => {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
-      choices: [{ message: { role: "assistant", content: "Check the NaN branch." } }],
+      choices: [{ message: { role: "assistant", content: "Check the NaN branch." }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 64 } },
     }),
   );
@@ -62,6 +62,7 @@ describe("advisor client", () => {
       cachedTokens: 64,
       promptTokens: 100,
       reasoningTokens: null,
+      finishReason: "stop",
     });
     expect(seen[0]!.headers["x-lso-request-id"]).toBe("r7");
     expect(done.latencyMs).toBeGreaterThanOrEqual(0);
@@ -90,7 +91,13 @@ describe("advisor client", () => {
     const client = new AdvisorClient(endpoint(url), { env: {} });
     const req = { system: "", user: "", maxTokens: null };
     expect(await client.complete(req)).toMatchObject({ promptTokens: 40, outputTokens: 90, reasoningTokens: 80 });
-    expect(await client.complete(req)).toMatchObject({ promptTokens: null, outputTokens: 0, reasoningTokens: null, cachedTokens: 0 });
+    expect(await client.complete(req)).toMatchObject({
+      promptTokens: null,
+      outputTokens: 0,
+      reasoningTokens: null,
+      cachedTokens: 0,
+      finishReason: null,
+    });
     expect(seen[1]!.headers).not.toHaveProperty("x-lso-request-id");
   });
 
