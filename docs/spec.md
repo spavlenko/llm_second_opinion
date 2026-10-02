@@ -211,10 +211,14 @@ minutes and `parallel` 1, 300 rollouts take about 50 hours on the Mac, so the bu
 from the pilot's measured run time, and approach settings (initiative, budget) are fixed or
 swept by a small grid rather than searched together with the prompts.
 
-**Contract changes (planned).** `RunConfig.advisor` gains `prompts` (slot to text), `prompt_set`
-and `prompt_hash`. A new event `consult_requested` records an executor-initiated request with
-the executor's stated reason and the turn. `advisor_request` gains `prompt_hash`, so every
-exposure record names the prompts that produced it.
+**Contracts (defined 2026-10-02).** An arm's `advisor.prompts` is the *name* of a prompt set
+(it sweeps like `level`); the harness resolves it into `RunConfig.prompts` (`name`, `hash`,
+and `texts`, one per slot, placeholders unrendered). `AdvisorSettings` also gains
+`max_answer_tokens`, `cooldown_turns`, and `periodic_every` (required with `periodic`);
+interventions are `plan`, `consult`, `stuck`, `on_test_failure`, `periodic`. A new event
+`consult_requested` records an executor-initiated request with the executor's stated reason
+and the turn, and `advisor_error` a failed advisor call. `advisor_request` gains
+`prompt_hash`, so every exposure record names the prompts that produced it.
 
 ## Architecture
 
@@ -386,8 +390,8 @@ endpoint and appends one record per call to `usage.jsonl`:
   recorded as done), so no estimated number enters the results.
 - Usage is live: the runner can stop an item on a token budget (`limits.max_tokens`), recorded
   as a new exit reason `token_limit`.
-- `usage.jsonl` becomes the fourth contract (`usage.schema.json`). `AgentResult` gains a
-  `usage` summary per role; where an agent also reports its own counts, the report shows the
+- `usage.jsonl` is the fourth contract (`usage.schema.json`, `UsageRecord`). `AgentResult`
+  has a `usage` summary per role (`RoleUsage`; empty when not metered); where an agent also reports its own counts, the report shows the
   difference as a sanity check.
 - The ledger and MLflow get per-item totals (tokens per role, calls, cost from a price table in
   the experiment), and `bench report` shows tokens and cost per arm and per resolved task.
@@ -677,3 +681,4 @@ llm_second_opinion/
 | 2026-09-29 | Item traces are built by the harness from the agent's logs after each run (pi: JSON events plus a timeline extension), not only by the plugin's OTel exporter; arm runs get summary metrics and the git commit. |
 | 2026-10-02 | Executor (Qwen3.8 27B) served from an OpenAI-compatible endpoint configured in a gitignored `.env`, which `bench` loads; endpoints gain `headers` and `header_env` (secret headers by variable name), excluded from the config hash with `base_url`; `${VAR}` interpolates mapping keys. pi options gain `thinking_level_map` and `compat`. |
 | 2026-10-02 | Experiments select tasks with `split` and `task_ids`, outside the config hash. `experiments/baselines.yaml`: A0 and A4 on `dev`, 3 seeds. |
+| 2026-10-02 | Pilot contracts fixed before the build splits up: prompt-set name in `advisor.prompts`, resolved `RunConfig.prompts`; budget knobs `max_answer_tokens`, `cooldown_turns`, `periodic_every`; interventions `on_test_failure`, `periodic`; events `consult_requested`, `advisor_error`, `advisor_request.prompt_hash`; `usage.schema.json`; `AgentResult.usage`; exit reason `token_limit`. `schema_version` stays "1": nothing with advisor data has been recorded yet. |

@@ -5,12 +5,20 @@
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "Event".
  */
-export type Event = TriggerFired | BriefBuilt | AdvisorRequest | AdvisorResponse | AdviceApplied | BudgetExhausted;
+export type Event =
+  | ConsultRequested
+  | TriggerFired
+  | BriefBuilt
+  | AdvisorRequest
+  | AdvisorResponse
+  | AdvisorError
+  | AdviceApplied
+  | BudgetExhausted;
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "Intervention".
  */
-export type Intervention = "plan" | "consult" | "stuck";
+export type Intervention = "plan" | "consult" | "stuck" | "on_test_failure" | "periodic";
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "Level".
@@ -20,7 +28,7 @@ export type Level = "L0" | "L1" | "L2" | "L3";
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "ExitReason".
  */
-export type ExitReason = "finished" | "turn_limit" | "time_limit" | "crash";
+export type ExitReason = "finished" | "turn_limit" | "time_limit" | "token_limit" | "crash";
 
 /**
  * Index of the shared contracts; use the named types below.
@@ -29,6 +37,30 @@ export interface Contracts {
   Event?: Event;
   AgentResult?: AgentResult;
   RunConfig?: RunConfig;
+  UsageRecord?: UsageRecord;
+}
+/**
+ * The executor called the consult tool.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "ConsultRequested".
+ */
+export interface ConsultRequested {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "consult_requested";
+  /**
+   * The executor's stated reason, as it wrote it.
+   */
+  reason: string;
+  turn: number;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -90,6 +122,10 @@ export interface AdvisorRequest {
    * The exact text sent to the advisor.
    */
   brief_text: string;
+  /**
+   * Hash of the prompt set that produced the request.
+   */
+  prompt_hash: string;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -110,6 +146,24 @@ export interface AdvisorResponse {
   output_tokens: number;
   cached_tokens: number;
   latency_ms: number;
+}
+/**
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "AdvisorError".
+ */
+export interface AdvisorError {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "advisor_error";
+  request_id: string;
+  message: string;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -167,6 +221,10 @@ export interface AgentResult {
    * Error text when exit_reason is crash.
    */
   detail: string | null;
+  /**
+   * Per-role totals from the metering proxy; empty when the run was not metered.
+   */
+  usage: RoleUsage[];
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -175,6 +233,18 @@ export interface AgentResult {
 export interface AgentInfo {
   name: string;
   version: string;
+}
+/**
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "RoleUsage".
+ */
+export interface RoleUsage {
+  role: "executor" | "advisor";
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
 }
 /**
  * Written by the harness into the container as advisor.json.
@@ -191,6 +261,10 @@ export interface RunConfig {
    * Null when the arm runs without advisor interventions.
    */
   advisor: AdvisorSettings | null;
+  /**
+   * The resolved prompt set of an advisor arm; null otherwise.
+   */
+  prompts: PromptSet | null;
   events_path: string;
 }
 /**
@@ -236,7 +310,23 @@ export interface ModelEndpoint {
 export interface AdvisorSettings {
   level: Level;
   interventions: Intervention[];
+  /**
+   * Name of a prompt set in the experiment's `prompts`.
+   */
+  prompts: string;
   max_consults: number;
+  /**
+   * Cap on each advisor answer; None means no cap.
+   */
+  max_answer_tokens: number | null;
+  /**
+   * Turns after a consult before a harness trigger may fire.
+   */
+  cooldown_turns: number;
+  /**
+   * Turns between `periodic` triggers.
+   */
+  periodic_every: number | null;
   stuck: StuckThresholds;
 }
 /**
@@ -247,4 +337,60 @@ export interface StuckThresholds {
   repeat_calls: number;
   same_error: number;
   no_diff_turns: number;
+}
+/**
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "PromptSet".
+ */
+export interface PromptSet {
+  name: string;
+  /**
+   * 16 hex chars of SHA-256 over the slot texts.
+   */
+  hash: string;
+  texts: PromptTexts;
+}
+/**
+ * The text of every prompt slot, with `{{name}}` placeholders still in place.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "PromptTexts".
+ */
+export interface PromptTexts {
+  executor_guidance: string;
+  consult_tool: string;
+  brief: string;
+  advisor_system: string;
+  advice_injection: string;
+}
+/**
+ * One model call through the metering proxy. Counts are the provider's own `usage`.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "UsageRecord".
+ */
+export interface UsageRecord {
+  schema_version: "1";
+  /**
+   * Call order within the item, from 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds when the call started.
+   */
+  ts: number;
+  role: "executor" | "advisor";
+  /**
+   * Model id as sent.
+   */
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  latency_ms: number;
+  /**
+   * HTTP status from the upstream endpoint.
+   */
+  status: number;
 }

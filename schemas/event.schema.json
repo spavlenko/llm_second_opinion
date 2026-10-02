@@ -43,6 +43,46 @@
       "title": "AdviceApplied",
       "type": "object"
     },
+    "AdvisorError": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "advisor_error",
+          "default": "advisor_error",
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "request_id",
+        "message"
+      ],
+      "title": "AdvisorError",
+      "type": "object"
+    },
     "AdvisorRequest": {
       "additionalProperties": false,
       "properties": {
@@ -75,6 +115,10 @@
         "brief_text": {
           "description": "The exact text sent to the advisor.",
           "type": "string"
+        },
+        "prompt_hash": {
+          "description": "Hash of the prompt set that produced the request.",
+          "type": "string"
         }
       },
       "required": [
@@ -84,7 +128,8 @@
         "type",
         "request_id",
         "input_tokens",
-        "brief_text"
+        "brief_text",
+        "prompt_hash"
       ],
       "title": "AdvisorRequest",
       "type": "object"
@@ -234,11 +279,56 @@
       "title": "BudgetExhausted",
       "type": "object"
     },
+    "ConsultRequested": {
+      "additionalProperties": false,
+      "description": "The executor called the consult tool.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "consult_requested",
+          "default": "consult_requested",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The executor's stated reason, as it wrote it.",
+          "type": "string"
+        },
+        "turn": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "reason",
+        "turn"
+      ],
+      "title": "ConsultRequested",
+      "type": "object"
+    },
     "Intervention": {
       "enum": [
         "plan",
         "consult",
-        "stuck"
+        "stuck",
+        "on_test_failure",
+        "periodic"
       ],
       "title": "Intervention",
       "type": "string"
@@ -302,15 +392,20 @@
   "discriminator": {
     "mapping": {
       "advice_applied": "#/$defs/AdviceApplied",
+      "advisor_error": "#/$defs/AdvisorError",
       "advisor_request": "#/$defs/AdvisorRequest",
       "advisor_response": "#/$defs/AdvisorResponse",
       "brief_built": "#/$defs/BriefBuilt",
       "budget_exhausted": "#/$defs/BudgetExhausted",
+      "consult_requested": "#/$defs/ConsultRequested",
       "trigger_fired": "#/$defs/TriggerFired"
     },
     "propertyName": "type"
   },
   "oneOf": [
+    {
+      "$ref": "#/$defs/ConsultRequested"
+    },
     {
       "$ref": "#/$defs/TriggerFired"
     },
@@ -322,6 +417,9 @@
     },
     {
       "$ref": "#/$defs/AdvisorResponse"
+    },
+    {
+      "$ref": "#/$defs/AdvisorError"
     },
     {
       "$ref": "#/$defs/AdviceApplied"

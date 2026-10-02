@@ -14,10 +14,47 @@
           },
           "type": "array"
         },
+        "prompts": {
+          "default": "default",
+          "description": "Name of a prompt set in the experiment's `prompts`.",
+          "type": "string"
+        },
         "max_consults": {
           "default": 5,
           "minimum": 0,
           "type": "integer"
+        },
+        "max_answer_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cap on each advisor answer; None means no cap."
+        },
+        "cooldown_turns": {
+          "default": 0,
+          "description": "Turns after a consult before a harness trigger may fire.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "periodic_every": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Turns between `periodic` triggers."
         },
         "stuck": {
           "$ref": "#/$defs/StuckThresholds"
@@ -26,7 +63,11 @@
       "required": [
         "level",
         "interventions",
+        "prompts",
         "max_consults",
+        "max_answer_tokens",
+        "cooldown_turns",
+        "periodic_every",
         "stuck"
       ],
       "title": "AdvisorSettings",
@@ -36,7 +77,9 @@
       "enum": [
         "plan",
         "consult",
-        "stuck"
+        "stuck",
+        "on_test_failure",
+        "periodic"
       ],
       "title": "Intervention",
       "type": "string"
@@ -107,6 +150,58 @@
         "header_env"
       ],
       "title": "ModelEndpoint",
+      "type": "object"
+    },
+    "PromptSet": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "hash": {
+          "description": "16 hex chars of SHA-256 over the slot texts.",
+          "type": "string"
+        },
+        "texts": {
+          "$ref": "#/$defs/PromptTexts"
+        }
+      },
+      "required": [
+        "name",
+        "hash",
+        "texts"
+      ],
+      "title": "PromptSet",
+      "type": "object"
+    },
+    "PromptTexts": {
+      "additionalProperties": false,
+      "description": "The text of every prompt slot, with `{{name}}` placeholders still in place.",
+      "properties": {
+        "executor_guidance": {
+          "type": "string"
+        },
+        "consult_tool": {
+          "type": "string"
+        },
+        "brief": {
+          "type": "string"
+        },
+        "advisor_system": {
+          "type": "string"
+        },
+        "advice_injection": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "executor_guidance",
+        "consult_tool",
+        "brief",
+        "advisor_system",
+        "advice_injection"
+      ],
+      "title": "PromptTexts",
       "type": "object"
     },
     "RunIdentity": {
@@ -203,6 +298,18 @@
       "default": null,
       "description": "Null when the arm runs without advisor interventions."
     },
+    "prompts": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PromptSet"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The resolved prompt set of an advisor arm; null otherwise."
+    },
     "events_path": {
       "default": "/run/events.jsonl",
       "type": "string"
@@ -214,6 +321,7 @@
     "executor",
     "advisor_model",
     "advisor",
+    "prompts",
     "events_path"
   ],
   "type": "object"

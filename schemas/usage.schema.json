@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageRecord",
+  "additionalProperties": false,
+  "description": "One model call through the metering proxy. Counts are the provider's own `usage`.",
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Call order within the item, from 0.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ts": {
+      "description": "Unix time in seconds when the call started.",
+      "type": "number"
+    },
+    "role": {
+      "enum": [
+        "executor",
+        "advisor"
+      ],
+      "type": "string"
+    },
+    "model": {
+      "description": "Model id as sent.",
+      "type": "string"
+    },
+    "prompt_tokens": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cached_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reasoning_tokens": {
+      "default": 0,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "latency_ms": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "status": {
+      "description": "HTTP status from the upstream endpoint.",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "seq",
+    "ts",
+    "role",
+    "model",
+    "prompt_tokens",
+    "completion_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+    "latency_ms",
+    "status"
+  ],
+  "type": "object"
+}

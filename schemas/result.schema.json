@@ -24,10 +24,53 @@
         "finished",
         "turn_limit",
         "time_limit",
+        "token_limit",
         "crash"
       ],
       "title": "ExitReason",
       "type": "string"
+    },
+    "RoleUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "enum": [
+            "executor",
+            "advisor"
+          ],
+          "type": "string"
+        },
+        "calls": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cached_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "role",
+        "calls",
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_tokens",
+        "reasoning_tokens"
+      ],
+      "title": "RoleUsage",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -67,6 +110,13 @@
       ],
       "default": null,
       "description": "Error text when exit_reason is crash."
+    },
+    "usage": {
+      "description": "Per-role totals from the metering proxy; empty when the run was not metered.",
+      "items": {
+        "$ref": "#/$defs/RoleUsage"
+      },
+      "type": "array"
     }
   },
   "required": [
@@ -76,7 +126,8 @@
     "agent",
     "turns",
     "duration_s",
-    "detail"
+    "detail",
+    "usage"
   ],
   "type": "object"
 }

@@ -1,4 +1,4 @@
-"""The three versioned contracts shared by the harness and the plugin.
+"""The four versioned contracts shared by the harness, the plugin, and the metering proxy.
 
 These Pydantic models are the single source: `bench schemas` writes them to
 `schemas/` as JSON Schemas, and the plugin's TypeScript types are generated from
@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 SCHEMA_VERSION = "1"
 
@@ -29,9 +29,19 @@ class Level(StrEnum):
 
 
 class Intervention(StrEnum):
-    PLAN = "plan"
-    CONSULT = "consult"
-    STUCK = "stuck"
+    PLAN = "plan"  # harness: review the executor's plan at the start
+    CONSULT = "consult"  # executor: the consult tool
+    STUCK = "stuck"  # harness: the stuck heuristic
+    ON_TEST_FAILURE = "on_test_failure"  # harness: after a failed test run
+    PERIODIC = "periodic"  # harness: every `periodic_every` turns
+
+
+class PromptSlot(StrEnum):
+    EXECUTOR_GUIDANCE = "executor_guidance"  # appended to the executor's system prompt
+    CONSULT_TOOL = "consult_tool"  # the consult tool's description
+    BRIEF = "brief"  # the brief builder's template
+    ADVISOR_SYSTEM = "advisor_system"  # the advisor's system prompt
+    ADVICE_INJECTION = "advice_injection"  # how advice re-enters the executor's context
 
 
 # --- Run config (in): advisor.json -------------------------------------------
@@ -63,9 +73,45 @@ class StuckThresholds(Strict):
 
 class AdvisorSettings(Strict):
     level: Level
-    interventions: list[Intervention] = Field(default_factory=lambda: list(Intervention))
+    interventions: list[Intervention] = Field(
+        default_factory=lambda: [Intervention.PLAN, Intervention.CONSULT, Intervention.STUCK]
+    )
+    prompts: str = Field(
+        default="default", description="Name of a prompt set in the experiment's `prompts`."
+    )
     max_consults: int = Field(default=5, ge=0)
+    max_answer_tokens: int | None = Field(
+        default=None, ge=1, description="Cap on each advisor answer; None means no cap."
+    )
+    cooldown_turns: int = Field(
+        default=0, ge=0, description="Turns after a consult before a harness trigger may fire."
+    )
+    periodic_every: int | None = Field(
+        default=None, ge=1, description="Turns between `periodic` triggers."
+    )
     stuck: StuckThresholds = Field(default_factory=StuckThresholds)
+
+    @model_validator(mode="after")
+    def _periodic_needs_interval(self) -> AdvisorSettings:
+        if Intervention.PERIODIC in self.interventions and self.periodic_every is None:
+            raise ValueError("the periodic intervention needs periodic_every")
+        return self
+
+
+class PromptTexts(Strict):
+    """The text of every prompt slot, with `{{name}}` placeholders still in place."""
+
+    executor_guidance: str
+    consult_tool: str
+    brief: str
+    advisor_system: str
+    advice_injection: str
+
+
+class PromptSet(Strict):
+    name: str
+    hash: str = Field(description="16 hex chars of SHA-256 over the slot texts.")
+    texts: PromptTexts
 
 
 class RunIdentity(Strict):
@@ -86,6 +132,9 @@ class RunConfig(Strict):
     advisor: AdvisorSettings | None = Field(
         default=None, description="Null when the arm runs without advisor interventions."
     )
+    prompts: PromptSet | None = Field(
+        default=None, description="The resolved prompt set of an advisor arm; null otherwise."
+    )
     events_path: str = "/run/events.jsonl"
 
 
@@ -96,6 +145,14 @@ class _Event(Strict):
     schema_version: Literal["1"] = SCHEMA_VERSION
     seq: int = Field(ge=0, description="Monotonic per run, starting at 0.")
     ts: float = Field(description="Unix time in seconds.")
+
+
+class ConsultRequested(_Event):
+    """The executor called the consult tool."""
+
+    type: Literal["consult_requested"] = "consult_requested"
+    reason: str = Field(description="The executor's stated reason, as it wrote it.")
+    turn: int = Field(ge=0)
 
 
 class TriggerFired(_Event):
@@ -118,6 +175,7 @@ class AdvisorRequest(_Event):
     request_id: str
     input_tokens: int = Field(ge=0)
     brief_text: str = Field(description="The exact text sent to the advisor.")
+    prompt_hash: str = Field(description="Hash of the prompt set that produced the request.")
 
 
 class AdvisorResponse(_Event):
@@ -126,6 +184,12 @@ class AdvisorResponse(_Event):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(ge=0)
+
+
+class AdvisorError(_Event):
+    type: Literal["advisor_error"] = "advisor_error"
+    request_id: str
+    message: str
 
 
 class AdviceApplied(_Event):
@@ -141,7 +205,14 @@ class BudgetExhausted(_Event):
 
 
 Event = Annotated[
-    TriggerFired | BriefBuilt | AdvisorRequest | AdvisorResponse | AdviceApplied | BudgetExhausted,
+    ConsultRequested
+    | TriggerFired
+    | BriefBuilt
+    | AdvisorRequest
+    | AdvisorResponse
+    | AdvisorError
+    | AdviceApplied
+    | BudgetExhausted,
     Field(discriminator="type"),
 ]
 EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
@@ -159,6 +230,7 @@ class ExitReason(StrEnum):
     FINISHED = "finished"
     TURN_LIMIT = "turn_limit"
     TIME_LIMIT = "time_limit"
+    TOKEN_LIMIT = "token_limit"
     CRASH = "crash"
 
 
@@ -177,6 +249,41 @@ class AgentResult(Strict):
     turns: int = Field(ge=0)
     duration_s: float = Field(ge=0)
     detail: str | None = Field(default=None, description="Error text when exit_reason is crash.")
+    usage: list[RoleUsage] = Field(
+        default_factory=list,
+        description="Per-role totals from the metering proxy; empty when the run was not metered.",
+    )
+
+
+# --- Usage (out): usage.jsonl, written by the metering proxy -------------------
+
+
+Role = Literal["executor", "advisor"]
+
+
+class UsageRecord(Strict):
+    """One model call through the metering proxy. Counts are the provider's own `usage`."""
+
+    schema_version: Literal["1"] = SCHEMA_VERSION
+    seq: int = Field(ge=0, description="Call order within the item, from 0.")
+    ts: float = Field(description="Unix time in seconds when the call started.")
+    role: Role
+    model: str = Field(description="Model id as sent.")
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
+    latency_ms: float = Field(ge=0)
+    status: int = Field(description="HTTP status from the upstream endpoint.")
+
+
+class RoleUsage(Strict):
+    role: Role
+    calls: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    reasoning_tokens: int = Field(ge=0)
 
 
 # --- Schema export -------------------------------------------------------------
@@ -185,6 +292,7 @@ SCHEMAS: dict[str, tuple[str, TypeAdapter]] = {
     "run-config.schema.json": ("RunConfig", TypeAdapter(RunConfig)),
     "event.schema.json": ("Event", EVENT_ADAPTER),
     "result.schema.json": ("AgentResult", TypeAdapter(AgentResult)),
+    "usage.schema.json": ("UsageRecord", TypeAdapter(UsageRecord)),
 }
 
 
