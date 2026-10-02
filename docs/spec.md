@@ -140,8 +140,11 @@ names quoted as compilers quote them (`'Serializer'`), absolute paths and source
 Ordinary words stay. Code redaction replaces every name that is not a C++ keyword or a
 well-known standard name; names under `std::` are public and kept at every level; string
 literals become `"…"` and comments `// …`. `brief_built.identifiers_redacted` counts the
-placeholders in the brief and `role_map_size` the names mapped so far; `tokens` is an estimate
-(4 characters a token), which is the exposure measure (cost comes from the metering proxy).
+placeholders in the brief and `role_map_size` the names mapped so far; `brief_built.role_map`
+maps each placeholder that appears in this brief to the real identifier, for the leakage and
+re-identification scorers. The map stays on the machine (`events.jsonl` is local; only the brief
+text is sent). `tokens` is an estimate (4 characters a token), which is the exposure measure
+(cost comes from the metering proxy).
 
 **Triggers.** The executor's consult tool needs only budget. Harness triggers:
 
@@ -172,16 +175,26 @@ appended to pi's system prompt from `before_agent_start` (`appendSystemPrompt`),
 flag is needed. The task text for briefs is the issue inside the adapter's prompt
 (`<issue>…</issue>`).
 
-**What is logged.** Every consult emits, in order, `consult_requested` (the executor's question)
-or `trigger_fired`, `brief_built`, `advisor_request` (before sending: the exact user message
-and the prompt hash), then `advisor_response` or `advisor_error`, and `advice_applied` when the
-advice was injected (with the turn it was injected in). The system message is the
-`advisor_system` slot, which holds no task data. The plugin also writes `advice.jsonl`
-(`LSO_ADVICE_LOG`): per request, the system and user messages, the advice as received, and the
-text injected, for reading runs and for prompt search; it is not a contract. An advisor failure
-(HTTP error, the proxy's `token_limit` refusal, timeout after 5 minutes) is an
-`advisor_error`, and the executor gets "The advisor could not be reached" as the tool result;
-it never stops the agent.
+**What is logged.** Once at session start, before any trigger, `policy_rendered` records the
+help-policy text the executor sees: the prompt hash, the rendered `executor_guidance` exactly as
+appended to the system prompt, and the rendered consult tool description (null when the tool is
+not registered). Every consult then emits, in order, `consult_requested` (the executor's
+question) or `trigger_fired`, `brief_built`, `advisor_request` (before sending: the exact user
+message and the prompt hash), then `advisor_response` or `advisor_error`, and `advice_applied`
+when the advice was injected (with the turn it was injected in). `advisor_request.input_tokens`
+is the 4-characters-a-token estimate; `advisor_response.prompt_tokens` and `reasoning_tokens`
+are the provider's own counts from its `usage` (`prompt_tokens`,
+`completion_tokens_details.reasoning_tokens`), null when it leaves them out. `advisor_error`
+carries the HTTP status (null for a network error, timeout or abort) and the time spent. The
+system message is the `advisor_system` slot, which holds no task data. Every advisor call sends
+the header `X-LSO-Request-Id: <request_id>`, which the metering proxy records to join usage to
+events. The endpoint's `temperature`, `top_p` and `sampling_seed` are sent (as `temperature`,
+`top_p`, `seed`) when set. The plugin also writes `advice.jsonl` (`LSO_ADVICE_LOG`): per request,
+the system and user messages, the advice as received, the text injected, and the whole role map
+so far (placeholder to identifier), for reading runs and for prompt search; it is not a
+contract. An advisor failure (HTTP error, the proxy's `token_limit` refusal, timeout after 5
+minutes) is an `advisor_error`, and the executor gets "The advisor could not be reached" as the
+tool result; it never stops the agent.
 
 **Config.** Prompt sets are named once per experiment and chosen per arm. A set is a
 directory, or an earlier set with some slots replaced. `advisor.prompts` and
@@ -606,12 +619,13 @@ Each call appends one record to the item's `usage.jsonl`:
 
 | Event | Key fields |
 | --- | --- |
+| `policy_rendered` | once per advisor run, first: prompt hash, the executor guidance as appended to the system prompt, the consult tool description (null when not registered) |
 | `consult_requested` | the executor's question, turn |
 | `trigger_fired` | intervention, reason, turn |
-| `brief_built` | level, tokens, identifiers redacted, role-map size |
-| `advisor_request` | request id, input tokens, brief text, prompt hash |
-| `advisor_response` | request id, output tokens, cached tokens, latency (ms), the advice text exactly as received |
-| `advisor_error` | request id, message |
+| `brief_built` | level, tokens, identifiers redacted, role-map size, role map (placeholder to identifier, for the placeholders in this brief) |
+| `advisor_request` | request id, input tokens (an estimate: 4 characters a token), brief text, prompt hash |
+| `advisor_response` | request id, output tokens, cached tokens, prompt and reasoning tokens (the provider's counts; null when not reported), latency (ms), the advice text exactly as received |
+| `advisor_error` | request id, message, HTTP status (null when no response came back), latency (ms) |
 | `advice_applied` | request id, turn it was injected at, the exact text the executor was given |
 | `budget_exhausted` | consults used, limit |
 
@@ -940,3 +954,5 @@ llm_second_opinion/
 | 2026-10-02 | The plugin is bundled with esbuild from its TypeScript sources into one extension file in a first stage of the pi bundle image (named build contexts), not built on the host. The plugin keeps its own `advice.jsonl` (system and user messages, advice received and injected) next to the contract events, since `advisor_response` carries no text. Advisor spans in item traces come from `events.jsonl` and `advice.jsonl`. |
 | 2026-10-02 | `advisor_response.advice_text` (as received, placeholders intact) and `advice_applied.injected_text` (what the executor saw) join the event contract, so advice uptake and prompt search read `events.jsonl` alone; the plugin's `advice.jsonl` stays as a debugging record. |
 | 2026-10-02 | "Local" means hardware the experimenter controls, not only the Mac running the harness. The executor runs on the user's second machine and is trusted: exposure counts only what reaches the cloud advisor (`advisor_request`), and the executor's traffic is metered for cost and time only. |
+| 2026-10-03 | Plugin on the data-retention contracts. `policy_rendered` is emitted by the session once, before anything else (the binding calls it at `before_agent_start`; every session entry point also calls it, so it comes first in any binding). `brief_built.role_map` holds only the placeholders that appear in that brief; `advice.jsonl` gets the whole map as of each consult. `advisor_request.input_tokens` stays the estimate; the provider's `prompt_tokens` and `reasoning_tokens` go on `advisor_response`. |
+| 2026-10-03 | Advisor calls send `X-LSO-Request-Id` and, when the endpoint sets them, `temperature`, `top_p` and `seed` (from `sampling_seed`); the request body is otherwise unchanged. `advisor_error.status` is null for a network error, timeout or abort, and the HTTP status otherwise, including a 2xx with an unreadable body. |
