@@ -78,6 +78,7 @@ export class AdvisorSession {
   constructor(private readonly opts: AdvisorSessionOptions) {
     this.engine = new TriggerEngine(opts.config.advisor);
     this.prompts = opts.config.prompts;
+    if (opts.config.advisor.level !== "L3") this.roles.seedProject(opts.config.run.task);
   }
 
   private get settings() {

@@ -11,9 +11,9 @@
 // - code (excerpts): every name that is not a C++ keyword or a well-known standard name.
 // Names in the `std` namespace are public and kept in both modes.
 
-export type Role = "function" | "type" | "macro" | "namespace" | "variable" | "file" | "test" | "identifier";
+export type Role = "function" | "type" | "macro" | "namespace" | "variable" | "file" | "test" | "identifier" | "project";
 
-const PLACEHOLDER = /<(function|type|macro|namespace|variable|file|test|identifier)_(\d+)>/g;
+const PLACEHOLDER = /<(function|type|macro|namespace|variable|file|test|identifier|project)_(\d+)>/g;
 
 const KEYWORDS = new Set(
   (
@@ -30,6 +30,10 @@ const KEYWORDS = new Set(
     "size empty push_back emplace_back cout cerr endl printf assert abs min max"
   ).split(" "),
 );
+
+// Repository names that are public format or protocol names, not project identity (json in
+// nlohmann/json): redacting them would hide what the code is about, not who wrote it.
+const GENERIC_PROJECT_WORDS = new Set(["json", "xml", "yaml", "toml", "csv", "http", "sql", "regex"]);
 
 const SOURCE_EXT = "c|cc|cpp|cxx|h|hh|hpp|hxx|ipp|inl|tpp|txt|cmake|py|sh|json|yaml|yml|md";
 // Order matters: the first alternative that matches wins.
@@ -59,6 +63,7 @@ export class RoleMap {
   private byName = new Map<string, string>();
   private byPlaceholder = new Map<string, string>();
   private counts = new Map<Role, number>();
+  private projects = new Set<string>();
 
   get size(): number {
     return this.byName.size;
@@ -94,6 +99,50 @@ export class RoleMap {
       if (name !== undefined) out[p] = name;
     }
     return out;
+  }
+
+  /** The task's organisation and repository names (from an id like `org__repo-123`), so the
+   * final sweep hides which project the brief is about. Matched case-insensitively. */
+  seedProject(taskId: string): void {
+    const m = /^([\w.-]+?)__([\w.-]+?)(?:-\d+)?$/.exec(taskId);
+    if (!m) return;
+    for (const name of new Set([m[1]!, m[2]!])) {
+      if (name.length >= 3 && !GENERIC_PROJECT_WORDS.has(name.toLowerCase())) {
+        this.placeholder(name, "project");
+        this.projects.add(name.toLowerCase());
+      }
+    }
+  }
+
+  /** Every known name left verbatim in `text` replaced by its placeholder, so a name redacted
+   * in one part of a brief cannot appear raw in another. Matches whole names only (not inside
+   * longer identifiers, not inside placeholders). Plain lowercase words under 8 letters that the
+   * map learned from code (`name`, `parse`) are left, to keep prose readable; the leakage
+   * scorer measures what that lets through. Returns the text and the number of replacements. */
+  sweep(text: string): { text: string; replaced: number } {
+    const names = [...this.byName.keys()]
+      .filter((n) => this.projects.has(n.toLowerCase()) || !/^[a-z]{1,7}$/.test(n))
+      .sort((a, b) => b.length - a.length);
+    if (!names.length) return { text, replaced: 0 };
+    const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
+    const pattern = new RegExp(`(?<![\\w/.])(?:${escaped.join("|")})(?![\\w/])`, "gi");
+    let replaced = 0;
+    const out = text
+      .split(/(<(?:function|type|macro|namespace|variable|file|test|identifier|project)_\d+>)/)
+      .map((part, i) =>
+        i % 2 === 1
+          ? part
+          : part.replace(pattern, (match) => {
+              const key = this.byName.has(match) ? match : names.find((n) => n.toLowerCase() === match.toLowerCase());
+              if (!key) return match;
+              // Case-insensitive only for project names; identifiers are case-sensitive.
+              if (key !== match && !this.projects.has(key.toLowerCase())) return match;
+              replaced += 1;
+              return this.byName.get(key)!;
+            }),
+      )
+      .join("");
+    return { text: out, replaced };
   }
 
   /** Placeholder to name for the whole map so far. */

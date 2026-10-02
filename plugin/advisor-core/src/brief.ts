@@ -107,7 +107,9 @@ export function buildBrief(
   for (const name of placeholders(template)) {
     if (Object.hasOwn(compute, name)) vars[name] = compute[name]!();
   }
-  const text = renderTemplate(template, vars).replace(/\n{3,}/g, "\n\n").trim();
+  let text = renderTemplate(template, vars).replace(/\n{3,}/g, "\n\n").trim();
+  // Names redacted in one section must not appear raw in another (or in the issue's prose).
+  if (!verbatim) text = roles.sweep(text).text;
   return { text, tokens: approxTokens(text), identifiersRedacted: countPlaceholders(text), vars };
 }
 

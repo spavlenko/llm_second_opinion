@@ -54,3 +54,39 @@ describe("redaction", () => {
     expect(stripInlineCode("call `foo()` or `a + b`")).toBe("call foo() or [code]");
   });
 });
+
+// Leaks found by the 2026-10-03 smoke run (docs/lab-notes.md): a name redacted in one part of
+// a brief appeared raw in another, and the project name was never redacted.
+describe("sweep", () => {
+  it("replaces a known name wherever it appears raw", () => {
+    const roles = new RoleMap();
+    roles.placeholder("BENCHMARK", "macro");
+    const { text, replaced } = roles.sweep("Rename #define BENCHMARK; grep <macro_1>( name )");
+    expect(text).toBe("Rename #define <macro_1>; grep <macro_1>( name )");
+    expect(replaced).toBe(1);
+  });
+
+  it("leaves short plain words and parts of longer names", () => {
+    const roles = new RoleMap();
+    roles.placeholder("name", "variable");
+    roles.placeholder("parse", "variable");
+    const { text } = roles.sweep("an unfortunate name; the parser calls parse_string");
+    expect(text).toBe("an unfortunate name; the parser calls parse_string");
+  });
+
+  it("hides the project, case-insensitively, but not generic format names", () => {
+    const roles = new RoleMap();
+    roles.seedProject("simdjson__simdjson-524");
+    expect(roles.sweep("consume simdjson via SIMDJSON headers").text).toBe("consume <project_1> via <project_1> headers");
+    const json = new RoleMap();
+    json.seedProject("nlohmann__json-18");
+    expect(json.sweep("nlohmann's JSON parser").text).toBe("<project_1>'s JSON parser");
+  });
+
+  it("never rewrites inside a placeholder", () => {
+    const roles = new RoleMap();
+    roles.placeholder("macro_value", "variable");
+    roles.placeholder("BIG", "macro");
+    expect(roles.sweep("<macro_1> and macro_value").text).toBe("<macro_1> and <variable_1>");
+  });
+});

@@ -9,6 +9,7 @@ advisor exchanges, leakage below L3, and proxy usage against plugin events.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -22,6 +23,14 @@ def jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def leaks(name: str, text: str) -> bool:
+    """A role-map name appearing raw as a whole name, by the plugin's own sweep rule: plain
+    lowercase words under 8 letters (`name`, `parse`) are not counted."""
+    if len(name) < 3 or re.fullmatch(r"[a-z]{1,7}", name):
+        return False
+    return re.search(rf"(?<![\w/.]){re.escape(name)}(?![\w/])", text) is not None
 
 
 def check(item: Path) -> list[str]:
@@ -74,9 +83,7 @@ def check(item: Path) -> list[str]:
         elif kind == "advisor_request":
             brief = e["brief_text"]
             if level != "L3":
-                leaked = sorted(
-                    {n for n in names.values() if len(n) > 2 and n in brief}
-                )
+                leaked = sorted({n for n in names.values() if leaks(n, brief)})
                 if leaked:
                     problems.append(
                         f"{e['request_id']}: {level} brief contains {leaked[:5]}"
