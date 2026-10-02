@@ -4,6 +4,8 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — first real-model smoke runs
 
+- A4 crashed on every item: Kimi rejects pi's `developer` role (HTTP 400) → `supportsDeveloperRole: false` for pi-advisor. Recorded as done/unresolved: A4 would have read 0%.
+- Toy tasks can't separate levels: all of L0/L2/L3 resolved; L0 turns the issue into "[code] prints 2".
 - Both endpoints stream `usage` incl. reasoning; reasoning is most of the completion.
 - Advice cut off at `max_answer_tokens` (400/400, mid-sentence), unrecorded → added `finish_reason`, budget in prompt.
 - Turn-0 `plan` brief is near-empty; advice was generic (C++ parsing for a shell bug) → add post-orientation trigger.

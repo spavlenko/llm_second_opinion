@@ -57,7 +57,10 @@ agents:
       thinking_level_map:
         {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
       compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
-  pi-advisor: {adapter: pi, version: "0.99.1"}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
 
 # `default` is ../prompts/default/.
 prompts:
