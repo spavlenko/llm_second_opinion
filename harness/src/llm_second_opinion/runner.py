@@ -20,7 +20,7 @@ from llm_second_opinion.config import ADVISOR_MODEL, Arm, ConfigError, Experimen
 from llm_second_opinion.contracts import AgentResult
 from llm_second_opinion.grading import Grade, grade
 from llm_second_opinion.ledger import ItemKey, Ledger
-from llm_second_opinion.report import summarize
+from llm_second_opinion.report import paired_comparisons, paired_metrics, summarize
 from llm_second_opinion.runtime import Container, Runtime
 from llm_second_opinion.tasks import Manifest, Task
 from llm_second_opinion.tracing import Span, clip
@@ -68,7 +68,8 @@ class Runner:
 
     Items run on `parallel` worker threads (containers do the work; threads only wait on
     them). Each item is retried after an infrastructure error, and the ledger in
-    `runs_dir/<experiment>/` makes a rerun skip what is already done.
+    `runs_dir/<experiment>/` makes a rerun skip what is already done. Tasks in the manifest's
+    `test` split run only with `final=True` (see `check_final`).
     """
 
     def __init__(
@@ -79,6 +80,7 @@ class Runner:
         runtime: Runtime | None = None,
         tracker: Tracker | None = None,
         parallel: int | None = None,
+        final: bool = False,
         echo: Callable[[str], None] = print,
     ):
         self.exp = exp
@@ -88,6 +90,7 @@ class Runner:
         self._runtime = runtime
         self.tracker = tracker
         self.parallel = parallel or exp.execution.parallel
+        self.final = final
         self.echo = echo
         self.adapters = {arm.name: _adapter_for(exp, arm) for arm in exp.arms}
 
@@ -112,13 +115,34 @@ class Runner:
             for a in arms
         ]
 
+    def check_final(self, items: list[WorkItem]) -> int:
+        """Refuse test-split tasks unless this is the final, confirmatory run; returns how
+        many of the items' tasks are in the held-out `test` split."""
+        test_tasks = len({i.task.id for i in items if i.task.split == "test"})
+        if not test_tasks or self.final:
+            return test_tasks
+        why = (
+            f"split is {self.exp.split!r}"
+            if self.exp.split
+            else "the experiment sets no split, so it selects test tasks too"
+        )
+        raise ConfigError(
+            f"{test_tasks} task(s) to run are in the manifest's held-out `test` split ({why}). "
+            "Test results are the reported, confirmatory numbers, so prompts and settings "
+            "must not be tuned on them: develop on `split: dev`, choose the policies to "
+            "confirm, then run them on `test` once with --final (recorded in the ledger and "
+            "MLflow)."
+        )
+
     def run(self, arm: str | None = None, task: str | None = None) -> list[Outcome]:
         items = self.items(arm, task)
+        test_tasks = self.check_final(items)
         todo = [i for i in items if self.ledger.status(i.key) != "done"]
         skipped = [Outcome(i.key, "skipped") for i in items if i not in todo]
         if skipped:
             self.echo(f"skipping {len(skipped)} item(s) already done")
         env = _secrets(self.exp, {i.arm.name: i.arm for i in todo}.values())
+        self.ledger.record_session(self.exp.name, self.exp.split, test_tasks, self.final)
         self.echo(f"running {len(todo)} item(s), {self.parallel} at a time")
         pool = ThreadPoolExecutor(self.parallel)
         try:
@@ -135,6 +159,7 @@ class Runner:
     def _log_summaries(self) -> None:
         """Per-arm results so far (all resumes of this config), on each arm's MLflow run."""
         rows = self.ledger.rows(self.exp.name)
+        pairs = {p.arm: paired_metrics(p) for p in paired_comparisons(self.exp, rows)}
         for s in summarize(self.exp, rows, len(self.manifest.tasks)):
             arm = self.exp.arm(s.arm)
             metrics = {"items_planned": s.planned, "items_done": s.done, "items_failed": s.failed}
@@ -148,6 +173,7 @@ class Runner:
                     "median_turns": median(s.turns),
                     "median_duration_s": median(s.durations),
                 } | {f"exit_{reason}": n for reason, n in s.exit_reasons.items()}
+                metrics |= pairs.get(s.arm, {})
             params = self._pinned_inputs(arm, self.adapters[arm.name])
             self.tracker.log_arm_summary(arm.name, s.config_hash, params, metrics)
 
@@ -313,6 +339,10 @@ class Runner:
             "advisor_model": advisor.model if advisor else None,
             "advisor_reasoning_effort": advisor.reasoning_effort if advisor else None,
             "advisor_level": arm.advisor.level if arm.advisor else None,
+            "advisor_interventions": (",".join(arm.advisor.interventions) if arm.advisor else None),
+            "advisor_max_consults": arm.advisor.max_consults if arm.advisor else None,
+            "prompt_set": arm.advisor.prompts if arm.advisor else None,
+            "prompt_hash": self.exp.prompt_set(arm.advisor.prompts).hash if arm.advisor else None,
             "max_turns": self.exp.limits.max_turns,
             "wall_minutes": self.exp.limits.wall_minutes,
         }

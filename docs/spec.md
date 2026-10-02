@@ -62,7 +62,8 @@ without changing the harness.
 
 A **help policy** is everything that decides how the executor gets help from the advisor. It
 has two parts, prompts and approach, and both are experiment variables set in config, not in
-code. (Status: planned; built in weeks 5–7.)
+code. (Status: prompt sets, sweeps, and paired comparisons are built in the harness; the
+plugin that renders and uses the prompts is built in weeks 5–7.)
 
 **Prompts: what is said.** Five prompt slots, each a text file under `prompts/`:
 
@@ -74,9 +75,36 @@ code. (Status: planned; built in weeks 5–7.)
 | `advisor_system` | The advisor's system prompt | Form of the answer: hint, plan, or code; length; whether to name files |
 | `advice_injection` | How advice re-enters the executor's context | Framing and position of the advice (e.g. as a reviewer's note after the last tool result) |
 
-Templates use `{{name}}` placeholders from a fixed list per slot (for example `brief` gets
-`{{task_summary}}`, `{{tried}}`, `{{error}}`, `{{question}}`); an unknown placeholder fails at
-config load. `prompts/default/` holds one file per slot and is the policy every set starts from.
+`prompts/default/` holds one file per slot (`<slot>.md`) and is the hand-written baseline
+policy every set starts from; `prompts/structured/brief.md` (goal, tried, current error,
+hypothesis, question) and `prompts/hints-only/advisor_system.md` (hints and next steps, no
+code) are the first variants. The executor's tool is named `consult`, with arguments
+`question`, `tried`, and `hypothesis`.
+
+**Placeholders.** Templates use `{{name}}` placeholders from a fixed list per slot (defined
+once, in `harness/src/llm_second_opinion/prompts.py`). The harness checks them when the
+experiment loads: any `{{...}}` not in the slot's list fails with the file and the name, as
+does an empty slot or an `advice_injection` without `{{advice}}`. The plugin renders them;
+`{{name}}` is written exactly so, with no spaces and no escaping.
+
+| Slot | Placeholders | Rendered as |
+| --- | --- | --- |
+| `executor_guidance` | `{{max_consults}}` | The arm's `max_consults` |
+| `consult_tool` | `{{max_consults}}` | The arm's `max_consults` |
+| `brief` | `{{task_summary}}` | The issue text, abstracted at the arm's level |
+| | `{{tried}}` | The consult call's `tried`; for a harness trigger, the plugin's summary of recent actions |
+| | `{{error}}` | The latest failing build or test output, trimmed and abstracted; empty if none |
+| | `{{hypothesis}}` | The consult call's `hypothesis`; empty for a harness trigger |
+| | `{{question}}` | The consult call's `question`; for a harness trigger, a fixed question for that trigger |
+| | `{{code}}` | Code excerpts at the arm's level; empty at L0 |
+| | `{{level}}` | `L0`–`L3` |
+| | `{{trigger}}` | What started the consult: `consult` (the executor) or the intervention's name |
+| `advisor_system` | `{{level}}` | `L0`–`L3` |
+| | `{{max_answer_tokens}}` | The arm's `max_answer_tokens`, or `unlimited` |
+| `advice_injection` | `{{advice}}` (required) | The advisor's answer, with abstracted names mapped back |
+| | `{{consults_left}}` | Consults left in the budget after this one |
+
+Slot texts are stored with line endings normalised to `\n` and trailing whitespace removed.
 
 **Approach: when, what, and how much.**
 
@@ -94,10 +122,9 @@ directory, or an earlier set with some slots replaced. `advisor.prompts` and
 list is one value):
 
 ```yaml
-prompts:
-  baseline: prompts/default
-  structured: {base: baseline, brief: prompts/brief/structured.md}
-  hints-only: {base: structured, advisor_system: prompts/advisor/hints-only.md}
+prompts:                                             # paths relative to this file
+  structured: {base: default, brief: ../prompts/structured/brief.md}
+  hints-only: {base: default, advisor_system: ../prompts/hints-only/advisor_system.md}
 
 arms:
   - {name: A0, agent: pi, executor: local}          # floor: no advisor
@@ -105,18 +132,30 @@ arms:
     agent: pi
     executor: local
     advisor:
-      prompts: [baseline, structured, hints-only]    # sweep: H-baseline, H-structured, ...
+      prompts: [default, structured, hints-only]     # sweep: H-default-consult, ...
       interventions: [[consult], [consult, stuck], [plan, consult, stuck]]
       level: L2
       max_consults: 5
   - {name: A4, agent: pi, executor: advisor}        # ceiling: the advisor does the task
 ```
 
-- The config hash covers the **text** of every slot, not the file paths, so editing a prompt
-  gives new results and moving or renaming a file does not.
-- The harness resolves the set and writes the slot texts into `advisor.json`
-  (`advisor.prompts`, plus the set's name and hash), so the plugin needs no file access and
-  each item directory records exactly which prompts were used.
+- A set is a directory with all five `<slot>.md` files (any other `.md` file there is an
+  error), or `{base: <set>, <slot>: <file>, ...}`, which replaces those slots of another set.
+  Chains are allowed; cycles and unknown names fail at load. `default` is `prompts/default/`
+  at the repository root unless the experiment defines `default`. Every defined set, and
+  every set an arm names, is read and checked when the experiment loads.
+- An advisor arm's `advisor.prompts` names a set (default `default`). The config hash covers
+  the set's **text** through `PromptSet.hash` (16 hex chars of SHA-256 over the five slot
+  texts), not the file paths or the set's name: editing a prompt gives new results; moving a
+  file or renaming a set does not. Arms without an advisor have no prompt set, and their
+  hash is unchanged.
+- The harness resolves the set and writes it into `advisor.json` as `prompts` (name, hash,
+  and the five texts with placeholders unrendered), so the plugin needs no file access and
+  each item directory records exactly which prompts were used. The arm's MLflow run records
+  the set's name and hash.
+- Sweep arms are named by suffix in the order the keys appear: a set's name for `prompts`,
+  and the interventions joined by `+` for `interventions` (`none` for an empty list), e.g.
+  `H-structured-consult+stuck`.
 
 **What is measured.** Primary: resolve rate. Secondary, per policy:
 
@@ -137,11 +176,45 @@ is tuned on.
   recorded in the manifest).
 - Prompt development and sweeps use `dev` only. The few policies to confirm are chosen before
   anything runs on `test`, run on it once, and only `test` numbers are reported as results.
+- `bench run` refuses to run any task in the manifest's `test` split (an experiment with
+  `split: test`, or with no split on a manifest that has one) unless given `--final`. The
+  ledger records every batch with its split, its number of test tasks, and whether it was
+  final; MLflow tags the arm and item runs of a final batch `lso.final=true`; `bench report`
+  says how many batches were final, and warns about test tasks run without `--final`.
 - Every variant tried on `dev` stays in the ledger and MLflow, so the number of variants tried
-  is reported with the results.
-- Arms are compared in pairs on the same tasks and seeds. The report adds paired differences
-  with a paired bootstrap interval over tasks (McNemar's test for two arms), which needs far
-  fewer runs than comparing each arm's own interval.
+  is reported with the results: `bench report` prints the arms in the config and the number
+  of distinct config hashes in the ledger, stale ones included (each prompt edit is a new
+  hash).
+- Arms are compared in pairs on the same tasks and seeds, which needs far fewer runs than
+  comparing each arm's own interval. See [Paired comparisons](#paired-comparisons).
+
+### Paired comparisons
+
+`bench report` compares every arm with a baseline arm (`--baseline`, default `A0` when the
+experiment has one) on the (task, seed) items both completed at their current config hash:
+
+- **Difference** in resolve rate on those items, with a 95% paired bootstrap interval over
+  tasks: tasks are resampled with replacement and a task's seeds stay together (seeds of one
+  task are not independent); 10,000 resamples, fixed RNG seed 0, percentile interval.
+- **McNemar's exact test** (two-sided binomial test) on the discordant items: resolved by the
+  arm only, and by the baseline only. It treats items as independent, so with several seeds
+  per task the bootstrap interval is the primary measure.
+- **Lift over A0**: the difference itself (percentage points) and relative to the
+  baseline's rate.
+- **Share of the gap closed**, (H − A0) / (A4 − A0), with a ceiling arm (`--ceiling`, default
+  `A4` when present), on the items all three completed, with a bootstrap interval from the
+  same resampling. Undefined when the ceiling does not beat the baseline; resamples where it
+  does not are skipped, and no interval is given if fewer than half remain.
+- **Pareto front** of resolve rate against advisor cost per item, over all done items: cost
+  is the ledger's `cost_usd`, or else advisor prompt + completion tokens (for an arm whose
+  executor is the advisor model, its executor tokens as well). Arms that never call the
+  advisor model cost 0; an arm with an item lacking cost data has no cost and is left off
+  the front. Without those ledger columns the report says "no cost data".
+
+`--pairs-csv F` writes one row per compared arm. After each batch, the arm runs in MLflow get
+the same numbers as metrics against `A0` (`paired_items`, `paired_diff` and its interval,
+`paired_mcnemar_p`, `paired_rel_lift`, `gap_closed` and its interval). Only the standard
+library is used.
 
 **One model pair.** The study fixes one executor–advisor pair (Qwen3.8 via MLX and Kimi K3)
 and searches many prompt versions for it. Prompts are tuned to this pair; whether they
@@ -435,18 +508,23 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   `${VAR}` also works in mapping keys, so header names can stay out of committed YAML too.
 - **Arms** name an `executor` model, which must be a key in `models`. Advisor arms consult
   the model under the key `advisor`. Arm names must be unique.
-- **Sweeps**: a list in `advisor.level` or `advisor.max_consults` expands into
-  one arm per combination, named by suffix: arm `A2` with `level: [L1, L2]` becomes `A2-L1`
-  and `A2-L2`. (`interventions` is a real list, not a sweep.) Planned: `advisor.prompts` and
-  `advisor.interventions` (as a list of lists) also sweep; see
+- **Prompt sets** (optional): `prompts:` names sets of the five prompt slots, as a directory
+  or as another set with some slots replaced; `default` is `prompts/default/`. See
   [Research design](#research-design-help-policies).
+- **Sweeps**: a list in `advisor.level`, `advisor.max_consults`, or `advisor.prompts`, or a
+  list of lists in `advisor.interventions`, expands into one arm per combination, named by
+  suffix: arm `A2` with `level: [L1, L2]` becomes `A2-L1` and `A2-L2`;
+  `interventions: [[consult], [consult, stuck]]` gives `A2-consult` and `A2-consult+stuck`.
+  A flat `interventions` list is one value, not a sweep.
 - **Execution** (optional): `parallel` (work items at once, default 1), `cpus` and
   `memory_gb` (caps per container, default 4 and 8), `retries` (extra attempts after an
   infrastructure error, default 1), `grade_minutes` (default 30). Not part of the config hash.
   `bench run --parallel N` overrides `parallel`.
-- **Config hash**: 16 hex chars of SHA-256 over the arm (minus its name), the limits, and the
-  executor and advisor model settings (minus `base_url`, `headers`, and `header_env`). Renaming an arm or moving a server
-  keeps results; changing behaviour invalidates them.
+- **Config hash**: 16 hex chars of SHA-256 over the arm (minus its name), the agent entry,
+  the limits, the executor and advisor model settings (minus `base_url`, `headers`, and
+  `header_env`), and for an advisor arm the prompt set's text hash in place of its name.
+  Renaming an arm or a prompt set, or moving a server or a prompt file, keeps results;
+  changing behaviour invalidates them.
 
 The same experiment can be built in Python for cases YAML does not cover:
 
@@ -489,12 +567,12 @@ command counts as timed out only if it also used the full time.
 | `bench tasks build NAME [--only ID] [--parallel N] [--jobs N]` | Build arm64 task images; resumes |
 | `bench tasks validate NAME [--runs 2] [--parallel N]` | Gold-patch validation; resumes |
 | `bench tasks freeze NAME --version V --out F [--smoke 3]` | Write the frozen manifest (with split and dropped instances) and a smoke subset |
-| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--dry-run]` | Batch run; resumes where it stopped. Always tracked in MLflow (`--mlflow`, `MLFLOW_TRACKING_URI`, default `http://127.0.0.1:5050`); refuses to start if the server is down. `--no-mlflow` is for harness tests and CI only |
+| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--final] [--dry-run]` | Batch run; resumes where it stopped. Always tracked in MLflow (`--mlflow`, `MLFLOW_TRACKING_URI`, default `http://127.0.0.1:5050`); refuses to start if the server is down. `--no-mlflow` is for harness tests and CI only. Tasks in the `test` split need `--final` |
 | `bench run EXP.yaml --arm A2 --task ID --debug` | One task with live logs; keeps the container afterwards |
 | `bench shell ITEM` | Open a shell in a kept container |
 | `bench replay ITEM` | Step through a stored run's events: turns, triggers, briefs, advice |
 | `bench score EXP.yaml` | Re-run scorers over stored runs |
-| `bench report EXP.yaml [--csv F]` | Per-arm table from the ledger (stale config hashes ignored); per-item CSV. Plots to come |
+| `bench report EXP.yaml [--csv F] [--pairs-csv F] [--baseline A0] [--ceiling A4]` | Variants tried and final batches; per-arm table from the ledger (stale config hashes ignored); paired comparisons with the baseline; Pareto front against advisor cost; per-item and per-pair CSV. Plots to come |
 | `bench schemas [--check]` | Regenerate (or verify) the contract JSON Schemas |
 | `bench mock-server --recordings F [--upstream URL]` | Serve recorded completions; record from a real endpoint |
 
@@ -562,7 +640,8 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
 
 - **Ledger.** One row per work item, keyed by experiment, arm, task, seed, and config hash.
   It stores status, attempts, and the MLflow run and trace IDs. Changing an arm's config
-  changes its hash, so stale results are never reused.
+  changes its hash, so stale results are never reused. A second table, `sessions`, has one
+  row per `bench run` batch: start time, split, number of test tasks, and `--final`.
 - **Item directory.** `runs/<experiment>/<arm>/<task>/seed-<n>/` holds `advisor.json`,
   `result.json`, `patch.diff`, `events.jsonl`, and `grade.log`, whether or not MLflow is on.
   The ledger is `runs/<experiment>/ledger.sqlite`.
@@ -683,3 +762,7 @@ llm_second_opinion/
 | 2026-10-02 | Experiments select tasks with `split` and `task_ids`, outside the config hash. `experiments/baselines.yaml`: A0 and A4 on `dev`, 3 seeds. |
 | 2026-10-02 | Pilot contracts fixed before the build splits up: prompt-set name in `advisor.prompts`, resolved `RunConfig.prompts`; budget knobs `max_answer_tokens`, `cooldown_turns`, `periodic_every`; interventions `on_test_failure`, `periodic`; events `consult_requested`, `advisor_error`, `advisor_request.prompt_hash`; `usage.schema.json`; `AgentResult.usage`; exit reason `token_limit`. `schema_version` stays "1": nothing with advisor data has been recorded yet. |
 | 2026-10-02 | Task set `mswe-mini-cpp-v2` replaces v1: two deleted images rebuilt with new IDs and validated again; otherwise identical. Experiments use v2; v1 stays as frozen. |
+| 2026-10-02 | Prompt sets built: `prompts:` maps names to a directory (all five `<slot>.md`) or `{base, <slot>: file}` (chains allowed, cycles rejected); implicit `default` is `prompts/default/`. Placeholder lists fixed per slot (see Research design) and checked at load; `brief` adds `{{hypothesis}}` and `{{trigger}}`, `advice_injection` adds `{{consults_left}}`, and `{{advice}}` is required. Slot texts are normalised (LF, trailing whitespace trimmed) before hashing. The config hash uses the set's text hash in place of its name; arms without an advisor keep their hashes. The consult tool is `consult(question, tried, hypothesis)`. |
+| 2026-10-02 | `advisor.prompts` sweeps (a list) and `advisor.interventions` sweeps (a list of lists); the interventions suffix is the names joined by `+`, `none` when empty. |
+| 2026-10-02 | Honesty guard: `bench run` refuses tasks in the `test` split without `--final`; batches are recorded in a ledger `sessions` table, and final ones are tagged `lso.final` in MLflow. `bench report` prints the number of variants tried (distinct config hashes in the ledger). |
+| 2026-10-02 | Paired comparisons in `bench report`: each arm vs `A0` on shared (task, seed) items, paired bootstrap over tasks (10,000 resamples, seed 0), McNemar exact, relative lift, share of the A0–A4 gap closed with a bootstrap CI, and a Pareto front against `cost_usd` or advisor tokens when the ledger has them. Standard library only (numpy is installed only as an MLflow dependency). |

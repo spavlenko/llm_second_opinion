@@ -84,7 +84,7 @@ Tuning prompts is optimisation, and it overfits the tasks it is tuned on. So:
 
 - **Split once.** The task set is split into `dev` and `test` once, with a fixed seed and within each repository, and the split is recorded in the manifest.
 - **Tune on `dev` only.** All prompt development and search use `dev`; the search splits it further into train and validation.
-- **Test once.** The few policies to confirm are chosen before anything runs on `test`; they run on it once, and only `test` numbers are reported as results.
+- **Test once.** The few policies to confirm are chosen before anything runs on `test`; they run on it once, and only `test` numbers are reported as results. `bench run` refuses `test` tasks without `--final`, which is recorded.
 - **Count the tries.** Every variant tried is kept in the ledger and MLflow, so the number of variants tried is reported alongside the results.
 - **Compare in pairs.** Arms are compared on the same tasks and seeds, with paired bootstrap intervals and McNemar's test.
 
@@ -111,6 +111,10 @@ Built and tested:
   - a run per arm with its pinned inputs and summary metrics
   - a run per task and seed
   - a trace per item: turns, model calls, tool calls, grading
+- **Help policies in config:** prompt sets (five slots, hashed by text) with a baseline in
+  `prompts/default/`, sweeps over prompt sets and interventions.
+- **Report:** per-arm resolve rates, paired comparisons with A0 (bootstrap CI, McNemar, share
+  of the A0–A4 gap closed), the number of variants tried.
 - **Mock model server:** CI and development run without a GPU or API keys.
 
 Next:

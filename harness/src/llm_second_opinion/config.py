@@ -13,18 +13,21 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from llm_second_opinion.contracts import (
     AdvisorSettings,
     ModelEndpoint,
+    PromptSet,
     RunConfig,
     RunIdentity,
     Strict,
 )
+from llm_second_opinion.prompts import PromptSource, resolve
 from llm_second_opinion.tasks import Manifest
 
 ADVISOR_MODEL = "advisor"  # key in `models` that advisor arms consult
+DEFAULT_PROMPTS = Path(__file__).resolve().parents[3] / "prompts/default"  # set `default`
 _ENV_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 _ROUTING = {"base_url", "headers", "header_env"}  # how a model is reached, not which model
 _DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$")
@@ -90,7 +93,13 @@ class Experiment(Strict):
     execution: Execution = Field(default_factory=Execution)
     models: dict[str, ModelEndpoint]
     agents: dict[str, AgentSpec] = Field(default_factory=dict)
+    prompts: dict[str, PromptSource] = Field(
+        default_factory=dict,
+        description="Prompt sets by name: a directory, or {base: <set>, <slot>: <file>}. "
+        "`default` is prompts/default/ unless defined here.",
+    )
     arms: list[Arm] = Field(min_length=1)
+    _prompt_sets: dict[str, PromptSet] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_arms(self) -> Experiment:
@@ -105,6 +114,17 @@ class Experiment(Strict):
                 raise ValueError(
                     f"arm {arm.name} has an advisor but models has no {ADVISOR_MODEL!r}"
                 )
+            if arm.advisor and arm.advisor.prompts not in self.prompt_sources():
+                known = ", ".join(sorted(self.prompt_sources()))
+                raise ValueError(
+                    f"arm {arm.name}: no prompt set named {arm.advisor.prompts!r}; "
+                    f"prompt sets: {known}"
+                )
+        # Read and check every defined set and every set an arm uses, so a bad file or
+        # placeholder fails at load rather than mid-batch.
+        used = {arm.advisor.prompts for arm in self.arms if arm.advisor}
+        for name in sorted(set(self.prompts) | used):
+            self._prompt_sets[name] = resolve(name, self.prompt_sources())
         return self
 
     @classmethod
@@ -117,6 +137,10 @@ class Experiment(Strict):
         raw["arms"] = expand_sweeps(raw.get("arms") or [])
         if "tasks" in raw:
             raw["tasks"] = (path.parent / raw["tasks"]).resolve()
+        if isinstance(raw.get("prompts"), dict):
+            raw["prompts"] = {
+                name: _relative_to(path.parent, source) for name, source in raw["prompts"].items()
+            }
         return cls.model_validate(raw)
 
     def select(self, manifest: Manifest) -> Manifest:
@@ -143,15 +167,31 @@ class Experiment(Strict):
         """The arm's `agents` entry; a bare adapter name means that adapter's defaults."""
         return self.agents.get(arm.agent) or AgentSpec(adapter=arm.agent)
 
+    def prompt_sources(self) -> dict[str, PromptSource]:
+        return {"default": DEFAULT_PROMPTS, **self.prompts}
+
+    def prompt_set(self, name: str) -> PromptSet:
+        """The named prompt set, resolved and hashed; read once, so one batch sees one text."""
+        if name not in self._prompt_sets:
+            try:
+                self._prompt_sets[name] = resolve(name, self.prompt_sources())
+            except ValueError as e:
+                raise ConfigError(str(e)) from e
+        return self._prompt_sets[name]
+
     def config_hash(self, arm: Arm) -> str:
         """Hash of everything that changes an arm's behaviour.
 
         Excludes the arm's name, the name of its `agents` entry, and how a model is reached
         (base URL, headers), so renaming an arm or an agent entry, moving a server, or
-        changing credentials keeps results.
+        changing credentials keeps results. An advisor arm's prompt set counts by its text
+        (the set's hash), not its name or files.
         """
+        arm_payload = arm.model_dump(mode="json", exclude={"name", "agent"})
+        if arm.advisor:
+            arm_payload["advisor"]["prompts"] = self.prompt_set(arm.advisor.prompts).hash
         payload = {
-            "arm": arm.model_dump(mode="json", exclude={"name", "agent"}),
+            "arm": arm_payload,
             "agent": self.agent_spec(arm).model_dump(mode="json"),
             "limits": self.limits.model_dump(mode="json"),
             "executor": self.models[arm.executor].model_dump(mode="json", exclude=_ROUTING),
@@ -177,6 +217,7 @@ class Experiment(Strict):
             executor=self.models[arm.executor],
             advisor_model=self.models[ADVISOR_MODEL] if arm.advisor else None,
             advisor=arm.advisor,
+            prompts=self.prompt_set(arm.advisor.prompts) if arm.advisor else None,
         )
 
 
@@ -231,24 +272,47 @@ def load_dotenv(path: Path, env: dict[str, str] | os._Environ[str] = os.environ)
 
 
 def expand_sweeps(arms: list[Any]) -> list[Any]:
-    """Expand list-valued `advisor.level` / `advisor.max_consults` into one arm per combination.
+    """Expand sweeps in `advisor` into one arm per combination, named by suffix.
 
-    `level: [L1, L2]` on arm A2 yields arms A2-L1 and A2-L2.
+    A list in `level`, `max_consults`, or `prompts` sweeps; `interventions` sweeps when it is
+    a list of lists (a flat list is one value). `level: [L1, L2]` on arm A2 yields A2-L1 and
+    A2-L2; `interventions: [[consult], [consult, stuck]]` yields A2-consult and
+    A2-consult+stuck.
     """
     expanded = []
     for arm in arms:
         advisor = arm.get("advisor") if isinstance(arm, dict) else None
-        axes = {
-            k: v
-            for k, v in (advisor or {}).items()
-            if k in ("level", "max_consults") and isinstance(v, list)
-        }
+        axes = {k: v for k, v in (advisor or {}).items() if _is_sweep(k, v)}
         if not axes:
             expanded.append(arm)
             continue
         for combo in itertools.product(*axes.values()):
             variant = copy.deepcopy(arm)
-            variant["advisor"].update(zip(axes, combo))
-            variant["name"] = "-".join([str(arm.get("name")), *map(str, combo)])
+            variant["advisor"].update(zip(axes, copy.deepcopy(combo)))
+            variant["name"] = "-".join([str(arm.get("name")), *map(_suffix, combo)])
             expanded.append(variant)
     return expanded
+
+
+def _is_sweep(key: str, value: Any) -> bool:
+    if key == "interventions":
+        return isinstance(value, list) and bool(value) and all(isinstance(v, list) for v in value)
+    return key in ("level", "max_consults", "prompts") and isinstance(value, list)
+
+
+def _suffix(value: Any) -> str:
+    if isinstance(value, list):  # an interventions value
+        return "+".join(map(str, value)) or "none"
+    return str(value)
+
+
+def _relative_to(base: Path, source: Any) -> Any:
+    """A prompt set's paths, made absolute against the YAML file's directory."""
+    if isinstance(source, str):
+        return (base / source).resolve()
+    if isinstance(source, dict):
+        return {
+            k: (base / v).resolve() if k != "base" and isinstance(v, str) else v
+            for k, v in source.items()
+        }
+    return source

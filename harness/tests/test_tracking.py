@@ -66,3 +66,22 @@ def test_trace_is_linked_to_the_item_run_with_recorded_times(tmp_path, monkeypat
     arm_run = client.get_run(client.get_run(run_id).data.tags["mlflow.parentRunId"])
     assert arm_run.data.metrics["resolve_rate"] == 0.5
     assert "mlflow.source.git.commit" in arm_run.data.tags
+
+
+def test_final_runs_are_tagged(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    artifacts = tmp_path / "item"
+    artifacts.mkdir()
+    dev = Tracker(uri, "exp")
+    dev_item = dev.log_item(ItemKey("exp", "A0", "t", 0, "h"), {}, {}, {}, artifacts)
+    dev.close()
+    final = Tracker(uri, "exp", final=True)
+    test_item = final.log_item(ItemKey("exp", "A0", "u", 0, "h"), {}, {}, {}, artifacts)
+    final.close()
+
+    client = final.client
+    assert "lso.final" not in client.get_run(dev_item).data.tags
+    run = client.get_run(test_item)
+    assert run.data.tags["lso.final"] == "true"
+    assert client.get_run(run.data.tags["mlflow.parentRunId"]).data.tags["lso.final"] == "true"
