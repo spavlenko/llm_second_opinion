@@ -126,11 +126,17 @@ Built and tested:
   stuck heuristic, failed test run, periodic), cooldown and budget, briefs at levels L0–L3
   with identifiers redacted to placeholders and mapped back in the advice, and every request
   logged exactly; advisor spans in the item traces.
+- **Data retention:** every attempt keeps its own directory and spend (failed ones too), with
+  provenance (`item.json`), per-test grading (`grade.json`), trajectory metrics, and every
+  request's parameters. Endpoint outages are retried, not scored as agent failures.
+- **Calibration:** grader controls on real tasks (gold resolves, empty and no-op patches fail);
+  a smoke suite (`experiments/smoke-*.yaml`) with an anomaly checker (`scripts/smoke-check.py`).
 - **Mock model server:** CI and development run without a GPU or API keys.
 
-Next:
-- the local model setup and the A0/A4 baselines
-- then the pilot of help policies, exposure scorers, and prompt search
+In progress:
+- headroom check on `dev` (A0 and A4 once per task) before any tuning
+- anti-delegation rules (the executor must do the work), size targets, new triggers, scorers
+- then the pilot of help policies and prompt search
 
 Progress is tracked in [docs/roadmap.md](docs/roadmap.md).
 
@@ -145,7 +151,9 @@ Progress is tracked in [docs/roadmap.md](docs/roadmap.md).
 - `tasks/manifests/` — frozen task sets
 - `tasks/repos/` — per-repository image recipes for the task pipeline
 - `experiments/` — example experiment YAML files
+- `scripts/` — MLflow server, grader calibration, smoke-run checker
 - `docs/` — [spec](docs/spec.md) (source of truth for the design), [roadmap](docs/roadmap.md),
+  [lab notes](docs/lab-notes.md), [related work](docs/related-work.md),
   [task pipeline notes](docs/task-pipeline.md)
 
 v1 targets a single Apple Silicon Mac with arm64 Linux containers.
@@ -190,6 +198,22 @@ first run builds the pi bundle):
 bench mock-server --recordings harness/tests/fixtures/pi-toy-add.jsonl --host 0.0.0.0 &
 bench run experiments/toy-pi.yaml --task toy-add
 ```
+
+### Real models
+
+Endpoints and keys go in a gitignored `.env` at the repository root (`cp .env.example .env`);
+`bench` loads it, and only variable names appear in experiment files. Give Docker about
+24 GB. Every batch starts with a usage preflight, so a wrong URL or key, or an endpoint that
+does not report token usage, fails before anything runs.
+
+```sh
+bench run experiments/smoke-toy.yaml --runs-dir /tmp/lso-smoke     # minutes, all levels + A4
+python scripts/smoke-check.py /tmp/lso-smoke/smoke-toy             # prints nothing wrong when clean
+bench run experiments/calib-floor.yaml                              # A0/A4 headroom on dev
+bench run experiments/pilot.yaml                                    # the pilot (150 items)
+```
+
+Tuning and smoke runs use `dev` only; `test` needs `--final` and is run once.
 
 Results land in `runs/<experiment>/`: `ledger.sqlite` and one directory per attempt,
 `<arm>/<task>/seed-<n>/<config_hash>/attempt-<k>/`, with `item.json` (what ran, from which
