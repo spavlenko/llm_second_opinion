@@ -1,0 +1,80 @@
+# Pilot on `dev` (roadmap week 8): the floor (A0), the ceiling (A4), and three help policies
+# that differ only in their prompt set. Its purposes: check the whole loop on real models, get
+# run times and a variance estimate for the power analysis and the search budget, and give
+# the first traces to study in MLflow. Endpoints, keys, and header names come from ../.env.
+#   bench run experiments/pilot.yaml --arm A0 --task nlohmann__json-2332 --parallel 1  # one item first
+#   bench run experiments/pilot.yaml
+#   bench report experiments/pilot.yaml --pairs-csv runs/pilot-pairs.csv
+#
+# Tasks: 10 of the 24 `dev` tasks, chosen once before any model run. Rule: drop tasks whose gold
+# patch is over 1000 lines (large rewrites every arm is likely to fail, which carry no
+# signal); then, per repository in proportion to `dev` (json 4, fmt 3, simdjson 2, Catch2 1),
+# random.Random(0).sample over the sorted eligible ids, repositories in that order.
+name: pilot
+tasks: ../tasks/manifests/mswe-mini-cpp-v2.yaml
+split: dev
+task_ids:
+  - nlohmann__json-1138
+  - nlohmann__json-2332
+  - nlohmann__json-3664
+  - nlohmann__json-4512
+  - fmtlib__fmt-2310
+  - fmtlib__fmt-2317
+  - fmtlib__fmt-3729
+  - simdjson__simdjson-644
+  - simdjson__simdjson-958
+  - catchorg__Catch2-2288
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 2, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL}"
+    model: kimi-k3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+# USD per million tokens; not in the config hash, so they can be filled in after a run.
+# prices:
+#   local:   {input_per_mtok: 0, output_per_mtok: 0}
+#   advisor: {input_per_mtok: ..., output_per_mtok: ..., cached_input_per_mtok: ...}
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor: {adapter: pi, version: "0.99.1"}
+
+# `default` is ../prompts/default/.
+prompts:
+  structured: {base: default, brief: ../prompts/structured/brief.md}
+  hints-only: {base: default, advisor_system: ../prompts/hints-only/advisor_system.md}
+
+arms:
+  - {name: A0, agent: pi, executor: local}
+  - name: H
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: [default, structured, hints-only]   # sweep: H-default, H-structured, H-hints-only
+      interventions: [plan, consult, stuck]
+      max_consults: 5
+      max_answer_tokens: 800
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+  - {name: A4, agent: pi-advisor, executor: advisor}
