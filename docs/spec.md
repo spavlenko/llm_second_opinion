@@ -257,7 +257,8 @@ inside a run.
 | `runtime` | Container lifecycle through the Docker API (Colima or Docker Desktop), CPU and memory caps, exec with timeouts, file copy in and out |
 | `adapters` | The `AgentAdapter` protocol; the `gold` adapter (applies the reference patch); the pi adapter (pi in JSON mode, bundle mounted from a volume, turn limit by a harness extension). The advisor plugin joins the pi bundle when it exists |
 | `runner` | Expands arms × tasks × seeds into work items; parallel workers, retries, and resume through the ledger |
-| `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id |
+| `ledger` | SQLite row per work item: status, attempts, grade, exit reason, turns, duration, MLflow run id, tokens per role, model calls, cost |
+| `metering` | The metering proxy (per-item routes, secrets added on the host, `usage.jsonl`, token budget), the usage preflight, and cost from the price table |
 | `grading` | Applies the agent's patch and the test patch in a fresh container, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output) |
 | `tracking`, `tracing` | MLflow, mandatory for `bench run`: a run per arm with pinned inputs, git commit, and summary metrics; a child run per item with metrics, artifacts, and a trace built from the agent's logs |
 | `report` | Per-arm resolve rates with Wilson 95% intervals, exit reasons, time and turns; per-item CSV |
@@ -284,13 +285,15 @@ if the committed schemas drift from the models.
    container: run identity (experiment, arm, task, seed, config hash), executor model, advisor
    model, advisor settings (level, interventions, consult budget, stuck thresholds), and the
    events path. Secrets come from environment variables; the file only names the variable
-   (`api_key_env`), never the key.
+   (`api_key_env`), never the key. For a metered agent the endpoints are the metering
+   proxy's routes, with no key names or headers at all.
 2. **Events (out)** — `event.schema.json`. The plugin appends to `events.jsonl` and emits
    matching OTel spans. The JSONL file is the source of truth for scoring; spans are for
    browsing in MLflow.
 3. **Result (out)** — `result.schema.json`. The adapter returns the final `git diff`, the exit
-   reason (`finished`, `turn_limit`, `time_limit`, `crash`), agent name and version, turns,
-   duration, and error detail on a crash.
+   reason (`finished`, `turn_limit`, `time_limit`, `token_limit`, `crash`), agent name and
+   version, turns, duration, error detail on a crash, and the metered `usage` per role (filled
+   by the runner).
 
 Every record carries `schema_version` (currently `"1"`). In the exported schemas every
 property is required: producers always write every field (optionals as `null`), and the event
@@ -303,6 +306,7 @@ class AgentAdapter(Protocol):
     name: str
     version: str
     capabilities: frozenset[str]  # e.g. {"advisor", "otel"}
+    uses_models: bool             # if so, metered: calls go through the metering proxy
     artifacts: tuple[str, ...]    # container files copied into the item directory
 
     def __init__(self, spec: AgentSpec): ...            # the experiment's `agents` entry
@@ -311,8 +315,10 @@ class AgentAdapter(Protocol):
             env: dict[str, str]) -> AgentResult: ...
 ```
 
-The runner writes `config` to `/run/advisor.json` before calling `run`, and passes API keys
-in `env`; they are set per `exec`, never in the image or container config. One adapter
+The runner writes `config` to `/run/advisor.json` before calling `run`. An agent that uses
+models gets the metering proxy's routes in `config` and an empty `env` (the proxy adds the
+keys); any other gets the API keys in `env`, set per `exec`, never in the image or container
+config. One adapter
 instance per arm is shared by parallel workers, so `run` keeps no state on the instance. The
 runner refuses an arm that needs a capability the adapter lacks, such as an advisor arm on an
 agent without the plugin. Adapters are registered by name in `adapters.ADAPTERS`.
@@ -329,9 +335,10 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
   Official Node binaries need glibc 2.28, which all task images have (the oldest is Debian
   buster); the toy image is Debian slim for the same reason.
 - *Model.* The executor endpoint becomes pi's only provider (`lso`, OpenAI-compatible) in a
-  `models.json` under `/run/lso/agent` (`PI_CODING_AGENT_DIR`). The API key is referenced by
-  variable name and read from the exec environment. Host-local URLs are rewritten to
-  `host.docker.internal` until the metering proxy takes over routing.
+  `models.json` under `/run/lso/agent` (`PI_CODING_AGENT_DIR`), kept as an item artifact.
+  pi is metered, so its base URL is the item's proxy route and it has no key (`apiKey:
+  "none"`, which the proxy replaces). Host-local URLs would be rewritten to
+  `host.docker.internal`.
 - *Isolation.* `--no-extensions` (so no MCP or codemode), no skills, prompt templates, themes,
   or context files (`AGENTS.md`/`CLAUDE.md` in a task repository), `--offline`, no telemetry.
   Tools are pi's defaults (read, bash, edit, write) unless the options say otherwise.
@@ -348,7 +355,8 @@ stream (`pi.jsonl`), the prompt, and stderr as item artifacts.
   `context_window`, `max_output_tokens`, `thinking_level_map` (pi level to the endpoint's
   `reasoning_effort` value), and `compat` (pi's endpoint compatibility flags, passed as is).
   The endpoint's `headers` and `header_env` become provider headers in `models.json`, secret
-  ones as `${VAR}` references that pi resolves from the exec environment.
+  ones as `${VAR}` references that pi resolves from the exec environment (both are empty
+  under metering: the proxy adds them).
 
 **Agent settings in config.** An arm's `agent` names an entry in `agents`, or an adapter
 directly, so the agent and its version are experiment variables like the models:
@@ -368,33 +376,76 @@ arms:
   options gives new results.
 - A short form `agent: pi` means the adapter's defaults.
 
-**Token metering (planned).** Token counts must not depend on each agent reporting them, so the
-harness meters them itself: agents never call a model directly. One metering proxy per batch
-(built on the mock server's upstream mode, threaded for parallel items) serves every item, and
-the runner rewrites the endpoints
-in `advisor.json` and the agent's model settings to point at it, one route per role
-(`/items/<item>/executor/v1`, `/items/<item>/advisor/v1`). The proxy forwards to the real
-endpoint and appends one record per call to `usage.jsonl`:
+**Token metering.** Token counts must not depend on each agent reporting them, so the harness
+meters them itself (`metering.py`): agents never call a model directly. One metering proxy per
+batch (a threaded HTTP server; the mock server's upstream mode buffers whole responses, so it
+was not reused) serves every item of an agent that calls models (`AgentAdapter.uses_models`;
+not `gold`). For each item attempt the runner registers a random item id, and rewrites the
+endpoints in `advisor.json` and so in the agent's model settings (pi's `models.json`) to
+`http://host.docker.internal:<port>/items/<id>/<role>/v1`, with `api_key_env`, `headers`, and
+`header_env` cleared. The config hash is unchanged.
+
+- **Secrets stay on the host.** The proxy adds `Authorization: Bearer <api_key_env>`,
+  `headers`, and `header_env` values from the host environment; a client's own
+  `Authorization` is dropped. Containers get the proxy URL and no keys (the per-exec `env` is
+  empty for metered agents), and the real endpoints never appear in the item directory.
+- **Binding.** The proxy binds 127.0.0.1 (`bench run --proxy-host` to change). Docker Desktop
+  for Mac forwards the containers' `host.docker.internal` (host gateway) to the Mac's loopback
+  (checked with the toy image and the pi Docker tests), so nothing else on the network can
+  use the proxy. A VM that does not do this (e.g. Colima) needs an address it can reach.
+- **Streaming.** For a streaming request the proxy sets `stream_options.include_usage`, passes
+  the stream through line by line, unchanged and unbuffered, and takes `usage` from the final
+  chunk; a JSON response is read whole. If the client hangs up mid-stream (an agent aborted at
+  its turn or time limit), the proxy keeps reading to the end, since the provider bills the
+  whole call and only the end says how much. After the agent stops, the runner waits for calls
+  still in flight before reading the totals.
+
+Each call appends one record to the item's `usage.jsonl`:
 
 | Field | Meaning |
 | --- | --- |
 | `seq`, `ts`, `role` | Call order, time, and `executor` or `advisor` |
 | `model` | Model id as sent |
-| `prompt_tokens`, `completion_tokens`, `cached_tokens`, `reasoning_tokens` | From the provider's `usage` (streaming: `stream_options.include_usage` is forced on) |
+| `prompt_tokens`, `completion_tokens` | From the provider's `usage` (streaming: `stream_options.include_usage` is forced on); the Responses API's `input_tokens`/`output_tokens` are read too |
+| `cached_tokens`, `reasoning_tokens` | `prompt_tokens_details.cached_tokens` (or Moonshot's top-level `cached_tokens`) and `completion_tokens_details.reasoning_tokens`; 0 when absent |
 | `latency_ms`, `status` | Wall time and HTTP status |
 
 - **Only providers that report usage.** Counts come from the provider, never from estimates,
   so every endpoint must return `usage`, including in streams. Before a batch starts, the
-  runner sends one tiny streaming request to each endpoint and refuses to run if the response
-  has no `usage`. If a call during a run still arrives without it, the item fails (it is not
-  recorded as done), so no estimated number enters the results.
-- Usage is live: the runner can stop an item on a token budget (`limits.max_tokens`), recorded
-  as a new exit reason `token_limit`.
-- `usage.jsonl` is the fourth contract (`usage.schema.json`, `UsageRecord`). `AgentResult`
-  has a `usage` summary per role (`RoleUsage`; empty when not metered); where an agent also reports its own counts, the report shows the
-  difference as a sanity check.
-- The ledger and MLflow get per-item totals (tokens per role, calls, cost from a price table in
-  the experiment), and `bench report` shows tokens and cost per arm and per resolved task.
+  runner sends one tiny streaming request ("Reply with the single word OK.", no
+  `stream_options`, so the proxy's forcing is checked too) through the proxy to each distinct
+  endpoint the batch uses (the executors and, for advisor arms, `advisor`), and refuses to run
+  if a response has no `usage`; those calls go to `runs/<experiment>/preflight/`.
+  `bench run --no-preflight` skips it, for the mock server and tests only (the mock server
+  also answers the preflight without using up a recording). If a successful (2xx) call during
+  a run still arrives without usage, the item fails (it is not recorded as done; the infra
+  retry applies), so no estimated number enters the results. Error responses without usage
+  (a 503, say) are not billed calls and are not recorded.
+- **Token budget.** `limits.max_tokens` (optional) caps prompt plus completion tokens over all
+  roles of an item. Once the item's total reaches it, the proxy answers further calls with
+  HTTP 403 (`type: token_limit`; clients retry 429 and 5xx, and a retry cannot help), the
+  agent stops on the error, and the runner records the exit reason `token_limit`. The call
+  that crosses the budget completes and counts. An unset `max_tokens` is left out of the
+  config hash, so existing hashes did not change.
+- Each attempt starts a fresh `usage.jsonl`; the ledger keeps the last attempt, so tokens spent
+  by an attempt that failed on infrastructure are not counted.
+- `usage.jsonl` is the fourth contract (`usage.schema.json`, `UsageRecord`). The runner fills
+  `AgentResult.usage` (`RoleUsage` per role that made calls; empty when not metered) from it.
+- **Cost.** The experiment's `prices` (`<models key>: {input_per_mtok, output_per_mtok,
+  cached_input_per_mtok?}`, USD per million tokens, not in the config hash) price each role
+  by the model it used. Cached prompt tokens use the cached price when one is set; reasoning
+  tokens are part of the completion tokens and use the output price. `cost_usd` is null when a
+  model that made calls has no price.
+- **Where the totals go.** Ledger columns `executor_prompt_tokens`,
+  `executor_completion_tokens`, `advisor_prompt_tokens`, `advisor_completion_tokens`,
+  `model_calls`, `cost_usd` (null when not metered; older ledgers gain them on open). MLflow:
+  the same as item metrics, and per arm `tokens_sum`/`tokens_median`,
+  `advisor_tokens_sum`/`advisor_tokens_median`, `cost_usd_sum`/`cost_usd_median`, and
+  `cost_usd_per_resolved`. The item trace's agent span carries the proxy's counts
+  (`proxy.<role>.*`) next to the totals of the agent's own model spans (`agent.tokens.*`, as
+  pi reports them), so the two can be compared. `bench report` shows tokens per item (all
+  roles and advisor), total cost, and cost per resolved task per arm; the arm's cost is shown
+  only when every done item has one.
 - The advisor plugin's `advisor_request`/`advisor_response` events stay the record of what was
   sent (exposure); the proxy is the record of what was used (cost). Both count the same advisor
   calls, which gives a cross-check.
@@ -433,6 +484,13 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   `.env.example` lists the names. A model's `api_key_env` and `header_env` (header name to
   variable name) name secrets, never hold them; `headers` holds non-secret header values.
   `${VAR}` also works in mapping keys, so header names can stay out of committed YAML too.
+  Only the metering proxy on the host uses the secrets; agent containers never get them.
+- **Limits**: `wall_minutes` and `max_turns`, and optionally `max_tokens`, the per-item token
+  budget enforced by the metering proxy (see [Token metering](#contracts-and-interfaces)).
+- **Prices** (optional): `prices: {<models key>: {input_per_mtok, output_per_mtok,
+  cached_input_per_mtok}}` in USD per million tokens (the cached price is optional), for
+  `cost_usd`. Keys must be in `models`. Not part of the config hash: cost is derived from the
+  metered tokens, so a price can be corrected after a run.
 - **Arms** name an `executor` model, which must be a key in `models`. Advisor arms consult
   the model under the key `advisor`. Arm names must be unique.
 - **Sweeps**: a list in `advisor.level` or `advisor.max_consults` expands into
@@ -446,7 +504,8 @@ of arms. Each arm is validated against the Pydantic schema before anything runs.
   `bench run --parallel N` overrides `parallel`.
 - **Config hash**: 16 hex chars of SHA-256 over the arm (minus its name), the limits, and the
   executor and advisor model settings (minus `base_url`, `headers`, and `header_env`). Renaming an arm or moving a server
-  keeps results; changing behaviour invalidates them.
+  keeps results; changing behaviour invalidates them. Unset optional limits (`max_tokens`)
+  are left out, so adding an optional limit keeps existing hashes; prices are not hashed.
 
 The same experiment can be built in Python for cases YAML does not cover:
 
@@ -489,7 +548,7 @@ command counts as timed out only if it also used the full time.
 | `bench tasks build NAME [--only ID] [--parallel N] [--jobs N]` | Build arm64 task images; resumes |
 | `bench tasks validate NAME [--runs 2] [--parallel N]` | Gold-patch validation; resumes |
 | `bench tasks freeze NAME --version V --out F [--smoke 3]` | Write the frozen manifest (with split and dropped instances) and a smoke subset |
-| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--dry-run]` | Batch run; resumes where it stopped. Always tracked in MLflow (`--mlflow`, `MLFLOW_TRACKING_URI`, default `http://127.0.0.1:5050`); refuses to start if the server is down. `--no-mlflow` is for harness tests and CI only |
+| `bench run EXP.yaml [--parallel N] [--arm A] [--task ID] [--mlflow URI] [--proxy-host H] [--dry-run]` | Batch run; resumes where it stopped. Always tracked in MLflow (`--mlflow`, `MLFLOW_TRACKING_URI`, default `http://127.0.0.1:5050`); refuses to start if the server is down. `--no-mlflow` is for harness tests and CI only. Model calls go through the metering proxy (binds `--proxy-host`, default 127.0.0.1) after a usage preflight; `--no-preflight` is for the mock server and tests only |
 | `bench run EXP.yaml --arm A2 --task ID --debug` | One task with live logs; keeps the container afterwards |
 | `bench shell ITEM` | Open a shell in a kept container |
 | `bench replay ITEM` | Step through a stored run's events: turns, triggers, briefs, advice |
@@ -561,24 +620,28 @@ and results from different versions are never mixed.
 A small SQLite ledger tracks what has run; MLflow stores what happened.
 
 - **Ledger.** One row per work item, keyed by experiment, arm, task, seed, and config hash.
-  It stores status, attempts, and the MLflow run and trace IDs. Changing an arm's config
-  changes its hash, so stale results are never reused.
+  It stores status, attempts, and the MLflow run and trace IDs, and the metered tokens per
+  role, model calls, and cost (nullable columns, added in place to older ledgers). Changing an
+  arm's config changes its hash, so stale results are never reused.
 - **Item directory.** `runs/<experiment>/<arm>/<task>/seed-<n>/` holds `advisor.json`,
-  `result.json`, `patch.diff`, `events.jsonl`, and `grade.log`, whether or not MLflow is on.
-  The ledger is `runs/<experiment>/ledger.sqlite`.
+  `result.json`, `patch.diff`, `events.jsonl`, `grade.log`, and for metered agents
+  `usage.jsonl`, whether or not MLflow is on. The ledger is `runs/<experiment>/ledger.sqlite`;
+  preflight calls are recorded in `runs/<experiment>/preflight/`.
 - **MLflow is mandatory.** Every experiment run is tracked; `bench run` checks the server's
   `/health` first and will not start without it. MLflow is a core dependency.
 - **MLflow layout.** One MLflow experiment per experiment file; one parent run per arm
   (tagged with the config hash and reused on resume) holding the pinned inputs as params, the
   harness's git commit and whether the checkout was dirty as tags, and summary metrics updated
   after every batch (`resolve_rate` with its Wilson interval, items done and failed, median
-  turns and duration, `exit_<reason>` counts); one child run per task and seed with
-  `resolved`, `turns`, `duration_s`, and the item directory as artifacts.
+  turns and duration, `exit_<reason>` counts, token and cost sums and medians, cost per
+  resolved task); one child run per task and seed with `resolved`, `turns`, `duration_s`, the
+  metered token counts, `model_calls`, and `cost_usd`, and the item directory as artifacts.
 - **Traces.** Each item's run has one trace: the item, the agent (with the diff and exit
   reason), and grading (test outcome counts). Adapters add the agent's spans from their own
   logs after the run (`AgentAdapter.spans`): for pi, a span per turn with its model calls
   (messages in and out, tool calls, token counts as the model server reported them) and tool
-  calls (arguments, result, error). pi's JSON events have no times for tool calls, so the
+  calls (arguments, result, error). The agent span also has the metering proxy's counts
+  beside the sum of the agent's own, for comparison. pi's JSON events have no times for tool calls, so the
   harness extension `agents/pi/timeline.ts` records turn, model, and tool start and end times.
   Traces are built after the fact, so every agent gets them, with or without the plugin; the
   plugin will add advisor spans (triggers, briefs, consults). Long values are clipped to 20k
@@ -588,8 +651,10 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
 - **Known non-determinism.** MLX sampling is not bit-exact across runs, and the advisor API
   can change behind the same model ID. Seeds reduce variance but do not remove it; the
   analysis relies on multiple seeds.
-- **Secrets and network.** API keys live only in environment variables. The MLX server binds
-  to the host interface the VM can reach, not to the wider network.
+- **Secrets and network.** API keys live only in environment variables on the host, where
+  the metering proxy adds them to forwarded calls; agent containers never see them. The proxy
+  binds 127.0.0.1 (Docker Desktop reaches it through `host.docker.internal`). The MLX server
+  binds to the host interface the VM can reach, not to the wider network.
 
 ## Repository layout, packaging, and testing
 
@@ -611,6 +676,11 @@ llm_second_opinion/
   that replays recorded completions from JSONL in file order, single-threaded. With
   `--upstream`, requests past the end of the file are proxied to a real endpoint and
   appended to it (API key from `UPSTREAM_API_KEY`). Lets contributors and CI run end-to-end tests without a GPU or API keys.
+  A recording without `usage` is answered with a made-up one (about four characters per
+  token, marked `"mock_estimate": true`), in the JSON body or the final stream chunk, so the
+  metering proxy accepts it; a usage preflight request (header `X-LSO-Preflight`) gets a
+  canned reply without using up a recording. `test_pi_docker.py` runs pi against it through
+  the proxy, both bound to 127.0.0.1.
 - **Toy task set.** `tasks/toy/` (image) and `tasks/manifests/toy-v1.yaml`: two one-line
   shell bugs with test and gold patches. `experiments/toy.yaml` runs them with the `gold`
   agent, exercising containers, grading, the ledger, and the report with no model.
@@ -682,3 +752,7 @@ llm_second_opinion/
 | 2026-10-02 | Executor (Qwen3.8 27B) served from an OpenAI-compatible endpoint configured in a gitignored `.env`, which `bench` loads; endpoints gain `headers` and `header_env` (secret headers by variable name), excluded from the config hash with `base_url`; `${VAR}` interpolates mapping keys. pi options gain `thinking_level_map` and `compat`. |
 | 2026-10-02 | Experiments select tasks with `split` and `task_ids`, outside the config hash. `experiments/baselines.yaml`: A0 and A4 on `dev`, 3 seeds. |
 | 2026-10-02 | Pilot contracts fixed before the build splits up: prompt-set name in `advisor.prompts`, resolved `RunConfig.prompts`; budget knobs `max_answer_tokens`, `cooldown_turns`, `periodic_every`; interventions `on_test_failure`, `periodic`; events `consult_requested`, `advisor_error`, `advisor_request.prompt_hash`; `usage.schema.json`; `AgentResult.usage`; exit reason `token_limit`. `schema_version` stays "1": nothing with advisor data has been recorded yet. |
+| 2026-10-02 | Metering proxy built (`metering.py`): its own threaded server rather than the mock server's upstream mode (which buffers and drops streaming); random per-attempt item ids; the proxy adds API keys and secret headers on the host, so agent containers get no secrets and `advisor.json`/`models.json` hold only proxy URLs. Binds 127.0.0.1, which Docker Desktop containers reach via `host.docker.internal` (`--proxy-host` for other VMs). Adapters declare `uses_models`; `gold` is not metered. |
+| 2026-10-02 | Usage rules: a 2xx call without usage fails the item (error replies without usage are not recorded); a stream the client abandons is read to the end for its usage; each attempt starts a fresh `usage.jsonl`. Usage preflight through the proxy before a batch, `--no-preflight` for the mock server and tests only; the mock server answers the preflight without using a recording and makes up marked usage for recordings without it. |
+| 2026-10-02 | Token budget `limits.max_tokens` (prompt + completion over all roles): once reached the proxy answers 403 `token_limit` and the runner records exit reason `token_limit`. Unset optional limits are left out of the config hash, so existing hashes are unchanged. |
+| 2026-10-02 | Cost: `prices` per models key (input, output, optional cached input, USD per million tokens), outside the config hash; reasoning tokens priced as output; `cost_usd` null if a model that made calls has no price. Ledger columns `executor_prompt_tokens`, `executor_completion_tokens`, `advisor_prompt_tokens`, `advisor_completion_tokens`, `model_calls`, `cost_usd` (added to old ledgers in place); MLflow item metrics, arm sums and medians, and proxy vs agent counts on the agent span; `bench report` shows tokens and cost per arm and per resolved task. |

@@ -111,10 +111,14 @@ Built and tested:
   - a run per arm with its pinned inputs and summary metrics
   - a run per task and seed
   - a trace per item: turns, model calls, tool calls, grading
+- **Token metering:** every model call goes through a harness proxy that records the
+  provider's own token counts per item (`usage.jsonl`), adds the API keys on the host (agent
+  containers hold no secrets), enforces an optional token budget, and refuses endpoints that
+  do not report usage. Tokens and cost (from a price table) reach the ledger, MLflow, and
+  `bench report`.
 - **Mock model server:** CI and development run without a GPU or API keys.
 
 Next:
-- token metering through a proxy
 - the local model setup and the A0/A4 baselines
 - then the advisor plugin, help policies, and prompt search
 
@@ -178,8 +182,8 @@ bench run experiments/toy-pi.yaml --task toy-add
 ```
 
 Results land in `runs/<experiment>/`: `ledger.sqlite` and one directory per arm, task, and
-seed with `advisor.json`, `result.json`, `patch.diff`, `events.jsonl`, `grade.log`, and the
-agent's own logs.
+seed with `advisor.json`, `result.json`, `patch.diff`, `events.jsonl`, `grade.log`,
+`usage.jsonl` (one line per model call, from the metering proxy), and the agent's own logs.
 
 Build the C++ task set (arm64 images, gold-patch validation, frozen manifest with a
 `dev`/`test` split):

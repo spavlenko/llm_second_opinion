@@ -36,10 +36,11 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Agent settings in config: `agents:` entries (adapter, version, options) with per-adapter
       option models; short form `agent: pi`; included in the config hash
 - [ ] Executor prompt as a prompt slot (`executor_guidance`), replacing the adapter's fixed prompt
-- [ ] Metering proxy: one shared proxy, per-item routes, forced stream usage, `usage.jsonl` +
-      `usage.schema.json`
-- [ ] Usage preflight: refuse endpoints without `usage`; a call without usage fails the item
-- [ ] Endpoint rewriting so agents only reach models through the proxy
+- [x] Metering proxy: one shared proxy, per-item routes, forced stream usage, `usage.jsonl` +
+      `usage.schema.json`; secrets added by the proxy, none in containers
+- [x] Usage preflight: refuse endpoints without `usage`; a call without usage fails the item
+- [x] Endpoint rewriting so agents only reach models through the proxy
+- [ ] Metering with Colima: check which `--proxy-host` its VM reaches (Docker Desktop checked)
 - [x] `runner`: work-item expansion, parallel workers (`--parallel`), timeouts, retries
 - [x] `grading`: apply patch and test patch in a fresh container, run `eval_command`
 - [x] `grading`: F2P and P2P test lists (with the importer)
@@ -58,9 +59,10 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] SQLite ledger and resume
 - [ ] Debug mode, `bench shell`, `bench replay`
 - [x] `bench report`: per-arm resolve rate with Wilson CI, exit reasons, time, turns; CSV
-- [ ] Token budget (`limits.max_tokens`, exit reason `token_limit`)
-- [ ] Tokens and cost in ledger, MLflow, and `bench report` (per arm, per resolved task);
+- [x] Token budget (`limits.max_tokens`, exit reason `token_limit`)
+- [x] Tokens and cost in ledger, MLflow, and `bench report` (per arm, per resolved task);
       price table in the experiment
+- [ ] Prices for the real models in `experiments/baselines.yaml`
 - [ ] Deterministic scorers (capability, cost)
 - [ ] Paired comparisons in `bench report`: differences with paired bootstrap CI, McNemar;
       lift over A0 and share of the A0–A4 gap closed; Pareto front of resolve rate vs cost
