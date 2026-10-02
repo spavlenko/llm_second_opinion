@@ -8,7 +8,7 @@ from click.testing import CliRunner
 from mlflow import MlflowClient
 
 from llm_second_opinion.cli import main
-from llm_second_opinion.grading import grade
+from llm_second_opinion.grading import grade, run_tests
 from llm_second_opinion.runtime import Runtime
 from llm_second_opinion.tasks import Manifest
 
@@ -53,6 +53,45 @@ def test_wrong_patch_fails_grading(box, toy):
     assert grade(box, task, wrong, timeout_s=30).reason == "tests_failed"
 
 
+# The toy repository plus a committed test file, as task images have.
+WITH_TESTS = (
+    "mkdir -p tests && printf '. ./math.sh\\n[ \"$(add 2 3)\" = 5 ] || exit 1\\n' "
+    "> tests/test_add.sh && git add -A && git -c user.name=t -c user.email=t@t commit -qm tests"
+)
+
+
+def test_agent_edits_to_test_patch_files_are_reset_before_grading(toy):
+    """The agent fixes the bug and also edits the test file the test patch modifies: as in
+    SWE-bench, the file is reset to base, the test patch applies, and the item resolves."""
+    runtime = Runtime()
+    maker = runtime.start(TOY_IMAGE, cpus=1, memory_gb=0.25, name="test")
+    try:
+        maker.exec(WITH_TESTS, workdir="/testbed")
+        maker.exec(
+            "sed -i 's/$1 - $2/$1 + $2/' math.sh && echo 'echo agent was here' >> tests/test_add.sh",
+            workdir="/testbed",
+        )
+        patch = maker.exec("git diff", workdir="/testbed").output
+        maker.exec("git checkout -q -- . && echo '[ \"$(add 1 1)\" = 2 ] || exit 1' "
+                   ">> tests/test_add.sh", workdir="/testbed")  # fmt: skip
+        test_patch = maker.exec("git diff", workdir="/testbed").output
+    finally:
+        maker.remove()
+    task = toy["toy-add"].model_copy(update={"test_patch": test_patch})
+    for reset, expected in ((True, "resolved"), (False, "test_patch_failed")):
+        box = runtime.start(TOY_IMAGE, cpus=1, memory_gb=0.25, name="test")
+        try:
+            box.exec(WITH_TESTS, workdir="/testbed")
+            if reset:
+                graded = grade(box, task, patch, timeout_s=30)
+                assert graded.agent_touched_test_files == ["tests/test_add.sh"]
+            else:  # without the reset, as before: the test patch does not apply
+                graded = run_tests(box, task, [("patch_failed", patch)], 30)
+            assert graded.reason == expected, graded.log
+        finally:
+            box.remove()
+
+
 def test_gold_patch_resolves(box, toy):
     assert grade(box, toy["toy-max"], toy["toy-max"].gold_patch, timeout_s=30).resolved
 
@@ -68,7 +107,9 @@ def test_toy_experiment_end_to_end(repo, tmp_path, toy, monkeypatch):
     assert "resolved 4/4" in result.output
     report = CliRunner().invoke(main, ["report", exp, "--runs-dir", runs])
     assert "4/4" in report.output
-    assert not docker.from_env().containers.list(all=True, filters={"label": "llm-second-opinion"})
+    # Only this run's containers: other batches may be running on the same daemon.
+    left = docker.from_env().containers.list(all=True, filters={"label": "llm-second-opinion"})
+    assert not [c for c in left if "toy-" in c.labels["llm-second-opinion"]]
 
     client = MlflowClient(uri)
     experiment = client.get_experiment_by_name("toy")
