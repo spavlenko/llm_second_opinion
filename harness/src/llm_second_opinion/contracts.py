@@ -201,6 +201,11 @@ class AdvisorResponse(_Event):
         default=None, ge=0, description="The provider's own count, when it reports one."
     )
     reasoning_tokens: int | None = Field(default=None, ge=0)
+    finish_reason: str | None = Field(
+        default=None,
+        description="The provider's choices[0].finish_reason, e.g. 'stop', or 'length' when the "
+        "answer was cut at max_answer_tokens.",
+    )
     advice_text: str = Field(
         description="The advisor's answer exactly as received (placeholders not yet mapped back)."
     )
