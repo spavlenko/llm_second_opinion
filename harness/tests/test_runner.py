@@ -1,5 +1,6 @@
 """Runner behaviour with an in-memory runtime and agent; see test_docker.py for real containers."""
 
+import json
 import threading
 
 import pytest
@@ -10,6 +11,7 @@ from llm_second_opinion.config import ConfigError, Experiment
 from llm_second_opinion.contracts import AgentInfo, AgentResult, ExitReason
 from llm_second_opinion.runner import Runner
 from llm_second_opinion.runtime import ExecResult
+from llm_second_opinion.tasks import Manifest
 
 
 class FakeContainer:
@@ -178,3 +180,76 @@ def test_unknown_agent_is_refused(repo, tmp_path):
     exp = experiment(repo, arms=[{"name": "X", "agent": "nope", "executor": "m"}])
     with pytest.raises(ConfigError, match="unknown agent 'nope'"):
         make_runner(repo, tmp_path, exp=exp)
+
+
+def split_manifest(repo, tmp_path):
+    """The toy manifest with toy-add in `dev` and toy-max in `test`."""
+    manifest = Manifest.from_yaml(repo / "tasks/manifests/toy-v1.yaml")
+    tasks = [t.model_copy(update={"split": s}) for t, s in zip(manifest.tasks, ["dev", "test"])]
+    path = tmp_path / "split.yaml"
+    manifest.model_copy(update={"tasks": tasks}).to_yaml(path)
+    return path
+
+
+def test_test_split_needs_final(repo, tmp_path, agent):
+    exp = experiment(repo, tasks=split_manifest(repo, tmp_path))
+    runs = tmp_path / "runs"
+    with pytest.raises(ConfigError, match="held-out `test` split.*sets no split"):
+        make_runner(repo, runs, exp=exp).run()
+    assert make_runner(repo, runs, exp=exp).ledger.rows("t") == []
+    # Choosing only dev tasks needs no --final, even without a split.
+    assert [o.status for o in make_runner(repo, runs, exp=exp).run(task="toy-add")] == ["done"] * 2
+    test = exp.model_copy(update={"split": "test"})
+    with pytest.raises(ConfigError, match="split is 'test'"):
+        make_runner(repo, runs, exp=test).run()
+    runner = make_runner(repo, runs, exp=test, final=True)
+    assert [o.status for o in runner.run()] == ["done"] * 2
+    sessions = runner.ledger.sessions("t")
+    assert [(s["split"], s["test_tasks"], s["final"]) for s in sessions] == [
+        (None, 0, 0),
+        ("test", 1, 1),
+    ]
+
+
+class AdvisorAgent(FakeAgent):
+    capabilities = frozenset({"advisor"})
+
+
+class RecordingTracker:
+    def __init__(self):
+        self.summaries = {}
+        self.arm_params = {}
+
+    def log_item(self, key, arm_params, params, metrics, artifacts, trace=None):
+        self.arm_params[key.arm] = arm_params
+        return "run"
+
+    def log_arm_summary(self, arm, config_hash, arm_params, metrics):
+        self.summaries[arm] = metrics
+
+    def close(self):
+        pass
+
+
+def test_advisor_arm_gets_prompts_and_paired_metrics(repo, tmp_path, monkeypatch):
+    monkeypatch.setitem(ADAPTERS, "fake", lambda spec: AdvisorAgent())
+    models = {
+        "m": {"base_url": "http://x/v1", "model": "m"},
+        "advisor": {"base_url": "http://y/v1", "model": "k"},
+    }
+    arms = [
+        {"name": "A0", "agent": "fake", "executor": "m"},
+        {"name": "H", "agent": "fake", "executor": "m", "advisor": {"level": "L2"}},
+    ]
+    exp = experiment(repo, models=models, arms=arms)
+    tracker = RecordingTracker()
+    make_runner(repo, tmp_path, exp=exp, tracker=tracker).run()
+    config = json.loads((tmp_path / "t/H/toy-add/seed-0/advisor.json").read_text())
+    default = exp.prompt_set("default")
+    assert config["prompts"]["hash"] == default.hash
+    assert config["prompts"]["texts"]["advice_injection"] == default.texts.advice_injection
+    assert tracker.arm_params["H"]["prompt_hash"] == default.hash
+    assert tracker.arm_params["A0"]["prompt_hash"] is None
+    assert tracker.summaries["H"]["paired_items"] == 4
+    assert tracker.summaries["H"]["paired_diff"] == 0
+    assert "paired_items" not in tracker.summaries["A0"]

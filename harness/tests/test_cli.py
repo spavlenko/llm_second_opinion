@@ -26,6 +26,24 @@ def test_run_reports_a_missing_manifest(repo, tmp_path):
     assert "missing-v1.yaml" in result.output
 
 
+def test_run_refuses_test_tasks_without_final(repo, tmp_path):
+    exp = tmp_path / "exp.yaml"
+    manifest = repo / "tasks/manifests/mswe-mini-cpp-v1.yaml"
+    text = (repo / "experiments/mswe-smoke-gold.yaml").read_text()
+    exp.write_text(text.replace("../tasks/manifests/mswe-mini-cpp-v1-smoke.yaml", str(manifest)))
+    args = ["run", str(exp), "--runs-dir", str(tmp_path), "--no-mlflow"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 1
+    assert "25 task(s) to run are in the manifest's held-out `test` split" in result.output
+    assert "the experiment sets no split" in result.output
+    assert "--final" in result.output
+    dry = CliRunner().invoke(main, [*args, "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    exp.write_text(exp.read_text() + "split: test\n")
+    result = CliRunner().invoke(main, args)
+    assert "split is 'test'" in result.output
+
+
 def test_report_needs_a_ledger(repo, tmp_path):
     exp = str(repo / "experiments/toy.yaml")
     result = CliRunner().invoke(main, ["report", exp, "--runs-dir", str(tmp_path)])

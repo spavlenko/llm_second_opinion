@@ -12,7 +12,18 @@ from llm_second_opinion.config import ConfigError, Experiment, load_dotenv
 from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
 from llm_second_opinion.mock_server import MockServer
-from llm_second_opinion.report import current_rows, format_table, summarize, write_csv
+from llm_second_opinion.report import (
+    current_rows,
+    format_pairs,
+    format_pareto,
+    format_table,
+    paired_comparisons,
+    pareto,
+    provenance,
+    summarize,
+    write_csv,
+    write_pairs_csv,
+)
 from llm_second_opinion.runner import Runner
 from llm_second_opinion.tasks import Manifest
 from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
@@ -74,6 +85,12 @@ def _load(experiment: str) -> Experiment:
     is_flag=True,
     help="Skip MLflow. Only for harness tests and CI: results would not be tracked.",
 )
+@click.option(
+    "--final",
+    is_flag=True,
+    help="Allow tasks in the manifest's held-out `test` split: the one confirmatory run. "
+    "Recorded in the ledger and as the MLflow tag lso.final.",
+)
 @click.option("--dry-run", is_flag=True, help="List the work items and stop.")
 def run(
     experiment: str,
@@ -83,12 +100,17 @@ def run(
     parallel: int | None,
     mlflow: str,
     no_mlflow: bool,
+    final: bool,
     dry_run: bool,
 ) -> None:
-    """Run an experiment in containers; resumes where it stopped."""
+    """Run an experiment in containers; resumes where it stopped.
+
+    Tasks in the manifest's `test` split run only with --final: prompts are tuned on `dev`,
+    and `test` is run once to confirm the chosen policies.
+    """
     exp = _load(experiment)
     try:
-        runner = Runner(exp, runs_dir, parallel=parallel, echo=click.echo)
+        runner = Runner(exp, runs_dir, parallel=parallel, final=final, echo=click.echo)
         items = runner.items(arm, task)
     except (ConfigError, ValidationError, OSError, KeyError) as e:
         raise click.ClickException(f"{experiment}: {e}") from e
@@ -102,6 +124,11 @@ def run(
         click.echo(f"  {a.name:<12} {a.agent}/{a.executor:<10} {advisor:<12} {exp.config_hash(a)}")
     if dry_run:
         return
+    try:
+        if runner.check_final(items):
+            click.echo("FINAL run on held-out test tasks (--final)")
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
     if no_mlflow:
         click.echo("MLflow is off (--no-mlflow): results go to the ledger only", err=True)
     else:
@@ -109,7 +136,7 @@ def run(
             check_server(mlflow)
         except TrackingError as e:
             raise click.ClickException(f"{e}; or pass --no-mlflow (tests and CI only)") from e
-        runner.tracker = Tracker(mlflow, exp.name)
+        runner.tracker = Tracker(mlflow, exp.name, final=final)
         click.echo(f"tracking in MLflow: {mlflow} (experiment {exp.name!r})")
     try:
         outcomes = runner.run(arm, task)
@@ -134,18 +161,46 @@ def run(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Also write one row per work item.",
 )
-def report(experiment: str, runs_dir: Path, csv_path: Path | None) -> None:
-    """Summarize finished work items per arm from the ledger."""
+@click.option(
+    "--pairs-csv",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Also write the paired comparisons, one row per arm.",
+)
+@click.option("--baseline", help="Arm to compare the others with [default: A0 when present].")
+@click.option("--ceiling", help="Arm for the share of the gap closed [default: A4 when present].")
+def report(
+    experiment: str,
+    runs_dir: Path,
+    csv_path: Path | None,
+    pairs_csv: Path | None,
+    baseline: str | None,
+    ceiling: str | None,
+) -> None:
+    """Summarize finished work items per arm from the ledger, with paired comparisons."""
     exp = _load(experiment)
     ledger_path = runs_dir / exp.name / "ledger.sqlite"
     if not ledger_path.exists():
         raise click.ClickException(f"no ledger at {ledger_path}; run the experiment first")
-    rows = Ledger(ledger_path).rows(exp.name)
+    ledger = Ledger(ledger_path)
+    rows = ledger.rows(exp.name)
     tasks = len(exp.select(Manifest.from_yaml(exp.tasks)).tasks)
+    try:
+        pairs = paired_comparisons(exp, rows, baseline, ceiling)
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(provenance(exp, rows, ledger.sessions(exp.name)))
+    click.echo()
     click.echo(format_table(summarize(exp, rows, tasks)))
+    click.echo()
+    click.echo(format_pairs(pairs))
+    click.echo()
+    click.echo(format_pareto(pareto(exp, rows)))
     if csv_path:
         write_csv(current_rows(exp, rows), csv_path)
         click.echo(f"wrote {csv_path}")
+    if pairs_csv:
+        write_pairs_csv(pairs, pairs_csv)
+        click.echo(f"wrote {pairs_csv}")
 
 
 @main.command()

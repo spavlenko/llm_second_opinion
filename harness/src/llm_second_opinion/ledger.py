@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS items (
     PRIMARY KEY (experiment, arm, task, seed, config_hash)
 )
 """
+# One row per `bench run` batch, so a report can say whether test tasks were run with --final.
+_SESSIONS = """
+CREATE TABLE IF NOT EXISTS sessions (
+    experiment TEXT NOT NULL,
+    started REAL NOT NULL,
+    split TEXT,                    -- the experiment's split; NULL means all tasks
+    test_tasks INTEGER NOT NULL,   -- test-split tasks among those selected
+    final INTEGER NOT NULL         -- 1 if run with --final
+)
+"""
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,7 @@ class Ledger:
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._db.execute(_SCHEMA)
+        self._db.execute(_SESSIONS)
         self._lock = threading.Lock()
 
     def status(self, key: ItemKey) -> str | None:
@@ -93,6 +104,23 @@ class Ledger:
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM items WHERE experiment=? ORDER BY arm, task, seed", (experiment,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_session(
+        self, experiment: str, split: str | None, test_tasks: int, final: bool
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO sessions (experiment, started, split, test_tasks, final) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (experiment, time.time(), split, test_tasks, int(final)),
+            )
+
+    def sessions(self, experiment: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM sessions WHERE experiment=? ORDER BY started", (experiment,)
             ).fetchall()
         return [dict(r) for r in rows]
 

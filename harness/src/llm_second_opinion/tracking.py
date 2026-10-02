@@ -22,6 +22,7 @@ from llm_second_opinion.tracing import Span
 
 _ARM = "lso.arm"
 _HASH = "lso.config_hash"
+_FINAL = "lso.final"  # set on runs from `bench run --final` (test-split tasks)
 DEFAULT_URI = "http://127.0.0.1:5050"  # scripts/mlflow-server.sh
 REPO = Path(__file__).resolve().parents[3]
 
@@ -46,7 +47,7 @@ def check_server(uri: str, timeout_s: float = 5) -> None:
 
 
 class Tracker:
-    def __init__(self, uri: str, experiment: str):
+    def __init__(self, uri: str, experiment: str, final: bool = False):
         # Trace export goes to the global tracking URI, whatever the client's; one tracker
         # per process, so setting it here is safe.
         mlflow.set_tracking_uri(uri)
@@ -58,6 +59,7 @@ class Tracker:
         self._arm_runs: dict[str, str] = {}
         self._lock = threading.Lock()
         self._git = _git_tags()
+        self._final = {_FINAL: "true"} if final else {}
 
     def log_item(
         self,
@@ -72,7 +74,12 @@ class Tracker:
         run = self.client.create_run(
             self.experiment_id,
             run_name=f"{key.task}/seed-{key.seed}",
-            tags={"mlflow.parentRunId": parent, _ARM: key.arm, _HASH: key.config_hash},
+            tags={
+                "mlflow.parentRunId": parent,
+                _ARM: key.arm,
+                _HASH: key.config_hash,
+                **self._final,
+            },
         )
         run_id = run.info.run_id
         self.client.log_batch(
@@ -164,6 +171,8 @@ class Tracker:
                     self.experiment_id, run_name=arm, tags=tags
                 ).info.run_id
                 self.client.log_batch(run_id, params=[Param(k, str(v)) for k, v in params.items()])
+            for name, value in self._final.items():
+                self.client.set_tag(run_id, name, value)
             self._arm_runs[arm] = run_id
             return run_id
 
