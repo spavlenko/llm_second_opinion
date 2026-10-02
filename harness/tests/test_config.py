@@ -36,9 +36,12 @@ def test_example_experiment_loads(repo):
     assert [a.name for a in exp.arms] == ["A0", "A2", "A4"]
     assert exp.seeds == 3
     assert exp.models["local"].base_url == ENV["LOCAL_MODEL_URL"]
-    assert exp.tasks == (repo / "tasks/manifests/cpp-arm64-v1.yaml").resolve()
+    assert exp.tasks == (repo / "tasks/manifests/mswe-mini-cpp-v1.yaml").resolve()
+    assert exp.split == "dev"
     assert exp.arm("A2").advisor.level == "L2"
     assert exp.arm("A0").advisor is None
+    assert set(exp.prompts) == {"structured", "hints-only"}
+    assert exp.prompt_set("structured").texts.brief != exp.prompt_set("default").texts.brief
 
 
 def test_missing_env_vars_listed(repo):
@@ -72,6 +75,72 @@ arms:
 def test_interventions_list_is_not_a_sweep():
     arms = [{"name": "A", "advisor": {"level": "L2", "interventions": ["plan", "consult"]}}]
     assert expand_sweeps(arms) == arms
+
+
+def test_prompts_and_interventions_sweep(tmp_path):
+    (tmp_path / "structured.md").write_text("Q: {{question}}")
+    exp = Experiment.from_yaml(
+        write(
+            tmp_path,
+            BASE
+            + """
+prompts: {other: {base: default, brief: structured.md}}
+arms:
+  - name: H
+    executor: local
+    advisor:
+      prompts: [default, other]
+      interventions: [[consult], [consult, stuck], []]
+      level: L2
+""",
+        ),
+        env={},
+    )
+    names = [a.name for a in exp.arms]
+    assert names == [
+        "H-default-consult", "H-default-consult+stuck", "H-default-none",
+        "H-other-consult", "H-other-consult+stuck", "H-other-none",
+    ]  # fmt: skip
+    assert exp.arm("H-other-consult+stuck").advisor.interventions == ["consult", "stuck"]
+    assert exp.arm("H-other-none").advisor.interventions == []
+    assert len({exp.config_hash(a) for a in exp.arms}) == 6
+
+
+def test_arms_without_an_advisor_keep_their_hash(repo):
+    # Pinned before prompt sets existed: arms without an advisor must not change hash.
+    env = {"LOCAL_MODEL_URL": "u", "LOCAL_SESSION_HEADER": "h", "LOCAL_SESSION": "s",
+           "LOCAL_AUTH_HEADER": "a"}  # fmt: skip
+    baselines = Experiment.from_yaml(repo / "experiments/baselines.yaml", env=env)
+    assert baselines.config_hash(baselines.arm("A0")) == "0e4bdcb0e04f7875"
+    assert baselines.config_hash(baselines.arm("A4")) == "4ecff0bc11feccd8"
+    toy = Experiment.from_yaml(repo / "experiments/toy.yaml")
+    assert toy.config_hash(toy.arm("gold")) == "9b874eb43bd087ae"
+
+
+def test_config_hash_follows_prompt_text_not_set_name(tmp_path):
+    (tmp_path / "a.md").write_text("Q: {{question}}")
+    (tmp_path / "b.md").write_text("Q: {{question}}\n")
+    (tmp_path / "c.md").write_text("Question: {{question}}")
+    exp = Experiment.from_yaml(
+        write(
+            tmp_path,
+            BASE
+            + """
+prompts:
+  a: {base: default, brief: a.md}
+  b: {base: default, brief: b.md}
+  c: {base: default, brief: c.md}
+arms:
+  - {name: A, executor: local, advisor: {level: L2, prompts: a}}
+  - {name: B, executor: local, advisor: {level: L2, prompts: b}}
+  - {name: C, executor: local, advisor: {level: L2, prompts: c}}
+""",
+        ),
+        env={},
+    )
+    a, b, c = (exp.config_hash(arm) for arm in exp.arms)
+    assert a == b  # same text under another name and file
+    assert a != c
 
 
 @pytest.mark.parametrize(
@@ -145,6 +214,13 @@ def test_run_config_for_work_item(tmp_path):
     }
     assert advised["advisor_model"]["model"] == "kimi"
     assert advised["advisor"]["interventions"] == ["plan", "consult", "stuck"]
+    assert advised["advisor"]["prompts"] == "default"
+    assert advised["prompts"]["name"] == "default"
+    assert advised["prompts"]["hash"] == exp.prompt_set("default").hash
+    assert set(advised["prompts"]["texts"]) == {
+        "executor_guidance", "consult_tool", "brief", "advisor_system", "advice_injection"
+    }  # fmt: skip
+    assert plain.prompts is None
 
 
 def test_load_dotenv_sets_unset_names_only(tmp_path):
