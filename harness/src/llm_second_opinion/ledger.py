@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 )
 """
 
+# Added after the first ledgers were written; null when an item was not metered (or, for
+# cost_usd, when a model it used has no price).
+_ADDED_COLUMNS = {
+    "executor_prompt_tokens": "INTEGER",
+    "executor_completion_tokens": "INTEGER",
+    "advisor_prompt_tokens": "INTEGER",
+    "advisor_completion_tokens": "INTEGER",
+    "model_calls": "INTEGER",
+    "cost_usd": "REAL",
+}
+
 
 @dataclass(frozen=True)
 class ItemKey:
@@ -62,7 +73,15 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         self._db.execute(_SCHEMA)
         self._db.execute(_SESSIONS)
+        self._migrate()
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        """Add columns that older ledgers lack, so a resume keeps their rows."""
+        existing = {row["name"] for row in self._db.execute("PRAGMA table_info(items)")}
+        for name, kind in _ADDED_COLUMNS.items():
+            if name not in existing:
+                self._db.execute(f"ALTER TABLE items ADD COLUMN {name} {kind}")
 
     def status(self, key: ItemKey) -> str | None:
         with self._lock:

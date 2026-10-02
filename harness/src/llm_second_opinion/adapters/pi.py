@@ -74,7 +74,9 @@ class PiOptions(Strict):
 class PiAdapter:
     name = "pi"
     capabilities: frozenset[str] = frozenset()  # "advisor" once pi-binding is in the layer
+    uses_models = True
     artifacts = (
+        f"{RUN_DIR}/agent/models.json",
         f"{RUN_DIR}/prompt.md",
         f"{RUN_DIR}/pi.jsonl",
         f"{RUN_DIR}/pi.stderr",
@@ -282,7 +284,7 @@ def _model_span(message: dict, inputs: list[dict], start: int, end: int) -> Span
         outputs=clip(outputs),
         attributes={
             "stop_reason": message.get("stopReason"),
-            # As reported by the model server; the metering proxy will be the source of truth.
+            # As pi reports them; the metering proxy's counts are the source of truth.
             "tokens.input": usage.get("input", 0),
             "tokens.output": usage.get("output", 0),
             "tokens.cache_read": usage.get("cacheRead", 0),

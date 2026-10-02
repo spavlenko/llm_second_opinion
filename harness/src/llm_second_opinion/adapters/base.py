@@ -31,6 +31,9 @@ class AgentAdapter(Protocol):
     name: str
     version: str
     capabilities: frozenset[str]  # e.g. {"advisor", "otel"}
+    # Whether the agent calls models. If so, the runner meters it: the run config points at
+    # the metering proxy, and `env` holds no API keys (the proxy adds them).
+    uses_models: bool
     # Files the agent leaves in the container that the runner copies into the item directory.
     artifacts: tuple[str, ...]
 
@@ -43,7 +46,8 @@ class AgentAdapter(Protocol):
     ) -> AgentResult:
         """Work on the task inside `box` and return the final diff.
 
-        The runner has already written `config` to /run/advisor.json; `env` holds the API keys.
+        The runner has already written `config` to /run/advisor.json; `env` holds the API keys
+        of an agent that is not metered (and none for one that is).
         """
         ...
 

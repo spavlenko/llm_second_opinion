@@ -47,6 +47,7 @@ class FakeAgent:
     name = "fake"
     version = "0"
     capabilities = frozenset()
+    uses_models = False  # test_metering.py has an agent that does
     artifacts = ()
 
     def __init__(self, fail_times=0, barrier=None):

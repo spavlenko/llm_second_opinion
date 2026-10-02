@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
@@ -16,10 +16,22 @@ from typing import Any, Literal, Protocol
 
 from llm_second_opinion import __version__
 from llm_second_opinion.adapters import ADAPTERS, AgentAdapter
-from llm_second_opinion.config import ADVISOR_MODEL, Arm, ConfigError, Experiment
-from llm_second_opinion.contracts import AgentResult
+from llm_second_opinion.adapters.base import Layer
+from llm_second_opinion.config import ADVISOR_MODEL, Arm, ConfigError, Experiment, Price
+from llm_second_opinion.contracts import AgentResult, ExitReason, RoleUsage
 from llm_second_opinion.grading import Grade, grade
 from llm_second_opinion.ledger import ItemKey, Ledger
+from llm_second_opinion.metering import (
+    ItemMeter,
+    MeteringError,
+    MeteringProxy,
+    cost_usd,
+    ledger_fields,
+    preflight,
+    read_usage,
+    rewrite,
+    summarize_usage,
+)
 from llm_second_opinion.report import paired_comparisons, paired_metrics, summarize
 from llm_second_opinion.runtime import Container, Runtime
 from llm_second_opinion.tasks import Manifest, Task
@@ -82,6 +94,8 @@ class Runner:
         parallel: int | None = None,
         final: bool = False,
         echo: Callable[[str], None] = print,
+        preflight: bool = True,
+        proxy_host: str = "127.0.0.1",
     ):
         self.exp = exp
         self.manifest = exp.select(Manifest.from_yaml(exp.tasks))
@@ -93,6 +107,9 @@ class Runner:
         self.final = final
         self.echo = echo
         self.adapters = {arm.name: _adapter_for(exp, arm) for arm in exp.arms}
+        self.preflight = preflight
+        self.proxy_host = proxy_host
+        self.proxy: MeteringProxy | None = None  # while a batch with model calls runs
 
     @property
     def runtime(self) -> Runtime:
@@ -141,20 +158,49 @@ class Runner:
         skipped = [Outcome(i.key, "skipped") for i in items if i not in todo]
         if skipped:
             self.echo(f"skipping {len(skipped)} item(s) already done")
-        env = _secrets(self.exp, {i.arm.name: i.arm for i in todo}.values())
+        arms = list({i.arm.name: i.arm for i in todo}.values())
+        env = _secrets(self.exp, arms)
         self.ledger.record_session(self.exp.name, self.exp.split, test_tasks, self.final)
-        self.echo(f"running {len(todo)} item(s), {self.parallel} at a time")
-        pool = ThreadPoolExecutor(self.parallel)
-        try:
-            outcomes = list(pool.map(lambda i: self._run_item(i, env), todo))
-        finally:
-            # On Ctrl-C, items in flight finish and are recorded; queued ones are dropped and
-            # run on the next resume.
-            pool.shutdown(cancel_futures=True)
-            if self.tracker:
-                self._log_summaries()
-                self.tracker.close()
+        with self._metering(arms, env):
+            self.echo(f"running {len(todo)} item(s), {self.parallel} at a time")
+            pool = ThreadPoolExecutor(self.parallel)
+            try:
+                outcomes = list(pool.map(lambda i: self._run_item(i, env), todo))
+            finally:
+                # On Ctrl-C, items in flight finish and are recorded; queued ones are dropped
+                # and run on the next resume.
+                pool.shutdown(cancel_futures=True)
+                if self.tracker:
+                    self._log_summaries()
+                    self.tracker.close()
         return skipped + outcomes
+
+    @contextmanager
+    def _metering(self, arms: list[Arm], env: dict[str, str]) -> Iterator[None]:
+        """The batch's metering proxy, if any arm's agent calls models, after a usage
+        preflight of every endpoint those arms use. The proxy holds the secrets."""
+        keys = {
+            key
+            for arm in arms
+            if self.adapters[arm.name].uses_models
+            for key in [arm.executor, *([ADVISOR_MODEL] if arm.advisor else [])]
+        }
+        if not keys:
+            yield
+            return
+        self.proxy = MeteringProxy(self.proxy_host, env=env).start()
+        try:
+            self.echo(f"metering model calls through {self.proxy_host}:{self.proxy.port}")
+            if self.preflight:
+                endpoints = {k: self.exp.models[k] for k in sorted(keys)}
+                preflight(self.proxy, endpoints, self.dir / "preflight")
+                self.echo(f"usage preflight passed: {', '.join(endpoints)}")
+            else:
+                self.echo("usage preflight skipped (--no-preflight: mock server and tests only)")
+            yield
+        finally:
+            self.proxy.stop()
+            self.proxy = None
 
     def _log_summaries(self) -> None:
         """Per-arm results so far (all resumes of this config), on each arm's MLflow run."""
@@ -174,6 +220,17 @@ class Runner:
                     "median_duration_s": median(s.durations),
                 } | {f"exit_{reason}": n for reason, n in s.exit_reasons.items()}
                 metrics |= pairs.get(s.arm, {})
+            if s.tokens:
+                metrics |= {
+                    "tokens_sum": sum(s.tokens),
+                    "tokens_median": median(s.tokens),
+                    "advisor_tokens_sum": sum(s.advisor_tokens),
+                    "advisor_tokens_median": median(s.advisor_tokens),
+                }
+            if s.cost is not None:
+                metrics |= {"cost_usd_sum": s.cost, "cost_usd_median": median(s.costs)}
+            if s.cost_per_resolved is not None:
+                metrics["cost_usd_per_resolved"] = s.cost_per_resolved
             params = self._pinned_inputs(arm, self.adapters[arm.name])
             self.tracker.log_arm_summary(arm.name, s.config_hash, params, metrics)
 
@@ -182,7 +239,7 @@ class Runner:
         while True:
             attempt = self.ledger.start(item.key)
             try:
-                result, graded, run_id = self._attempt(item, env)
+                result, graded, run_id, tokens = self._attempt(item, env)
             # One item's infrastructure failure (Docker, git, I/O) must not stop the batch;
             # it is retried, then recorded in the ledger.
             except Exception as e:  # noqa: BLE001
@@ -201,34 +258,43 @@ class Runner:
                 turns=result.turns,
                 duration_s=result.duration_s,
                 mlflow_run_id=run_id,
+                **tokens,
             )
             self.echo(f"{item.key}: {result.exit_reason.value}, {graded.reason}")
             return Outcome(item.key, "done", graded.resolved)
 
     def _attempt(
         self, item: WorkItem, env: dict[str, str]
-    ) -> tuple[AgentResult, Grade, str | None]:
-        """Steps 3-7 of the run lifecycle for one item; artifacts land in the item's directory."""
+    ) -> tuple[AgentResult, Grade, str | None, dict[str, Any]]:
+        """Steps 3-7 of the run lifecycle for one item; artifacts land in the item's directory.
+        Also returns the item's token columns for the ledger (empty when not metered)."""
         exe = self.exp.execution
         adapter = self.adapters[item.arm.name]
-        config = self.exp.run_config(item.arm, item.task.id, item.seed)
         out = self.dir / item.arm.name / item.task.id / f"seed-{item.seed}"
         out.mkdir(parents=True, exist_ok=True)
-        rendered = config.model_dump_json(indent=2)
-        (out / "advisor.json").write_text(rendered)
 
         # A validated manifest pins the image by ID, so a rebuilt image is not used by mistake.
         image = item.task.image_id or item.task.image
         layer = adapter.build_layer(image)
         agent_start = time.time_ns()
-        with self._container(layer.image, f"agent {item.key}", layer.volumes) as box:
-            box.write("/run/advisor.json", rendered)
-            result = adapter.run(box, item.task, config, self.exp.limits, env)
-            events = box.read(config.events_path) or ""
-            for path in adapter.artifacts:
-                content = box.read(path)
-                if content is not None:
-                    (out / Path(path).name).write_text(content)
+        meter = None
+        if adapter.uses_models:
+            endpoints = {"executor": self.exp.models[item.arm.executor]}
+            if item.arm.advisor:
+                endpoints["advisor"] = self.exp.models[ADVISOR_MODEL]
+            meter = self.proxy.register(endpoints, out / "usage.jsonl", self.exp.limits.max_tokens)
+        try:
+            result, events = self._run_agent(item, adapter, layer, out, env, meter)
+        finally:
+            if meter:
+                # Wait for any call still in flight, so a retry starts a clean usage record.
+                with suppress(MeteringError):
+                    meter.close()
+                self.proxy.unregister(meter)
+        tokens: dict[str, Any] = {}
+        if meter:
+            cost = cost_usd(result.usage, self._prices(item.arm))
+            tokens = ledger_fields(result.usage, cost)
         (out / "result.json").write_text(result.model_dump_json(indent=2))
         (out / "patch.diff").write_text(result.diff)
         (out / "events.jsonl").write_text(events)
@@ -254,13 +320,58 @@ class Runner:
                     "resolved": float(graded.resolved),
                     "turns": result.turns,
                     "duration_s": result.duration_s,
-                },
+                }
+                | {k: v for k, v in tokens.items() if v is not None},
                 artifacts=out,
                 trace=self._trace(
                     item, adapter, out, result, graded, (agent_start, agent_end, grade_end)
                 ),
             )
-        return result, graded, run_id
+        return result, graded, run_id, tokens
+
+    def _run_agent(
+        self,
+        item: WorkItem,
+        adapter: AgentAdapter,
+        layer: Layer,
+        out: Path,
+        env: dict[str, str],
+        meter: ItemMeter | None,
+    ) -> tuple[AgentResult, str]:
+        """Run the agent in its container; return its result and events.jsonl.
+
+        With a meter, the agent reaches its models only through the proxy: the run config
+        names the item's proxy routes, and the agent gets no API keys.
+        """
+        config = self.exp.run_config(item.arm, item.task.id, item.seed)
+        if meter:
+            config, env = rewrite(config, self.proxy, meter), {}
+        rendered = config.model_dump_json(indent=2)
+        (out / "advisor.json").write_text(rendered)
+        with self._container(layer.image, f"agent {item.key}", layer.volumes) as box:
+            box.write("/run/advisor.json", rendered)
+            result = adapter.run(box, item.task, config, self.exp.limits, env)
+            events = box.read(config.events_path) or ""
+            for path in adapter.artifacts:
+                content = box.read(path)
+                if content is not None:
+                    (out / Path(path).name).write_text(content)
+        if meter:
+            meter.close()  # raises if a call had no usage: the item must not count as done
+            usage = summarize_usage(read_usage(meter.usage_path))
+            update: dict[str, Any] = {"usage": usage}
+            if meter.refused:
+                # The agent stopped because the proxy refused calls over the budget.
+                update |= {"exit_reason": ExitReason.TOKEN_LIMIT, "detail": None}
+            result = result.model_copy(update=update)
+        return result, events
+
+    def _prices(self, arm: Arm) -> dict[str, Price | None]:
+        """The price of the model behind each role of the arm."""
+        prices = {"executor": self.exp.prices.get(arm.executor)}
+        if arm.advisor:
+            prices["advisor"] = self.exp.prices.get(ADVISOR_MODEL)
+        return prices
 
     def _trace(
         self,
@@ -274,6 +385,7 @@ class Runner:
         """The item's trace: the agent's own spans under an agent span, then grading."""
         agent_start, agent_end, grade_end = times
         crashed = result.exit_reason.value == "crash"
+        children = adapter.spans(out)
         agent = Span(
             f"{adapter.name} {adapter.version}",
             "AGENT",
@@ -281,9 +393,9 @@ class Runner:
             agent_end,
             inputs={"problem_statement": clip(item.task.problem_statement)},
             outputs={"exit_reason": result.exit_reason.value, "diff": clip(result.diff)},
-            attributes={"turns": result.turns},
+            attributes={"turns": result.turns} | _token_attributes(result.usage, children),
             error=result.detail if crashed else None,
-            children=adapter.spans(out),
+            children=children,
         )
         tests = Counter(graded.tests.values())
         grading = Span(
@@ -345,6 +457,7 @@ class Runner:
             "prompt_hash": self.exp.prompt_set(arm.advisor.prompts).hash if arm.advisor else None,
             "max_turns": self.exp.limits.max_turns,
             "wall_minutes": self.exp.limits.wall_minutes,
+            "max_tokens": self.exp.limits.max_tokens,
         }
 
 
@@ -360,6 +473,31 @@ def _adapter_for(exp: Experiment, arm: Arm) -> AgentAdapter:
     if arm.advisor and "advisor" not in adapter.capabilities:
         raise ConfigError(f"arm {arm.name}: agent {arm.agent!r} does not support an advisor")
     return adapter
+
+
+def _token_attributes(usage: list[RoleUsage], spans: list[Span]) -> dict[str, int]:
+    """The proxy's per-role counts (the source of truth) next to the totals the agent's own
+    model spans report, so the two can be compared in the trace."""
+    attributes = {}
+    for u in usage:
+        attributes[f"proxy.{u.role}.calls"] = u.calls
+        attributes[f"proxy.{u.role}.prompt_tokens"] = u.prompt_tokens
+        attributes[f"proxy.{u.role}.completion_tokens"] = u.completion_tokens
+        attributes[f"proxy.{u.role}.cached_tokens"] = u.cached_tokens
+    models = [s for s in _walk(spans) if s.kind == "CHAT_MODEL"]
+    if models:
+        attributes["agent.model_calls"] = len(models)
+        for name in ("input", "output", "cache_read"):
+            attributes[f"agent.tokens.{name}"] = sum(
+                int(s.attributes.get(f"tokens.{name}") or 0) for s in models
+            )
+    return attributes
+
+
+def _walk(spans: list[Span]) -> Iterator[Span]:
+    for span in spans:
+        yield span
+        yield from _walk(span.children)
 
 
 def _secrets(exp: Experiment, arms: Iterable[Arm]) -> dict[str, str]:

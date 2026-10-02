@@ -21,6 +21,7 @@ class GoldAdapter:
     name = "gold"
     version = "1"
     capabilities: frozenset[str] = frozenset()
+    uses_models = False
     artifacts: tuple[str, ...] = ()
 
     def __init__(self, spec: AgentSpec):
