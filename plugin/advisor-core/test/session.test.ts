@@ -2,11 +2,11 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { AdvisorClientLike, CompletionRequest } from "../src/client.js";
+import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } from "../src/client.js";
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession } from "../src/session.js";
+import { type AdviceRecord, AdvisorSession, TRUNCATED_MARKER } from "../src/session.js";
 import { promptSet, runConfig, validateEvent } from "./helpers.js";
 
 const PROMPTS: PromptSet = {
@@ -23,12 +23,13 @@ const PROMPTS: PromptSet = {
 
 class FakeClient implements AdvisorClientLike {
   requests: CompletionRequest[] = [];
+  finishReason: string | null = "stop";
   constructor(private readonly answers: (string | Error)[]) {}
   async complete(req: CompletionRequest) {
     this.requests.push(req);
     const a = this.answers.shift() ?? "ok";
     if (a instanceof Error) throw a;
-    return { text: a, outputTokens: 12, cachedTokens: 0, latencyMs: 5 };
+    return { text: a, outputTokens: 12, cachedTokens: 0, promptTokens: 30, reasoningTokens: 8, finishReason: this.finishReason, latencyMs: 5 };
   }
 }
 
@@ -78,15 +79,24 @@ describe("advisor session", () => {
     const ev = events();
     expectValid(ev);
     expect(ev.map((e) => e.type)).toEqual([
+      "policy_rendered",
       "consult_requested",
       "brief_built",
       "advisor_request",
       "advisor_response",
       "advice_applied",
     ]);
-    const [requested, brief, request, , applied] = ev as any[];
+    const [policy, requested, brief, request, response, applied] = ev as any[];
+    expect(policy).toMatchObject({
+      prompt_hash: "feedfacefeedface",
+      executor_guidance: "Consult at most 5 times.",
+      consult_tool: "Ask the advisor (5 max).",
+    });
     expect(requested).toMatchObject({ reason: "Why does `parse_value()` fail?", turn: 2 });
     expect(brief).toMatchObject({ level: "L1", identifiers_redacted: 4, role_map_size: 2 });
+    expect(brief.role_map).toEqual({ "<function_1>": "parse_value", "<file_1>": "src/v.cpp" });
+    expect(response).toMatchObject({ prompt_tokens: 30, reasoning_tokens: 8, output_tokens: 12, finish_reason: "stop" });
+    expect(client.requests[0]!.requestId).toBe("r1");
     expect(request.brief_text).toBe(client.requests[0]!.user);
     expect(request.brief_text).not.toContain("parse_value");
     expect(request.brief_text).toContain("E: <file_1>:3: error: <function_1> failed");
@@ -97,6 +107,7 @@ describe("advisor session", () => {
     expect(client.requests[0]!.system).toBe("Advise at L1. Max 200 tokens.");
     expect(request.brief_text).toMatch(/^\[consult L1\] /);
     expect(records[0]).toMatchObject({ request_id: "r1", advice: "Look at <function_1> when the input is empty." });
+    expect(records[0]!.role_map).toEqual({ "<function_1>": "parse_value", "<file_1>": "src/v.cpp" });
   });
 
   it("an advisor error becomes advisor_error and a tool result, not an exception", async () => {
@@ -106,8 +117,57 @@ describe("advisor session", () => {
     expect(text).toMatch(/could not be reached/);
     const ev = events();
     expectValid(ev);
-    expect(ev.map((e) => e.type)).toEqual(["consult_requested", "brief_built", "advisor_request", "advisor_error"]);
-    expect(ev[3]).toMatchObject({ request_id: "r1", message: "HTTP 503: overloaded" });
+    expect(ev.map((e) => e.type)).toEqual(["policy_rendered", "consult_requested", "brief_built", "advisor_request", "advisor_error"]);
+    expect(ev[4]).toMatchObject({ request_id: "r1", message: "HTTP 503: overloaded", status: null });
+    expect((ev[4] as any).latency_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a truncated answer is still injected, with a marker; advice_text stays as received", async () => {
+    const { session, client, records, events } = setup({}, ["Look at <function_1> and then"]);
+    client.finishReason = "length";
+    const { text } = await session.consultTool({ question: "Why does `parse_value()` fail?" });
+    expect(text).toBe(`Look at parse_value and then\n${TRUNCATED_MARKER} (4 left)`);
+    const ev = events();
+    expectValid(ev);
+    expect(ev.find((e) => e.type === "advisor_response")).toMatchObject({
+      finish_reason: "length",
+      advice_text: "Look at <function_1> and then",
+    });
+    expect(records[0]!.advice).toBe("Look at <function_1> and then");
+  });
+
+  it("advisor_error takes the status and latency from the client's error", async () => {
+    const { session, events } = setup({}, [new AdvisorClientError("HTTP 429: slow down", 429, 812)]);
+    await session.consultTool({ question: "help" });
+    const ev = events();
+    expectValid(ev);
+    expect(ev.at(-1)).toMatchObject({ type: "advisor_error", status: 429, latency_ms: 812 });
+  });
+
+  it("brief_built.role_map holds only this brief's placeholders; the advice log gets the whole map", async () => {
+    const { session, records, events } = setup({ level: "L1", interventions: ["consult"] }, ["a", "b"]);
+    session.setTask("Fix `parse_value()`.");
+    await session.consultTool({ question: "Is `dump_options` related?" });
+    session.setTask("Something else.");
+    await session.consultTool({ question: "help" });
+    const briefs = events().filter((e) => e.type === "brief_built") as any[];
+    expect(briefs[0].role_map).toEqual({ "<function_1>": "parse_value", "<variable_1>": "dump_options" });
+    expect(briefs[1].role_map).toEqual({});
+    expect(briefs[1].role_map_size).toBe(2);
+    expect(records[1]!.role_map).toEqual({ "<function_1>": "parse_value", "<variable_1>": "dump_options" });
+  });
+
+  it("policy_rendered comes once, first, with a null tool when consult is off", async () => {
+    const { session, events } = setup({ interventions: ["on_test_failure"] }, ["fix it"]);
+    session.renderPolicy();
+    await session.atStart();
+    session.turnStart(1);
+    session.observe(fail);
+    await session.atTurnEnd();
+    const ev = events();
+    expectValid(ev);
+    expect(ev.filter((e) => e.type === "policy_rendered")).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ type: "policy_rendered", consult_tool: null, executor_guidance: "Consult at most 5 times." });
   });
 
   it("plan at the start, then harness triggers at turn ends", async () => {
@@ -138,6 +198,7 @@ describe("advisor session", () => {
     const ev = events();
     expectValid(ev);
     expect(ev.map((e) => e.type)).toEqual([
+      "policy_rendered",
       "consult_requested",
       "brief_built",
       "advisor_request",
@@ -146,7 +207,7 @@ describe("advisor session", () => {
       "budget_exhausted",
       "consult_requested",
     ]);
-    expect(ev[5]).toMatchObject({ consults_used: 1, limit: 1 });
+    expect(ev[6]).toMatchObject({ consults_used: 1, limit: 1 });
   });
 
   it("renders the executor's guidance and the tool description from the prompt set", () => {

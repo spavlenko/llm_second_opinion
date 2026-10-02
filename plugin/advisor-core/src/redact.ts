@@ -81,8 +81,24 @@ export class RoleMap {
     return text.replace(PLACEHOLDER, (p) => this.byPlaceholder.get(p) ?? p);
   }
 
+  /** [name, placeholder] pairs, in the order the placeholders were assigned. */
   entries(): [string, string][] {
     return [...this.byName.entries()];
+  }
+
+  /** Placeholder to name for every known placeholder that appears in `text`. */
+  mapFor(text: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [p] of text.matchAll(PLACEHOLDER)) {
+      const name = this.byPlaceholder.get(p);
+      if (name !== undefined) out[p] = name;
+    }
+    return out;
+  }
+
+  /** Placeholder to name for the whole map so far. */
+  toObject(): Record<string, string> {
+    return Object.fromEntries([...this.byName.entries()].map(([name, p]) => [p, name]));
   }
 }
 

@@ -220,6 +220,18 @@
           ],
           "default": null
         },
+        "finish_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The provider's choices[0].finish_reason, e.g. 'stop', or 'length' when the answer was cut at max_answer_tokens."
+        },
         "advice_text": {
           "description": "The advisor's answer exactly as received (placeholders not yet mapped back).",
           "type": "string"
@@ -236,6 +248,7 @@
         "latency_ms",
         "prompt_tokens",
         "reasoning_tokens",
+        "finish_reason",
         "advice_text"
       ],
       "title": "AdvisorResponse",

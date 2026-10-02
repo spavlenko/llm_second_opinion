@@ -186,6 +186,10 @@ export interface AdvisorResponse {
   prompt_tokens: number | null;
   reasoning_tokens: number | null;
   /**
+   * The provider's choices[0].finish_reason, e.g. 'stop', or 'length' when the answer was cut at max_answer_tokens.
+   */
+  finish_reason: string | null;
+  /**
    * The advisor's answer exactly as received (placeholders not yet mapped back).
    */
   advice_text: string;

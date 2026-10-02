@@ -38,6 +38,7 @@ export {
 export {
   AdvisorSession,
   CONSULT_TOOL,
+  TRUNCATED_MARKER,
   type Advice,
   type AdviceRecord,
   type AdvisorSessionOptions,

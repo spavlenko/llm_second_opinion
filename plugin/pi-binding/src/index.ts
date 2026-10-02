@@ -60,6 +60,7 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
     }
     if (started) return;
     started = true;
+    session.renderPolicy(); // the guidance above and the tool description below, as the executor sees them
     session.setTask(taskText(event.prompt));
     const advice = await guarded("plan", () => session.atStart(ctx.signal));
     if (!advice) return;

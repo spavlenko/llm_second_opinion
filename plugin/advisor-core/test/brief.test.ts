@@ -123,6 +123,13 @@ describe("brief levels", () => {
     expect(b.tokens).toBe(approxTokens(b.text));
   });
 
+  it("a turn-0 plan brief from the default template has no empty sections", () => {
+    const empty: BriefContext = { task: "Make `parse()` accept empty input.", recent: [], lastFailure: null, failedTests: [], lastEdit: null };
+    const brief = buildBrief("L1", promptSet("default").texts.brief, { intervention: "plan", reason: "", turn: 0 }, empty, new RoleMap());
+    expect(brief.text).not.toMatch(/What they have tried:|Latest build or test output:|Relevant code:/);
+    expect(brief.text).toMatch(/Issue:\nMake <function_1>\(\) accept empty input\.\n\nTheir question:\n/);
+  });
+
   it("the repository's brief templates render without leftover placeholders", () => {
     for (const name of ["default", "structured"]) {
       const b = buildBrief("L2", promptSet(name, true).texts.brief, req, ctx, new RoleMap(), read);
