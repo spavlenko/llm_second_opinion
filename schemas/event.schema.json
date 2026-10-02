@@ -30,6 +30,10 @@
         "turn": {
           "minimum": 0,
           "type": "integer"
+        },
+        "injected_text": {
+          "description": "The exact text the executor was given.",
+          "type": "string"
         }
       },
       "required": [
@@ -38,7 +42,8 @@
         "ts",
         "type",
         "request_id",
-        "turn"
+        "turn",
+        "injected_text"
       ],
       "title": "AdviceApplied",
       "type": "object"
@@ -171,6 +176,10 @@
         "latency_ms": {
           "minimum": 0,
           "type": "number"
+        },
+        "advice_text": {
+          "description": "The advisor's answer exactly as received (placeholders not yet mapped back).",
+          "type": "string"
         }
       },
       "required": [
@@ -181,7 +190,8 @@
         "request_id",
         "output_tokens",
         "cached_tokens",
-        "latency_ms"
+        "latency_ms",
+        "advice_text"
       ],
       "title": "AdvisorResponse",
       "type": "object"

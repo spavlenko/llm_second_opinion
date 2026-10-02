@@ -160,7 +160,12 @@ export class AdvisorSession {
 
   /** The binding injected the advice. */
   applied(advice: Advice): void {
-    this.opts.emit({ type: "advice_applied", request_id: advice.requestId, turn: this.engine.turn });
+    this.opts.emit({
+      type: "advice_applied",
+      request_id: advice.requestId,
+      turn: this.engine.turn,
+      injected_text: advice.text,
+    });
   }
 
   private async onDecision(
@@ -224,6 +229,7 @@ export class AdvisorSession {
         output_tokens: done.outputTokens,
         cached_tokens: done.cachedTokens,
         latency_ms: done.latencyMs,
+        advice_text: done.text,
       });
       const advice = this.roles.restore(done.text.trim());
       const text = renderTemplate(this.prompts.texts.advice_injection, {

@@ -610,9 +610,9 @@ Each call appends one record to the item's `usage.jsonl`:
 | `trigger_fired` | intervention, reason, turn |
 | `brief_built` | level, tokens, identifiers redacted, role-map size |
 | `advisor_request` | request id, input tokens, brief text, prompt hash |
-| `advisor_response` | request id, output tokens, cached tokens, latency (ms) |
+| `advisor_response` | request id, output tokens, cached tokens, latency (ms), the advice text exactly as received |
 | `advisor_error` | request id, message |
-| `advice_applied` | request id, turn it was injected at |
+| `advice_applied` | request id, turn it was injected at, the exact text the executor was given |
 | `budget_exhausted` | consults used, limit |
 
 Every `advisor_request` stores the exact text sent. The exposure scorers read only these
@@ -939,3 +939,4 @@ llm_second_opinion/
 | 2026-10-02 | Advisor plugin built: advisor-core (config check, `{{name}}` rendering with each slot's placeholder list, trigger engine, redaction with a per-run role map, L0–L3 brief builder, OpenAI-compatible client, session) and pi-binding (pi extension). Levels, trigger rules, cooldown and budget semantics as in [The advisor plugin](#the-advisor-plugin); `{{code}}` is empty at L0 and L1. `max_consults` counts attempts, including failed ones. |
 | 2026-10-02 | Advice injection in pi: consult tool → tool result; `plan` → `before_agent_start` custom message (before the first model call, from the issue alone, not a review of an executor plan); other harness triggers → a `turn_end` custom message entry with `continue: true`. `executor_guidance` via `before_agent_start`'s `appendSystemPrompt` (no CLI flag). An advisor arm's `advisor.json` must carry its prompt set; the plugin has no built-in prompts. |
 | 2026-10-02 | The plugin is bundled with esbuild from its TypeScript sources into one extension file in a first stage of the pi bundle image (named build contexts), not built on the host. The plugin keeps its own `advice.jsonl` (system and user messages, advice received and injected) next to the contract events, since `advisor_response` carries no text. Advisor spans in item traces come from `events.jsonl` and `advice.jsonl`. |
+| 2026-10-02 | `advisor_response.advice_text` (as received, placeholders intact) and `advice_applied.injected_text` (what the executor saw) join the event contract, so advice uptake and prompt search read `events.jsonl` alone; the plugin's `advice.jsonl` stays as a debugging record. |

@@ -146,6 +146,10 @@ export interface AdvisorResponse {
   output_tokens: number;
   cached_tokens: number;
   latency_ms: number;
+  /**
+   * The advisor's answer exactly as received (placeholders not yet mapped back).
+   */
+  advice_text: string;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -182,6 +186,10 @@ export interface AdviceApplied {
   type: "advice_applied";
   request_id: string;
   turn: number;
+  /**
+   * The exact text the executor was given.
+   */
+  injected_text: string;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema

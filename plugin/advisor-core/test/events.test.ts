@@ -20,8 +20,8 @@ describe("EventWriter", () => {
     writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9 });
     writer.emit({ type: "advisor_request", request_id: "r1", input_tokens: 812, brief_text: "brief", prompt_hash: "0123456789abcdef" });
     writer.emit({ type: "advisor_error", request_id: "r0", message: "HTTP 503" });
-    writer.emit({ type: "advisor_response", request_id: "r1", output_tokens: 300, cached_tokens: 0, latency_ms: 2100 });
-    writer.emit({ type: "advice_applied", request_id: "r1", turn: 13 });
+    writer.emit({ type: "advisor_response", request_id: "r1", output_tokens: 300, cached_tokens: 0, latency_ms: 2100, advice_text: "check <function_1>" });
+    writer.emit({ type: "advice_applied", request_id: "r1", turn: 13, injected_text: "Advisor: check parse()" });
     writer.emit({ type: "budget_exhausted", consults_used: 5, limit: 5 });
 
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));

@@ -184,6 +184,9 @@ class AdvisorResponse(_Event):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(ge=0)
+    advice_text: str = Field(
+        description="The advisor's answer exactly as received (placeholders not yet mapped back)."
+    )
 
 
 class AdvisorError(_Event):
@@ -196,6 +199,7 @@ class AdviceApplied(_Event):
     type: Literal["advice_applied"] = "advice_applied"
     request_id: str
     turn: int = Field(ge=0)
+    injected_text: str = Field(description="The exact text the executor was given.")
 
 
 class BudgetExhausted(_Event):
