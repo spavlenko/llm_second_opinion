@@ -2,6 +2,12 @@
 
 Short dated observations; newest first. Smoke runs are not results.
 
+## 2026-10-03 — scorers
+
+- Gold similarity by lines scored a near-miss one-line fix 0 → by characters (≤ 1.7 s on real patches up to 37k chars), by lines above 20k.
+- Gold patches reach 276k chars (amalgamated `single_include` copies): units and similarity count both copies.
+- `test_pi_docker` fails at `prepilot`: the bundled plugin does not emit `brief_built.truncated` yet.
+
 ## 2026-10-03 — first real-model smoke runs
 
 - CI (Linux) failed: proxy bound 127.0.0.1, unreachable via host.docker.internal there → bind the bridge gateway on Linux. Plugin e2e failed once locally, not reproduced in 2 reruns.

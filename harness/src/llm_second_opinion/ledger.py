@@ -97,6 +97,22 @@ _PREFLIGHT = {
     "reasoning_tokens": "INTEGER NOT NULL",
     "cost_usd": "REAL",
 }
+# The re-identification probe's calls (`bench score --probe`), one row per attempt scored
+# with new calls: part of the total spend.
+_PROBE = {
+    "experiment": "TEXT NOT NULL",
+    "recorded": "REAL NOT NULL",
+    "dir": "TEXT NOT NULL",  # the attempt directory, relative to runs/<experiment>/
+    "model_key": "TEXT NOT NULL",
+    "model": "TEXT NOT NULL",
+    "calls": "INTEGER NOT NULL",
+    "failed_calls": "INTEGER NOT NULL",
+    "prompt_tokens": "INTEGER NOT NULL",
+    "completion_tokens": "INTEGER NOT NULL",
+    "cached_tokens": "INTEGER NOT NULL",
+    "reasoning_tokens": "INTEGER NOT NULL",
+    "cost_usd": "REAL",
+}
 # The adapter fingerprint each arm ran with (see `Experiment.config_hash`), per batch.
 _FINGERPRINTS = {
     "experiment": "TEXT NOT NULL",
@@ -144,6 +160,7 @@ class Ledger:
         self._db.execute(_SESSIONS)
         self._db.execute(_create("preflight", _PREFLIGHT))
         self._db.execute(_create("fingerprints", _FINGERPRINTS))
+        self._db.execute(_create("probe", _PROBE))
 
     def _migrate(self) -> None:
         """Bring an older ledger's items table to the current schema in place, so a resume
@@ -337,6 +354,21 @@ class Ledger:
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM preflight WHERE experiment=? ORDER BY started", (experiment,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_probe(self, experiment: str, **fields: Any) -> None:
+        names = ["experiment", "recorded", *fields]
+        with self._lock:
+            self._db.execute(
+                f"INSERT INTO probe ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+                (experiment, time.time(), *fields.values()),
+            )
+
+    def probe(self, experiment: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM probe WHERE experiment=? ORDER BY recorded", (experiment,)
             ).fetchall()
         return [dict(r) for r in rows]
 
