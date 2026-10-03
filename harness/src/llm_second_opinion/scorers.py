@@ -33,6 +33,7 @@ from llm_second_opinion.contracts import ModelEndpoint, RoleUsage, UsageRecord
 from llm_second_opinion.grading import diff_files
 from llm_second_opinion.metering import (
     UPSTREAM_TIMEOUT_S,
+    USER_AGENT,
     ItemMeter,
     MeteringError,
     MeteringProxy,
@@ -838,7 +839,7 @@ class Prober:
         request = urllib.request.Request(
             f"{url}/chat/completions",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:

@@ -1,7 +1,7 @@
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { AdvisorClient, AdvisorClientError } from "../src/client.js";
+import { AdvisorClient, AdvisorClientError, USER_AGENT } from "../src/client.js";
 import type { ModelEndpoint } from "../src/contracts.js";
 
 interface Seen {
@@ -200,5 +200,16 @@ describe("advisor client", () => {
     const client = new AdvisorClient(endpoint(url), { env: {}, timeoutMs: 50 });
     await expect(client.complete({ system: "", user: "", maxTokens: null })).rejects.toThrow(AdvisorClientError);
     server!.closeAllConnections();
+  });
+});
+
+describe("client identity", () => {
+  it("sends a truthful User-Agent naming the project", () => {
+    const client = new AdvisorClient(
+      { base_url: "http://x/v1", model: "m", reasoning_effort: null, api_key_env: null, headers: {}, header_env: {}, temperature: null, top_p: null, sampling_seed: null },
+      { env: {} },
+    );
+    expect(client.headers()["User-Agent"]).toBe(USER_AGENT);
+    expect(USER_AGENT).toMatch(/^llm-second-opinion-advisor\//);
   });
 });

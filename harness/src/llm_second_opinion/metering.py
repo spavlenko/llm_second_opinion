@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
+from llm_second_opinion import __version__
 from llm_second_opinion.config import ConfigError, Price
 from llm_second_opinion.contracts import ModelEndpoint, Role, RoleUsage, RunConfig, UsageRecord
 
@@ -67,6 +68,10 @@ _DROP_RESPONSE = {
     "upgrade", "content-length", "server", "date",
 }  # fmt: skip
 
+
+# How the harness's own requests (preflight, probe) identify themselves: truthfully, as some
+# providers (the Kimi Code plan) refuse generic clients and forbid faked identifiers.
+USER_AGENT = f"llm-second-opinion/{__version__} (+https://github.com/spavlenko/llm_second_opinion)"
 
 # A 429 from upstream (a provider's quota window) is held by the proxy and retried, up to this
 # long per call; pi's OpenAI client times a request out at 10 minutes.
@@ -650,7 +655,11 @@ def _preflight_call(url: str, model: str) -> str | None:
     request = urllib.request.Request(
         f"{url}/chat/completions",
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", PREFLIGHT_HEADER: "1"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+            PREFLIGHT_HEADER: "1",
+        },
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:

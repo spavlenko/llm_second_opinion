@@ -1,6 +1,8 @@
 // OpenAI-compatible chat completions client for the advisor (non-streaming).
 import type { ModelEndpoint } from "./contracts.js";
 
+
+export const USER_AGENT = "llm-second-opinion-advisor/0.0.1 (+https://github.com/spavlenko/llm_second_opinion)";
 export interface CompletionRequest {
   system: string;
   user: string;
@@ -76,7 +78,9 @@ export class AdvisorClient implements AdvisorClientLike {
   /** Request headers: Authorization only when the key's variable is set (a metering proxy may
    * hold the credentials instead), then `headers`, then `header_env` values that are set. */
   headers(requestId?: string): Record<string, string> {
-    const h: Record<string, string> = { "Content-Type": "application/json" };
+    // A truthful client identifier: some providers (the Kimi Code plan) refuse generic clients
+    // and forbid faked ones.
+    const h: Record<string, string> = { "Content-Type": "application/json", "User-Agent": USER_AGENT };
     const key = this.endpoint.api_key_env ? this.env[this.endpoint.api_key_env] : undefined;
     if (key) h.Authorization = `Bearer ${key}`;
     Object.assign(h, this.endpoint.headers ?? {});
