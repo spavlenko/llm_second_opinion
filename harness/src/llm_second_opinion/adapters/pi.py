@@ -148,12 +148,15 @@ class PiAdapter:
         with self._lock:
             if self._volume_name is None:
                 name = f"{BUNDLE_VOLUME}-{image.removeprefix('sha256:')[:12]}"
-                # The marker is written last, so an interrupted fill is redone.
+                # One fill per volume: arms share the volume (a lock per process), and so may
+                # other `bench` processes (flock inside the container). The marker is written
+                # last, so an interrupted fill is redone.
                 fill = (
-                    f"test -f /v/.complete || {{ rm -rf /v/* && cp -a {MOUNT}/. /v/ "
-                    "&& touch /v/.complete; }"
+                    f"exec flock /v/.fill.lock sh -c 'test -f /v/.complete || "
+                    f"{{ rm -rf /v/* && cp -a {MOUNT}/. /v/ && touch /v/.complete; }}'"
                 )
-                _docker("run", "--rm", "-v", f"{name}:/v", image, "sh", "-c", fill)
+                with _fill_lock(name):
+                    _docker("run", "--rm", "-v", f"{name}:/v", image, "sh", "-c", fill)
                 self._volume_name = name
             return self._volume_name
 
@@ -547,6 +550,16 @@ def container_url(url: str) -> str:
         netloc = "host.docker.internal" + (f":{parts.port}" if parts.port else "")
         return urlunsplit(parts._replace(netloc=netloc))
     return url
+
+
+_FILL_LOCKS: dict[str, threading.Lock] = {}
+_FILL_LOCKS_GUARD = threading.Lock()
+
+
+def _fill_lock(volume: str) -> threading.Lock:
+    """The process-wide lock for filling one bundle volume (shared by every arm's adapter)."""
+    with _FILL_LOCKS_GUARD:
+        return _FILL_LOCKS.setdefault(volume, threading.Lock())
 
 
 def _docker(*args: str, input: str | None = None) -> str:
