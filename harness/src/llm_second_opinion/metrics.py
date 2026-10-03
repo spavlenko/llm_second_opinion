@@ -54,6 +54,7 @@ def advisor_metrics(item_dir: Path, t0: float | None = None) -> dict[str, Any]:
     return {
         "consults": len(starts),
         "consults_by_trigger": dict(sorted(by_trigger.items())),
+        "consults_refused": sum(e.get("type") == "consult_refused" for e in events),
         "advisor_errors": sum(e.get("type") == "advisor_error" for e in events),
         "advice_applied": len(advice),
         "budget_exhausted": any(e.get("type") == "budget_exhausted" for e in events),

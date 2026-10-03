@@ -55,10 +55,29 @@ def test_events_round_trip():
     assert again == events[0]
 
 
+def test_pre_pilot_events_parse():
+    records = [
+        {"type": "consult_refused", "reason": "min_own_actions", "turn": 0},
+        {"type": "trigger_fired", "intervention": "orient", "reason": "3 reads", "turn": 2},
+        {"type": "trigger_fired", "intervention": "before_done", "reason": "s", "turn": 9},
+        {"type": "brief_built", "level": "L2", "tokens": 3000, "identifiers_redacted": 0,
+         "role_map_size": 0, "truncated": True, "role_map": {}},
+        {"type": "advice_applied", "request_id": "r1", "turn": 9, "injected_text": "x",
+         "code_lines_removed": 4},
+    ]  # fmt: skip
+    events = parse_events("\n".join(json.dumps({"seq": 0, "ts": 1} | r) for r in records))
+    assert [e.type for e in events] == [
+        "consult_refused", "trigger_fired", "trigger_fired", "brief_built", "advice_applied",
+    ]  # fmt: skip
+    assert events[3].truncated and events[4].code_lines_removed == 4
+
+
 @pytest.mark.parametrize(
     "line",
     [
         '{"seq": 0, "ts": 1, "type": "made_up"}',
+        '{"seq": 0, "ts": 1, "type": "consult_refused", "turn": 0}',
+        '{"seq": 0, "ts": 1, "type": "advice_applied", "request_id": "r", "turn": 0, "x": "x"}',
         '{"seq": 0, "ts": 1, "type": "budget_exhausted", "consults_used": 5}',
         '{"seq": 0, "ts": 1, "type": "budget_exhausted", "consults_used": 5, "limit": 5, "x": 1}',
         '{"seq": -1, "ts": 1, "type": "budget_exhausted", "consults_used": 5, "limit": 5}',

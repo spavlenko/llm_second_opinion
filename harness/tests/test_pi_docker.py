@@ -197,20 +197,67 @@ def test_pi_consults_the_advisor_through_the_plugin(repo, tmp_path, toy_image, m
     assert "<function_1>" in request.brief_text
     assert request.prompt_hash == json.loads((item / "advisor.json").read_text())["prompts"]["hash"]
     assert response.output_tokens == 12 and applied.request_id == request.request_id
+    assert requested.turn == 1 and not brief.truncated  # after its own read, as the rules want
 
-    # The advice reached pi as the tool result, with the placeholder mapped back.
+    # The advice reached pi as the tool result, with the placeholder mapped back and the
+    # 8-line snippet cut to the default max_advice_code_lines (5); advice_text keeps it all.
     [advice] = [json.loads(line) for line in (item / "advice.jsonl").read_text().splitlines()]
     assert "add_numbers subtracts" in advice["injected"]
+    assert "[code shortened: the advisor gives hints, you write the fix]" in advice["injected"]
+    assert "sum=$((a + b))" not in advice["injected"] and "sum=$((a + b))" in advice["advice"]
+    assert applied.code_lines_removed == 3 and "sum=$((a + b))" in response.advice_text
     pi_events = (item / "pi.jsonl").read_text()
     assert "add_numbers subtracts" in pi_events
 
     # Both roles were metered; the advisor call is in the trace under the consult tool.
     assert [r.role for r in read_usage(item / "usage.jsonl")] == [
-        "executor", "advisor", "executor", "executor",
+        "executor", "executor", "advisor", "executor", "executor",
     ]  # fmt: skip
     turns = PiAdapter(AgentSpec(adapter="pi")).spans(item)
-    [tool] = [s for s in turns[0].children if s.name == "consult"]
+    [tool] = [s for s in turns[1].children if s.name == "consult"]
     [consult] = tool.children
     assert consult.name == "advisor: consult"
     assert [c.name for c in consult.children] == ["brief", "advisor"]
     assert consult.children[1].outputs.startswith("<function_1> subtracts")
+
+
+def test_pi_consult_rules_orient_and_before_done(repo, tmp_path, toy_image, mock):
+    # The executor consults before doing anything (refused), reads, consults without a
+    # hypothesis (refused), edits (held for orient's advice), edits again, stops (before_done's
+    # advice continues the run once), and stops.
+    recordings = repo / "harness/tests/fixtures/pi-toy-add-rules.jsonl"
+    base_url = mock([json.loads(line) for line in recordings.read_text().splitlines()])
+    advisor = {"level": "L1", "interventions": ["consult", "orient", "before_done"]}
+    outcome, result, item = run_pi(repo, tmp_path, base_url, advisor=advisor)
+    assert outcome.resolved
+    assert result["exit_reason"] == "finished"
+
+    events = parse_events((item / "events.jsonl").read_text())  # validates every event
+    consult = ["brief_built", "advisor_request", "advisor_response", "advice_applied"]
+    assert [e.type for e in events] == [
+        "policy_rendered", "consult_refused", "consult_refused",
+        "trigger_fired", *consult, "trigger_fired", *consult,
+    ]  # fmt: skip
+    assert [(e.reason, e.turn) for e in events if e.type == "consult_refused"] == [
+        ("min_own_actions", 0), ("require_hypothesis", 2),
+    ]  # fmt: skip
+    fired = [(e.intervention, e.reason, e.turn) for e in events if e.type == "trigger_fired"]
+    assert fired == [
+        ("orient", "before the first edit", 3),
+        ("before_done", "stopped after editing", 5),
+    ]
+    requests = [e for e in events if e.type == "advisor_request"]
+    assert "Am I looking in the right place" in requests[0].brief_text
+    assert "ran a shell command" in requests[0].brief_text  # L1: actions in words
+    assert "I think I am done." in requests[1].brief_text
+
+    # The executor saw each refusal, the held edit, and before_done's advice.
+    pi_events = (item / "pi.jsonl").read_text()
+    assert "Investigate first" in pi_events and "Say what you tried" in pi_events
+    assert "This edit was not applied" in pi_events
+    assert "The operator in the function is wrong" in pi_events
+    assert "run the tests to confirm before you finish" in pi_events
+    assert [r.role for r in read_usage(item / "usage.jsonl")] == [
+        "executor", "executor", "executor", "executor", "advisor",
+        "executor", "executor", "advisor", "executor",
+    ]  # fmt: skip

@@ -70,3 +70,23 @@ def test_spans_nest_under_the_deepest_span_open_when_they_start():
     names = [s.name for s in top]
     assert names == ["turn 1", "advisor: stuck", "turn 2", "advisor: budget exhausted"]
     assert [s.name for s in tool.children] == ["advisor: consult"]
+
+
+def test_a_span_starting_just_before_its_tool_still_nests_under_it():
+    # pi's timeline marks tool_start from an async handler, a few ms after the tool's own work.
+    early = Span("advisor: consult", "CHAIN", 9 * S - 5_000_000, 9 * S + 1)
+    gap = Span("advisor: stuck", "CHAIN", 9 * S - S, 9 * S - S)
+    tool = Span("consult", "TOOL", 9 * S, 13 * S)
+    turn = Span("turn 1", "CHAIN", 7 * S, 14 * S, children=[tool])
+    nest([turn], [early, gap])
+    assert [s.name for s in tool.children] == ["advisor: consult"]
+    assert [s.name for s in turn.children] == ["advisor: stuck", "consult"]
+
+
+def test_a_refused_consult_is_a_span_of_its_own():
+    [span] = advisor_spans([ev(5.0, "consult_refused", reason="min_own_actions", turn=0)])
+    assert (span.name, span.start_ns, span.attributes) == (
+        "advisor: consult refused",
+        5 * S,
+        {"reason": "min_own_actions", "turn": 0},
+    )

@@ -208,6 +208,7 @@ def test_metrics_from_a_recorded_pi_run(repo):
     assert (m["compactions"], m["auto_retries"]) == (0, 0)
     assert (m["max_context_tokens"], m["final_context_tokens"]) == (1000, 1000)
     assert m["consults"] == 1 and m["consults_by_trigger"] == {"consult": 1}
+    assert m["consults_refused"] == 0
     assert m["patch_touches_advised_files"] is True
     assert m["advised_files_touched"] == ["math.sh"]
 
