@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -82,7 +84,33 @@ def test_unknown_placeholder_fails_with_file_and_name(tmp_path):
     message = str(e.value)
     assert str(bad / "advisor_system.md") in message
     assert "{{advice}}, {{ level }}" in message
-    assert "allowed: {{level}}, {{max_answer_tokens}}, {{answer_target_words}}" in message
+    assert (
+        "allowed: {{level}}, {{max_answer_tokens}}, {{answer_target_words}}, {{clarify}}" in message
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("A\n{{#clarify}}\nask\n{{/clarify}}\nB", None),
+        (
+            "{{#answer_target_words}}\nAt most {{answer_target_words}}.\n{{/answer_target_words}}",
+            None,
+        ),
+        ("{{#clarify}}\nask", "section clarify is not closed"),
+        ("x {{#clarify}}\nask\n{{/clarify}}", "alone on its line"),
+        ("ask\n{{/clarify}}", "closes no open section"),
+        ("{{#clarify}}\n{{#level}}\nx\n{{/level}}\n{{/clarify}}", "cannot nest"),
+        ("{{#advice}}\nx\n{{/advice}}", "unknown placeholder(s) {{advice}}"),
+    ],
+)
+def test_conditional_sections(tmp_path, text, message):
+    d = prompt_dir(tmp_path / "p", advisor_system=text)
+    if message is None:
+        read_directory(d)
+        return
+    with pytest.raises(PromptError, match=re.escape(message)):
+        read_directory(d)
 
 
 def test_size_targets_are_placeholders_of_their_slots_only(tmp_path):

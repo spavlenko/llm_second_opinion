@@ -89,4 +89,18 @@ describe("sweep", () => {
     roles.placeholder("BIG", "macro");
     expect(roles.sweep("<macro_1> and macro_value").text).toBe("<macro_1> and <variable_1>");
   });
+
+  it("replaces a known name after `.` or `->` (member access), not inside a file name or path", () => {
+    const roles = new RoleMap();
+    roles.placeholder("parse_format_specs", "function");
+    roles.placeholder("format.h", "file");
+    roles.placeholder("FormatSpec", "type");
+    const { text } = roles.sweep(
+      "ctx.parse_format_specs(x); p->parse_format_specs(y); f().parse_format_specs(z); see format.h and include/fmt/format.h; FormatSpec.h",
+    );
+    expect(text).toBe(
+      "ctx.<function_1>(x); p-><function_1>(y); f().<function_1>(z); see <file_1> and include/fmt/format.h; <type_1>.h",
+    );
+    expect(roles.sweep(".parse_format_specs and ./parse_format_specs").text).toBe(".parse_format_specs and ./parse_format_specs");
+  });
 });

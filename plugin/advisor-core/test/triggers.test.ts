@@ -107,13 +107,13 @@ describe("trigger engine", () => {
     expect(engine.requestConsult()).toEqual({ kind: "exhausted", report: false, used: 1, limit: 1 });
   });
 
-  it("orient: after orient_after read actions, before on_test_failure in the same turn, once", () => {
+  it("orient: after orient_after distinct files read, before on_test_failure in the same turn, once", () => {
     const engine = new TriggerEngine(settings({ interventions: ["orient", "on_test_failure"], orient_after: 2 }));
     const read: ToolObservation = { name: "read", args: { path: "a.cpp" }, result: "x", isError: false };
     const fail = call("/opt/lso/run-tests", "x", true);
-    const d = run(engine, [[read, call("make", "x")], [call("grep -n foo a.cpp"), fail], [fail]]);
+    const d = run(engine, [[read, call("make", "x"), call("cat a.cpp")], [call("grep -n foo b.cpp"), fail], [fail]]);
     expect(d.map(fired)).toEqual([null, "orient", "on_test_failure"]);
-    expect(d[1]).toMatchObject({ fire: { reason: "2 read actions", turn: 1 } });
+    expect(d[1]).toMatchObject({ fire: { reason: "2 files read", turn: 1 } });
     expect(engine.beforeEdit()).toBeNull();
   });
 

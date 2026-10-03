@@ -1,5 +1,6 @@
 """Flag anomalies in a smoke run: one line per problem, nothing when the run is clean, then
-the anti-delegation counts: consults refused (by rule), advice code lines cut, briefs cut.
+the help-flow counts: consults refused (by rule), triggers skipped (by reason), `clarify`
+follow-ups, advice code lines cut, briefs cut.
 
     harness/.venv/bin/python scripts/smoke-check.py RUNS_DIR/<experiment>
 
@@ -59,16 +60,36 @@ def counts(item: Path) -> Counter[str]:
             out["code_lines_removed"] += e.get("code_lines_removed") or 0
         elif e.get("type") == "brief_built" and e.get("truncated"):
             out["briefs_truncated"] += 1
+        elif e.get("type") == "trigger_skipped":
+            out["skipped"] += 1
+            out[f"skipped:{e.get('reason')}"] += 1
+        elif e.get("type") == "advisor_followup":
+            out["followups"] += 1
+            out["followup_tokens"] += e.get("tokens") or 0
     return out
 
 
-def describe(c: Counter[str]) -> str:
-    rules = ", ".join(
-        f"{k.split(':', 1)[1]} {n}" for k, n in sorted(c.items()) if k.startswith("refused:")
+def by(c: Counter[str], prefix: str) -> str:
+    return ", ".join(
+        f"{k.split(':', 1)[1]} {n}"
+        for k, n in sorted(c.items())
+        if k.startswith(prefix)
     )
+
+
+def describe(c: Counter[str]) -> str:
+    rules, skipped = by(c, "refused:"), by(c, "skipped:")
     return (
         f"consults refused {c['refused']}{f' ({rules})' if rules else ''}; "
+        f"triggers skipped {c['skipped']}{f' ({skipped})' if skipped else ''}; "
+        f"follow-ups {c['followups']} ({c['followup_tokens']} tokens); "
         f"advice code lines cut {c['code_lines_removed']}; briefs cut {c['briefs_truncated']}"
+    )
+
+
+def notable(c: Counter[str]) -> bool:
+    return bool(
+        c["refused"] or c["code_lines_removed"] or c["skipped"] or c["followups"]
     )
 
 
@@ -85,7 +106,11 @@ def check(item: Path) -> list[str]:
         problems.append(f"crash: {(result.get('detail') or '')[:200]}")
     elif result["exit_reason"] != "finished":
         problems.append(f"exit {result['exit_reason']} after {result['turns']} turns")
-    stderr = (item / "pi.stderr").read_text().strip() if (item / "pi.stderr").exists() else ""
+    stderr = (
+        (item / "pi.stderr").read_text().strip()
+        if (item / "pi.stderr").exists()
+        else ""
+    )
     if stderr:
         problems.append(f"pi stderr: {stderr[-200:]}")
 
@@ -97,7 +122,9 @@ def check(item: Path) -> list[str]:
     if not advisor:
         return problems
 
-    text = (item / "events.jsonl").read_text() if (item / "events.jsonl").exists() else ""
+    text = (
+        (item / "events.jsonl").read_text() if (item / "events.jsonl").exists() else ""
+    )
     try:
         events = [e.model_dump() for e in parse_events(text)]
     except Exception as e:  # noqa: BLE001 - report any schema failure
@@ -132,12 +159,18 @@ def check(item: Path) -> list[str]:
         elif kind == "budget_exhausted":
             problems.append(f"budget exhausted ({e['consults_used']}/{e['limit']})")
 
+    # A `clarify` follow-up is a second metered call (and a second advisor_response) under the
+    # same request id.
+    followups = sum(e["type"] == "advisor_followup" for e in events)
     requests = sum(e["type"] == "advisor_request" for e in events)
     metered = sum(u["role"] == "advisor" for u in usage)
-    if requests != metered:
-        problems.append(f"{requests} advisor_request events but {metered} metered advisor calls")
+    if requests + followups != metered:
+        problems.append(
+            f"{requests} advisor_request events and {followups} follow-ups but "
+            f"{metered} metered advisor calls"
+        )
     applied = sum(e["type"] == "advice_applied" for e in events)
-    answered = sum(e["type"] == "advisor_response" for e in events)
+    answered = sum(e["type"] == "advisor_response" for e in events) - followups
     if applied != answered:
         problems.append(f"{answered} advisor responses but {applied} applied")
     return problems
@@ -154,11 +187,11 @@ def main(root: Path) -> int:
         problems = check(item)
         c = counts(item)
         total += c
-        if problems or c["refused"] or c["code_lines_removed"]:
+        if problems or notable(c):
             print(f"{item.relative_to(root)}")
         for p in problems:
             print(f"  - {p}")
-        if c["refused"] or c["code_lines_removed"]:
+        if notable(c):
             print(f"  · {describe(c)}")
         bad += bool(problems)
     print(f"{len(items)} item(s), {bad} with problems")

@@ -148,8 +148,14 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Help-flow diagnostics: advice uptake (`uptake_rate`), answer length overshoot, skipped
       triggers by reason, `clarify` follow-up tokens; in `bench report` and MLflow
 - [x] Planted-leak test for both leak detectors; role-aware rule, follow-ups scanned
-- [ ] Plugin implements `reserve_for_end`, `clarify`, `memory`, `surrogates`, `trigger_skipped`
+- [x] Plugin implements `reserve_for_end`, `clarify`, `memory`, `surrogates`, `trigger_skipped`
       (contracts in 6a1ee51) before the pilot runs those arms
+- [x] Trigger timing: `orient` by distinct files read; `stuck` reset by progress (test runs,
+      new errors), reverts count, never after passing tests; `before_done` skipped after a
+      passing run
+- [x] Default prompts: concrete consult moments for the executor; word limit first and last
+      and at most 3 next steps for the advisor; conditional prompt sections (`{{#name}}`)
+- [ ] Smoke rerun (3 tasks, L2) to check self-consults, stuck timing and answer length
 - [ ] Pilot on `dev`: 10 tasks, 3 seeds; arms A0, A4, and 3 help policies (prompt set ×
       initiative); variance estimate for the power analysis
 - [ ] Gate A from the research proposal

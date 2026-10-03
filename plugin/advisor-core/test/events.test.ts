@@ -19,7 +19,9 @@ describe("EventWriter", () => {
     writer.emit({ type: "consult_requested", reason: "build fails, unsure why", turn: 11 });
     writer.emit({ type: "trigger_fired", intervention: "stuck", reason: "same error x3", turn: 12 });
     writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9, truncated: true, role_map: { "<function_1>": "parse" } });
-    writer.emit({ type: "advisor_request", request_id: "r1", input_tokens: 812, brief_text: "brief", prompt_hash: "0123456789abcdef" });
+    writer.emit({ type: "advisor_request", request_id: "r1", input_tokens: 812, brief_text: "brief", prompt_hash: "0123456789abcdef", history_turns: 2 });
+    writer.emit({ type: "advisor_followup", request_id: "r1", requested: "FILE <file_1>:10-20", sent_text: "Here is ...", tokens: 40 });
+    writer.emit({ type: "trigger_skipped", intervention: "stuck", reason: "tests_passed", turn: 12 });
     writer.emit({ type: "advisor_error", request_id: "r0", message: "HTTP 503", status: 503, latency_ms: 40 });
     writer.emit({ type: "advisor_error", request_id: "r0", message: "request failed", status: null, latency_ms: 3 });
     writer.emit({
@@ -40,7 +42,7 @@ describe("EventWriter", () => {
     writer.emit({ type: "budget_exhausted", consults_used: 5, limit: 5 });
 
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(lines.map((e) => e.seq)).toEqual([...Array(15).keys()]);
     for (const event of lines) {
       expect(validate(event), JSON.stringify(validate.errors)).toBe(true);
     }
@@ -52,5 +54,9 @@ describe("EventWriter", () => {
     const applied = { schema_version: "1", seq: 0, ts: 1, type: "advice_applied", request_id: "r1", turn: 2, injected_text: "x" };
     expect(validate(applied)).toBe(false); // code_lines_removed is required
     expect(validate({ ...applied, code_lines_removed: 0 })).toBe(true);
+    const request = { schema_version: "1", seq: 0, ts: 1, type: "advisor_request", request_id: "r1", input_tokens: 1, brief_text: "b", prompt_hash: "h" };
+    expect(validate(request)).toBe(false); // history_turns is required
+    expect(validate({ schema_version: "1", seq: 0, ts: 1, type: "trigger_skipped", intervention: "nope", reason: "x", turn: 1 })).toBe(false);
+    expect(validate({ schema_version: "1", seq: 0, ts: 1, type: "advisor_followup", request_id: "r1", requested: "TEST_OUTPUT", sent_text: "x" })).toBe(false);
   });
 });

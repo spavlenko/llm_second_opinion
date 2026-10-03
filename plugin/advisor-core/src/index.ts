@@ -7,6 +7,7 @@ export { placeholders, renderTemplate, type Vars } from "./template.js";
 export {
   TEST_COMMAND,
   readsCode,
+  filesRead,
   callSignature,
   editsFiles,
   errorLocations,
@@ -17,13 +18,14 @@ export {
   type TestRun,
   type ToolObservation,
 } from "./observe.js";
-export { MIN_HYPOTHESIS_WORDS, TriggerEngine, type Decision, type Fire, type Refusal } from "./triggers.js";
+export { MIN_HYPOTHESIS_WORDS, TriggerEngine, type Decision, type Fire, type Refusal, type Skip, type SkipReason } from "./triggers.js";
 export { CODE_CUT_NOTE, limitCodeBlocks } from "./advice.js";
-export { RoleMap, Redactor, stripCodeBlocks, stripInlineCode, type Role } from "./redact.js";
+export { RoleMap, Redactor, stripCodeBlocks, stripInlineCode, type Role, type RoleMapOptions } from "./redact.js";
 export {
   BRIEF_CUT_MARKER,
   DEFAULT_QUESTIONS,
   cutBrief,
+  errorCategory,
   approxTokens,
   buildBrief,
   describeActions,
@@ -36,12 +38,16 @@ export {
   AdvisorClientError,
   type AdvisorClientLike,
   type AdvisorClientOptions,
+  type ChatMessage,
   type Completion,
   type CompletionRequest,
 } from "./client.js";
 export {
   AdvisorSession,
   CONSULT_TOOL,
+  CLARIFY_MAX_LINES,
+  parseClarify,
+  type ClarifyRequest,
   TRUNCATED_MARKER,
   type Advice,
   type AdviceRecord,

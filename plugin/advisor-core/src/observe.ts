@@ -74,6 +74,68 @@ export function readsCode(obs: Pick<ToolObservation, "name" | "args">): boolean 
   return READ_COMMANDS.has(words[0] ?? "");
 }
 
+// Shell commands that print files, and which of their options take a separate value (`-n 20`).
+const FILE_COMMANDS: Record<string, { valueOptions: string; patternFirst: boolean }> = {
+  cat: { valueOptions: "", patternFirst: false },
+  nl: { valueOptions: "", patternFirst: false },
+  less: { valueOptions: "", patternFirst: false },
+  more: { valueOptions: "", patternFirst: false },
+  head: { valueOptions: "nc", patternFirst: false },
+  tail: { valueOptions: "nc", patternFirst: false },
+  sed: { valueOptions: "ef", patternFirst: true },
+  awk: { valueOptions: "fvF", patternFirst: true },
+  grep: { valueOptions: "efABCm", patternFirst: true },
+  egrep: { valueOptions: "efABCm", patternFirst: true },
+  rg: { valueOptions: "efABCmgt", patternFirst: true },
+};
+// A word that names a file: a name with an extension, no glob or redirect characters.
+const FILE_WORD = /^[\w./+-]*[\w+-]\.[A-Za-z][\w+]*$/;
+
+/** The files a call read, where that can be told: the read tool's path, and the file arguments
+ * of `cat`, `head`, `tail`, `sed -n`, `grep`, `rg`, `awk` (and the like) in shell commands,
+ * normalized (`./` dropped). Directories, globs and patterns are not files read. */
+export function filesRead(obs: Pick<ToolObservation, "name" | "args">): string[] {
+  const norm = (p: string) => p.replace(/^(\.\/)+/, "");
+  if (obs.name === "read") return typeof obs.args.path === "string" ? [norm(obs.args.path)] : [];
+  if (obs.name !== "bash") return [];
+  const command = String(obs.args.command ?? "");
+  if (command.includes(TEST_COMMAND) || BASH_EDIT.test(command)) return [];
+  const out = new Set<string>();
+  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
+    const words = shellWords(segment);
+    const spec = FILE_COMMANDS[words[0] ?? ""];
+    if (!spec) continue;
+    const positional: string[] = [];
+    let explicitPattern = false;
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i]!;
+      if (/^\d*[<>]/.test(w)) {
+        if (/^\d*[<>]+&?$/.test(w)) i++; // `> file`: the target is not read
+        continue;
+      }
+      if (w.startsWith("-") && w.length > 1) {
+        // Only the last letter of a short-option group can take the next word as its value.
+        const flag = w.startsWith("--") ? "" : w.slice(-1);
+        const takesValue = flag !== "" && spec.valueOptions.includes(flag) && !/\d/.test(w.slice(1));
+        if (takesValue && (flag === "e" || flag === "f")) explicitPattern = true; // -e PATTERN, -f SCRIPT
+        if (takesValue) i++;
+        continue;
+      }
+      positional.push(w);
+    }
+    const files = spec.patternFirst && !explicitPattern ? positional.slice(1) : positional;
+    for (const f of files) if (FILE_WORD.test(f) && !f.startsWith("/dev/")) out.add(norm(f));
+  }
+  return [...out];
+}
+
+/** Words of a simple shell command, with quotes removed (no expansion). */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  for (const m of command.trim().matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)) words.push(m[1] ?? m[2] ?? m[3]!);
+  return words;
+}
+
 const ERROR_LINE =/\berror\b|\bfailed\b|\bFAILED\b|\bassert|\bexception\b|\bundefined reference\b|\bnot found\b|\bfatal\b/i;
 const EXIT_STATUS = /^Command exited with code \d+$/;
 

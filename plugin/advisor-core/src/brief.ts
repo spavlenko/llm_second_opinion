@@ -9,7 +9,7 @@
 // L3  verbatim: code excerpts, file paths, identifiers, error output, the task as written.
 import type { Intervention, Level } from "./contracts.js";
 import { errorLocations, errorText, testRun, type ToolObservation } from "./observe.js";
-import { Redactor, type RoleMap, countPlaceholders, stripCodeBlocks, stripInlineCode } from "./redact.js";
+import { Redactor, type RoleMap, stripCodeBlocks, stripInlineCode } from "./redact.js";
 import { placeholders, renderTemplate, type Vars } from "./template.js";
 
 /** What a consult is about: who asked, why, and in the executor's own words if it asked. */
@@ -131,7 +131,7 @@ export function buildBrief(
   // Cut after the sweep: a cut before it could leave part of a name the sweep no longer knows.
   const cut = cutBrief(text, maxTokens);
   text = cut.text;
-  return { text, tokens: approxTokens(text), identifiersRedacted: countPlaceholders(text), truncated: cut.truncated, vars };
+  return { text, tokens: approxTokens(text), identifiersRedacted: roles.count(text), truncated: cut.truncated, vars };
 }
 
 /** A brief over `maxTokens` (estimated), cut to fit: the longest section (blank-line separated
@@ -174,7 +174,7 @@ function cutText(text: string, room: number): string {
   return (space > 0 ? head.slice(0, space) : head).trimEnd();
 }
 
-function errorCategory(failure: ToolObservation, failingTests: number): string {
+export function errorCategory(failure: ToolObservation, failingTests: number): string {
   const run = testRun(failure);
   if (run?.buildFailed) return "The build fails.";
   if (run?.failed) return failingTests ? `${failingTests} test(s) fail.` : "The tests fail.";
