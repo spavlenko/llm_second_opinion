@@ -257,7 +257,27 @@ export class RoleMap {
             }),
       )
       .join("");
-    return { text: out, replaced };
+    // Project names also as path components (`simdjson/*.h`, `include/fmt/core.h`), which the
+    // pass above leaves for the sake of file paths: the project's name is what identifies it.
+    const projectNames = names.filter((n) => this.projects.has(n.toLowerCase()));
+    if (!projectNames.length) return { text: out, replaced };
+    const inPath = new RegExp(
+      `(?<![\\w-])(?:${projectNames.map((n) => n.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})(?![\\w-])`,
+      "gi",
+    );
+    const swept = out
+      .split(protect)
+      .map((part, i) =>
+        i % 2 === 1
+          ? part
+          : part.replace(inPath, (match) => {
+              const key = projectNames.find((n) => n.toLowerCase() === match.toLowerCase())!;
+              replaced += 1;
+              return this.byName.get(key)!;
+            }),
+      )
+      .join("");
+    return { text: swept, replaced };
   }
 
   /** Placeholder to name for the whole map so far. */

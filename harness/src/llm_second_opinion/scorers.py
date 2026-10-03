@@ -773,10 +773,14 @@ def project_leaks(name: str, text: str) -> bool:
 
 
 def file_leaks(path: str, text: str) -> bool:
-    """A file path, or its file name, appearing raw."""
-    if path in text:
+    """A file path appearing raw, or its file name when that has an extension. A directory's
+    last component (`include` of `/testbed/include`) is an ordinary word, so it does not count
+    on its own (a false positive found in a smoke run)."""
+    if re.search(rf"(?<![\w.-]){re.escape(path)}(?![\w-])", text):
         return True
     name = path.rsplit("/", 1)[-1]
+    if "." not in name.strip("."):
+        return False
     return re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", text) is not None
 
 

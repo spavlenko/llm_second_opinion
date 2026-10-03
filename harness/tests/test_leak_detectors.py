@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_second_opinion.scorers import leaked_units, role_map_leaks
+from llm_second_opinion.scorers import leaked_units, role_leaks, role_map_leaks
 
 ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location("smoke_check", ROOT / "scripts/smoke-check.py")
@@ -100,3 +100,10 @@ def test_smoke_check_reports_a_planted_leak_end_to_end(tmp_path):
     problems = smoke.check(item)
     assert f"r1: L2 brief contains ['{MACRO}']" in problems
     assert f"r1: L2 follow-up contains ['{PATH}']" in problems
+
+
+def test_a_directory_name_is_not_a_leak_on_its_own():
+    # Smoke round 5: `/testbed/include` was flagged because briefs say `#include`.
+    assert not role_leaks("<file_6>", "/testbed/include", "#include <vector> and include/x")
+    assert role_leaks("<file_6>", "/testbed/include", "ran ls /testbed/include today")
+    assert role_leaks("<file_2>", "include/simdjson.h", "see simdjson.h")

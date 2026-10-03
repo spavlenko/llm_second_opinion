@@ -11,6 +11,9 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — first real-model smoke runs
 
+- Smoke r5 (new help flow, 1 seed): 0/3 resolved. json-18: executor emitted tool calls as text (`<tool_call><function=bash>`), server did not parse them, pi stopped at turn 3 → empty patch; the other two failed to build (within measured noise). Still 0 self-consults with the new guidance.
+- Leak checker flagged `/testbed/include` via its base name `include` (false positive) → base names only with an extension; plugin left `simdjson/*.h` raw → project names swept as path components.
+- Targeted tests missed a contract fixture that CI caught (`history_turns`): targeted runs are not enough after contract changes.
 - Real smoke (3 dev tasks, H L2): executor never called `consult` (0/3; tool and guidance verified present) → all help was harness-triggered. `orient` fired at turn 2 every time; `stuck` (no_diff) fired twice on json-18 and once after `before_done` on simdjson-524 and used up the budget.
 - Bundle volume fill raced across arms (lock was per adapter; 6/8 toy items failed as infra) → process-wide lock + flock; fresh-volume rerun 8/8. Kimi Code accepts pi's own client (A4 2/2).
 - Kimi Code blocks generic clients at Cloudflare (403, code 1010 for `Python-urllib`) → truthful `llm-second-opinion/<ver>` User-Agent on our own requests; never fake one (ToS).

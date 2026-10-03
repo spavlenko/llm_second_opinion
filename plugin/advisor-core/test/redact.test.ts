@@ -104,3 +104,15 @@ describe("sweep", () => {
     expect(roles.sweep(".parse_format_specs and ./parse_format_specs").text).toBe(".parse_format_specs and ./parse_format_specs");
   });
 });
+
+
+describe("project names in paths", () => {
+  // Smoke round 5: "Remove simdjson/*.h" kept the project name raw.
+  it("replaces the project as a path component", () => {
+    const roles = new RoleMap();
+    roles.seedProject("simdjson__simdjson-524");
+    expect(roles.sweep("Remove simdjson/*.h and include/simdjson.h").text).toBe(
+      "Remove <project_1>/*.h and include/<project_1>.h",
+    );
+  });
+});

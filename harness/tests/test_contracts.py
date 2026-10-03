@@ -44,6 +44,7 @@ def test_events_round_trip():
             "input_tokens": 900,
             "brief_text": "the brief",
             "prompt_hash": "0123456789abcdef",
+            "history_turns": 0,
         },
     ]
     lines = json.dumps(records[0]) + "\n\n" + json.dumps(records[1])
