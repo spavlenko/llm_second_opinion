@@ -29,12 +29,16 @@ export interface BriefContext {
   lastFailure: ToolObservation | null;
   failedTests: string[];
   lastEdit: { path: string; text: string } | null;
+  /** The executor's own words from its latest turns (its findings), for `orient`. */
+  notes?: string[];
 }
 
 export interface Brief {
   text: string;
   tokens: number;
   identifiersRedacted: number;
+  /** The brief was cut to max_brief_tokens. */
+  truncated: boolean;
   vars: Vars;
 }
 
@@ -45,7 +49,14 @@ export const DEFAULT_QUESTIONS: Record<Intervention, string> = {
   stuck: "I seem to be stuck. What should I try next?",
   on_test_failure: "The tests fail. What is the likely cause, and what should I check?",
   periodic: "Here is where I am. What should I do next?",
+  orient:
+    "I have looked around the code (what I did and found is above) and have not changed anything yet. " +
+    "Am I looking in the right place, and what should I check before I change anything?",
+  before_done: "I think I am done. Sanity-check my approach: is the fix in the right place, and what might I have missed?",
 };
+
+/** Marks the place where a brief over max_brief_tokens was cut. */
+export const BRIEF_CUT_MARKER = "[cut: the brief was over its size limit]";
 
 const EXCERPT_RADIUS = 3;
 const MAX_EXCERPTS = 3;
@@ -64,6 +75,7 @@ export function buildBrief(
   ctx: BriefContext,
   roles: RoleMap,
   readFile: (path: string) => string | null = () => null,
+  maxTokens = Number.POSITIVE_INFINITY,
 ): Brief {
   const r = new Redactor(roles);
   const verbatim = level === "L3";
@@ -93,7 +105,13 @@ export function buildBrief(
     task_summary: () => prose(ctx.task),
     question: () => prose(req.question || DEFAULT_QUESTIONS[req.intervention]),
     // The executor's words when it asked; for a harness trigger, what it did lately.
-    tried: () => (req.intervention === "consult" ? prose(req.tried) : describeActions(level, ctx.recent, r)),
+    // For orient, also its notes: the findings the advisor is asked to check.
+    tried: () => {
+      if (req.intervention === "consult") return prose(req.tried);
+      const actions = describeActions(level, ctx.recent, r);
+      const notes = req.intervention === "orient" ? prose((ctx.notes ?? []).join("\n")).trim() : "";
+      return notes ? `${actions}\nTheir notes so far:\n${notes}` : actions;
+    },
     hypothesis: () => prose(req.hypothesis),
     error: () => {
       if (!failure) return "";
@@ -110,7 +128,50 @@ export function buildBrief(
   let text = renderTemplate(template, vars).replace(/\n{3,}/g, "\n\n").trim();
   // Names redacted in one section must not appear raw in another (or in the issue's prose).
   if (!verbatim) text = roles.sweep(text).text;
-  return { text, tokens: approxTokens(text), identifiersRedacted: countPlaceholders(text), vars };
+  // Cut after the sweep: a cut before it could leave part of a name the sweep no longer knows.
+  const cut = cutBrief(text, maxTokens);
+  text = cut.text;
+  return { text, tokens: approxTokens(text), identifiersRedacted: countPlaceholders(text), truncated: cut.truncated, vars };
+}
+
+/** A brief over `maxTokens` (estimated), cut to fit: the longest section (blank-line separated
+ * block) is cut at a line boundary, with the marker, and again until the brief fits, so the
+ * headings and the short sections (the question) stay. A section without line breaks to cut
+ * at is cut at a word. */
+export function cutBrief(text: string, maxTokens: number): { text: string; truncated: boolean } {
+  const limit = maxTokens * 4;
+  if (text.length <= limit) return { text, truncated: false };
+  const marked = `\n${BRIEF_CUT_MARKER}`;
+  const sections = text.split(/\n{2,}/);
+  const size = () => sections.join("\n\n").length;
+  while (size() > limit) {
+    let i = 0;
+    sections.forEach((s, j) => {
+      if (s.length > sections[i]!.length) i = j;
+    });
+    const section = sections[i]!;
+    const body = section.endsWith(marked) ? section.slice(0, -marked.length) : section === BRIEF_CUT_MARKER ? "" : section;
+    const room = limit - (size() - section.length) - marked.length;
+    const kept = cutText(body, room);
+    const next = kept ? kept + marked : BRIEF_CUT_MARKER;
+    if (next.length >= section.length) break; // the longest section cannot shrink any more
+    sections[i] = next;
+  }
+  let out = sections.join("\n\n");
+  if (out.length > limit) out = (cutText(out, limit - marked.length) + marked).trim();
+  return { text: out, truncated: true };
+}
+
+/** A prefix of `text` within `room` characters, ending at a line break if that keeps at least
+ * half of it, or else at a space; empty when nothing fits. */
+function cutText(text: string, room: number): string {
+  if (room <= 0) return "";
+  if (text.length <= room) return text;
+  const head = text.slice(0, room);
+  const line = head.lastIndexOf("\n");
+  if (line >= room / 2) return head.slice(0, line).trimEnd();
+  const space = head.lastIndexOf(" ");
+  return (space > 0 ? head.slice(0, space) : head).trimEnd();
 }
 
 function errorCategory(failure: ToolObservation, failingTests: number): string {

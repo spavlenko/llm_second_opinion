@@ -1,6 +1,7 @@
 // One run's advisor: observations in, consults out. The binding feeds it its agent's events
 // and injects the text it returns; everything sent to the advisor goes through here and is
 // recorded as events (the exposure record) before it is sent.
+import { limitCodeBlocks } from "./advice.js";
 import {
   type Brief,
   type BriefContext,
@@ -12,7 +13,7 @@ import { type AdvisorClientLike, AdvisorClientError } from "./client.js";
 import type { AdvisorRunConfig } from "./config.js";
 import type { Intervention, PromptSet } from "./contracts.js";
 import type { EventInput } from "./events.js";
-import { testRun, type ToolObservation } from "./observe.js";
+import { editsFiles, testRun, type ToolObservation } from "./observe.js";
 import { RoleMap } from "./redact.js";
 import { renderTemplate } from "./template.js";
 import { type Decision, TriggerEngine } from "./triggers.js";
@@ -22,6 +23,9 @@ export const CONSULT_TOOL = "consult";
  * executor knows it is incomplete. */
 export const TRUNCATED_MARKER = "[advice truncated: the advisor hit its answer length limit]";
 const RECENT = 12;
+/** The executor's notes kept for the orient brief: its last few texts, each capped. */
+const NOTES = 3;
+const NOTE_CHARS = 600;
 
 /** The consult tool's arguments, as the executor wrote them. */
 export interface ConsultArgs {
@@ -34,6 +38,8 @@ export interface ConsultArgs {
 export interface Advice {
   requestId: string;
   text: string;
+  /** Code lines cut by max_advice_code_lines. */
+  codeLinesRemoved: number;
 }
 
 /** One consult in full, for the plugin's own log next to events.jsonl: the exact messages
@@ -72,6 +78,9 @@ export class AdvisorSession {
   private lastFailure: ToolObservation | null = null;
   private failedTests: string[] = [];
   private lastEdit: BriefContext["lastEdit"] = null;
+  /** The latest run of the task's tests since the latest edit: null if none. */
+  private testSinceEdit: { failed: boolean } | null = null;
+  private notes: string[] = [];
   private requests = 0;
   private policyDone = false;
 
@@ -93,18 +102,22 @@ export class AdvisorSession {
   // rejects any other name when it loads a prompt set. `brief` is rendered by buildBrief.
 
   executorGuidance(): string {
-    return renderTemplate(this.prompts.texts.executor_guidance, { max_consults: this.settings.max_consults }).trim();
+    const { max_consults, field_target_words } = this.settings;
+    return renderTemplate(this.prompts.texts.executor_guidance, { max_consults, field_target_words }).trim();
   }
 
   consultToolDescription(): string {
-    return renderTemplate(this.prompts.texts.consult_tool, { max_consults: this.settings.max_consults }).trim();
+    const { max_consults, field_target_words } = this.settings;
+    return renderTemplate(this.prompts.texts.consult_tool, { max_consults, field_target_words }).trim();
   }
 
   advisorSystem(): string {
-    const { level, max_answer_tokens } = this.settings;
+    const { level, max_answer_tokens, answer_target_words } = this.settings;
     return renderTemplate(this.prompts.texts.advisor_system, {
       level,
       max_answer_tokens: max_answer_tokens ?? "unlimited",
+      // null: no target, and a "...: {{answer_target_words}}" line is dropped.
+      answer_target_words,
     }).trim();
   }
 
@@ -132,12 +145,22 @@ export class AdvisorSession {
     this.engine.turnStart(turn);
   }
 
+  /** The executor's own text in a turn (not its tool calls): its findings, for `orient`. */
+  note(text: string): void {
+    const t = text.trim();
+    if (t) this.notes = [...this.notes, t.length > NOTE_CHARS ? `${t.slice(0, NOTE_CHARS)}…` : t].slice(-NOTES);
+  }
+
   observe(obs: ToolObservation): void {
     this.engine.observe(obs);
     this.recent = [...this.recent, obs].slice(-RECENT);
     const run = testRun(obs);
     if (obs.isError || run?.failed) this.lastFailure = obs;
-    if (run) this.failedTests = run.failedTests;
+    if (run) {
+      this.failedTests = run.failedTests;
+      this.testSinceEdit = { failed: run.failed };
+    }
+    if (editsFiles(obs)) this.testSinceEdit = null;
     const path = typeof obs.args.path === "string" ? obs.args.path : null;
     if (path && !obs.isError && (obs.name === "edit" || obs.name === "write")) {
       const edits = obs.args.edits as { newText?: string }[] | undefined;
@@ -146,13 +169,16 @@ export class AdvisorSession {
     }
   }
 
-  private context(): BriefContext {
+  private context(intervention: Intervention): BriefContext {
+    // Before stopping, a test run that passed after the last edit makes older failures stale.
+    const stale = intervention === "before_done" && this.testSinceEdit?.failed === false;
     return {
       task: this.task,
       recent: this.recent,
-      lastFailure: this.lastFailure,
-      failedTests: this.failedTests,
+      lastFailure: stale ? null : this.lastFailure,
+      failedTests: stale ? [] : this.failedTests,
       lastEdit: this.lastEdit,
+      notes: this.notes,
     };
   }
 
@@ -162,26 +188,58 @@ export class AdvisorSession {
     return this.onDecision(this.engine.start(), {}, signal);
   }
 
-  /** At the end of a turn: a harness trigger, if one is due. */
-  async atTurnEnd(signal?: AbortSignal): Promise<Advice | null> {
+  /** At the end of a turn: a harness trigger, if one is due. `stopping`: the turn made no tool
+   * calls (the executor is about to finish), which is when before_done fires. */
+  async atTurnEnd(signal?: AbortSignal, stopping = false): Promise<Advice | null> {
     this.renderPolicy();
-    return this.onDecision(this.engine.turnEnd(), {}, signal);
+    const decision = this.engine.turnEnd(stopping);
+    const words = decision?.kind === "fire" && decision.fire.intervention === "before_done" ? { question: this.beforeDoneQuestion() } : {};
+    return this.onDecision(decision, words, signal);
   }
 
-  /** The consult tool. Returns the text for the tool result: the advice, or why there is none. */
+  /** The executor is about to make its first edit: orient, if it has not fired yet. */
+  async beforeEdit(signal?: AbortSignal): Promise<Advice | null> {
+    this.renderPolicy();
+    return this.onDecision(this.engine.beforeEdit(), {}, signal);
+  }
+
+  /** Is this call one that changes files (so `beforeEdit` applies)? */
+  isEdit(name: string, args: Record<string, unknown>): boolean {
+    return editsFiles({ name, args, result: "", isError: false });
+  }
+
+  private beforeDoneQuestion(): string {
+    const run = this.testSinceEdit;
+    const tests = !run
+      ? "I have not run the tests since my last change."
+      : run.failed
+        ? "The last test run after my change failed (output above)."
+        : "The last test run after my change passed.";
+    return `I think I am done. ${tests} Sanity-check my approach given that: is the fix in the right place, and what might I have missed?`;
+  }
+
+  /** The consult tool. Returns the text for the tool result: the advice, or why there is none.
+   * A request the consult rules or the budget turn down is `consult_refused` (with
+   * `budget_exhausted` the first time the budget does) and uses up nothing. */
   async consultTool(args: ConsultArgs, signal?: AbortSignal): Promise<{ text: string; advice: Advice | null }> {
     this.renderPolicy();
+    const decision = this.engine.requestConsult(args);
+    if (decision.kind === "refused") {
+      this.opts.emit({ type: "consult_refused", reason: decision.rule, turn: this.engine.turn });
+      return { text: decision.message, advice: null };
+    }
+    if (decision.kind === "exhausted") {
+      this.opts.emit({ type: "consult_refused", reason: "max_consults", turn: this.engine.turn });
+      await this.onDecision(decision, {}, signal);
+      return { text: `No advisor consults left (${decision.limit} used). Continue on your own.`, advice: null };
+    }
     this.opts.emit({ type: "consult_requested", reason: args.question ?? "", turn: this.engine.turn });
-    const decision = this.engine.requestConsult();
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },
       signal,
     );
     if (advice) return { text: advice.text, advice };
-    if (decision.kind === "exhausted") {
-      return { text: `No advisor consults left (${decision.limit} used). Continue on your own.`, advice: null };
-    }
     return { text: "The advisor could not be reached. Continue on your own.", advice: null };
   }
 
@@ -192,6 +250,7 @@ export class AdvisorSession {
       request_id: advice.requestId,
       turn: this.engine.turn,
       injected_text: advice.text,
+      code_lines_removed: advice.codeLinesRemoved,
     });
   }
 
@@ -214,13 +273,22 @@ export class AdvisorSession {
   }
 
   brief(req: BriefRequest): Brief {
-    const brief = buildBrief(this.settings.level, this.prompts.texts.brief, req, this.context(), this.roles, this.opts.readFile);
+    const brief = buildBrief(
+      this.settings.level,
+      this.prompts.texts.brief,
+      req,
+      this.context(req.intervention),
+      this.roles,
+      this.opts.readFile,
+      this.settings.max_brief_tokens,
+    );
     this.opts.emit({
       type: "brief_built",
       level: this.settings.level,
       tokens: brief.tokens,
       identifiers_redacted: brief.identifiersRedacted,
       role_map_size: this.roles.size,
+      truncated: brief.truncated,
       role_map: this.roles.mapFor(brief.text),
     });
     return brief;
@@ -273,13 +341,14 @@ export class AdvisorSession {
         advice_text: done.text,
       });
       const restored = this.roles.restore(done.text.trim());
-      const advice = done.finishReason === "length" ? `${restored}\n${TRUNCATED_MARKER}` : restored;
+      const code = limitCodeBlocks(restored, this.settings.rules.max_advice_code_lines);
+      const advice = done.finishReason === "length" ? `${code.text}\n${TRUNCATED_MARKER}` : code.text;
       const text = renderTemplate(this.prompts.texts.advice_injection, {
         advice,
         consults_left: this.engine.consultsLeft,
       }).trim();
       this.log({ ...record, advice: done.text, injected: text });
-      return { requestId, text };
+      return { requestId, text, codeLinesRemoved: code.removed };
     } catch (e) {
       const message = (e as Error).message || String(e);
       const known = e instanceof AdvisorClientError;

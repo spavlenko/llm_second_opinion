@@ -107,6 +107,67 @@ describe("trigger engine", () => {
     expect(engine.requestConsult()).toEqual({ kind: "exhausted", report: false, used: 1, limit: 1 });
   });
 
+  it("orient: after orient_after read actions, before on_test_failure in the same turn, once", () => {
+    const engine = new TriggerEngine(settings({ interventions: ["orient", "on_test_failure"], orient_after: 2 }));
+    const read: ToolObservation = { name: "read", args: { path: "a.cpp" }, result: "x", isError: false };
+    const fail = call("/opt/lso/run-tests", "x", true);
+    const d = run(engine, [[read, call("make", "x")], [call("grep -n foo a.cpp"), fail], [fail]]);
+    expect(d.map(fired)).toEqual([null, "orient", "on_test_failure"]);
+    expect(d[1]).toMatchObject({ fire: { reason: "2 read actions", turn: 1 } });
+    expect(engine.beforeEdit()).toBeNull();
+  });
+
+  it("orient before the first edit respects the cooldown; it is skipped, not postponed", () => {
+    const engine = new TriggerEngine(settings({ interventions: ["orient", "consult"], cooldown_turns: 1 }));
+    engine.turnStart(0);
+    expect(engine.requestConsult().kind).toBe("fire");
+    engine.turnStart(1);
+    expect(engine.beforeEdit()).toBeNull();
+    engine.observe(edit);
+    expect(run(engine, [[call("cat a"), call("cat b"), call("cat c")]], 2).map(fired)).toEqual([null]);
+  });
+
+  it("before_done: once, on a turn without tool calls after an edit, within cooldown and budget", () => {
+    const engine = new TriggerEngine(settings({ interventions: ["before_done", "periodic"], periodic_every: 1, max_consults: 3 }));
+    engine.turnStart(0);
+    expect(fired(engine.turnEnd(true))).toBe("periodic"); // no edit yet
+    engine.turnStart(1);
+    engine.observe(edit);
+    expect(fired(engine.turnEnd(false))).toBe("periodic"); // not stopping
+    engine.turnStart(2);
+    expect(engine.turnEnd(true)).toMatchObject({ kind: "fire", fire: { intervention: "before_done", reason: "stopped after editing", turn: 2 } });
+    engine.turnStart(3);
+    expect(engine.turnEnd(true)).toMatchObject({ kind: "exhausted", report: true }); // periodic; before_done was once
+
+    const cooled = new TriggerEngine(settings({ interventions: ["before_done", "consult"], cooldown_turns: 1 }));
+    cooled.turnStart(0);
+    cooled.requestConsult();
+    cooled.turnStart(1);
+    cooled.observe(edit);
+    expect(cooled.turnEnd(true)).toBeNull(); // the cooldown
+    cooled.turnStart(2);
+    expect(fired(cooled.turnEnd(true))).toBe("before_done");
+  });
+
+  it("consult rules apply to the consult tool only, in order: budget, cooldown, own actions, hypothesis", () => {
+    const rules = { min_own_actions: 2, tool_cooldown_turns: 1, require_hypothesis: true, max_advice_code_lines: null };
+    const engine = new TriggerEngine(settings({ interventions: ["consult", "periodic"], periodic_every: 1, rules }));
+    const words = { tried: "ran the tests and read code", hypothesis: "the loop stops one item early" };
+    engine.turnStart(0);
+    expect(engine.requestConsult(words)).toMatchObject({ kind: "refused", rule: "min_own_actions" });
+    engine.observe(edit);
+    engine.observe(edit);
+    expect(engine.requestConsult({ tried: "x" })).toMatchObject({ kind: "refused", rule: "require_hypothesis" });
+    expect(engine.requestConsult(words).kind).toBe("fire");
+    engine.turnStart(1);
+    engine.observe(edit);
+    engine.observe(edit);
+    expect(engine.requestConsult(words)).toMatchObject({ kind: "refused", rule: "tool_cooldown_turns" });
+    expect(engine.consultsUsed).toBe(1);
+    engine.turnStart(2);
+    expect(fired(engine.turnEnd())).toBe("periodic"); // a harness trigger is not refused by the rules
+  });
+
   it("max_consults 0: even the plan review is refused", () => {
     expect(new TriggerEngine(settings({ max_consults: 0 })).start()).toMatchObject({ kind: "exhausted", report: true });
   });

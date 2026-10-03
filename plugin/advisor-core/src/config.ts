@@ -4,7 +4,7 @@ import type { AdvisorSettings, Intervention, Level, PromptSet, RunConfig } from 
 export class ConfigError extends Error {}
 
 const LEVELS: readonly Level[] = ["L0", "L1", "L2", "L3"];
-const INTERVENTIONS: readonly Intervention[] = ["plan", "consult", "stuck", "on_test_failure", "periodic"];
+const INTERVENTIONS: readonly Intervention[] = ["plan", "consult", "stuck", "on_test_failure", "periodic", "orient", "before_done"];
 const SLOTS = ["executor_guidance", "consult_tool", "brief", "advisor_system", "advice_injection"] as const;
 
 /** A run config for an advisor arm: advisor settings and the advisor endpoint are present. */
@@ -62,6 +62,19 @@ export function validateRunConfig(raw: unknown, where = "advisor.json"): RunConf
       );
       need(int(a.max_consults, 0), "advisor.max_consults must be an integer >= 0");
       need(a.max_answer_tokens == null || int(a.max_answer_tokens, 1), "advisor.max_answer_tokens must be null or >= 1");
+      need(a.answer_target_words == null || int(a.answer_target_words, 1), "advisor.answer_target_words must be null or >= 1");
+      need(int(a.max_brief_tokens, 1), "advisor.max_brief_tokens must be an integer >= 1");
+      need(int(a.field_target_words, 1), "advisor.field_target_words must be an integer >= 1");
+      need(int(a.orient_after, 1), "advisor.orient_after must be an integer >= 1");
+      const r = a.rules;
+      need(
+        obj(r) &&
+          int(r.min_own_actions, 0) &&
+          int(r.tool_cooldown_turns, 0) &&
+          typeof r.require_hypothesis === "boolean" &&
+          (r.max_advice_code_lines == null || int(r.max_advice_code_lines, 0)),
+        "advisor.rules needs min_own_actions, tool_cooldown_turns >= 0, require_hypothesis, max_advice_code_lines",
+      );
       need(int(a.cooldown_turns, 0), "advisor.cooldown_turns must be an integer >= 0");
       need(a.periodic_every == null || int(a.periodic_every, 1), "advisor.periodic_every must be null or >= 1");
       if (Array.isArray(iv) && iv.includes("periodic")) need(a.periodic_every != null, "the periodic intervention needs periodic_every");

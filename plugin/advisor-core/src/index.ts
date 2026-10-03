@@ -6,6 +6,7 @@ export { ConfigError, isAdvisorArm, loadRunConfig, validateRunConfig, type Advis
 export { placeholders, renderTemplate, type Vars } from "./template.js";
 export {
   TEST_COMMAND,
+  readsCode,
   callSignature,
   editsFiles,
   errorLocations,
@@ -16,10 +17,13 @@ export {
   type TestRun,
   type ToolObservation,
 } from "./observe.js";
-export { TriggerEngine, type Decision, type Fire } from "./triggers.js";
+export { MIN_HYPOTHESIS_WORDS, TriggerEngine, type Decision, type Fire, type Refusal } from "./triggers.js";
+export { CODE_CUT_NOTE, limitCodeBlocks } from "./advice.js";
 export { RoleMap, Redactor, stripCodeBlocks, stripInlineCode, type Role } from "./redact.js";
 export {
+  BRIEF_CUT_MARKER,
   DEFAULT_QUESTIONS,
+  cutBrief,
   approxTokens,
   buildBrief,
   describeActions,
