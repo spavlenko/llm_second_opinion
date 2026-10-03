@@ -126,8 +126,8 @@ def test_advisor_arm_hash_is_pinned(repo):
     # advisor gives a second opinion) and contract defaults (consult rules, size targets,
     # max_answer_tokens 4000). Moving either is deliberate: update these, and the Decision log.
     exp = Experiment.from_yaml(repo / "experiments/abstraction-sweep.yaml", env=ENV)
-    assert exp.prompt_set("default").hash == "aaad3466794d6869"
-    assert exp.config_hash(exp.arm("A2")) == "93c269647703cb1c"
+    assert exp.prompt_set("default").hash == "a63cefa70cadbb46"
+    assert exp.config_hash(exp.arm("A2")) == "b4d31a86a70db879"
     rules = exp.arm("A2").advisor.rules
     assert (rules.min_own_actions, rules.tool_cooldown_turns, rules.require_hypothesis) == (
         1, 2, True,

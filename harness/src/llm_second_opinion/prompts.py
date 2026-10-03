@@ -24,7 +24,9 @@ PLACEHOLDERS: dict[PromptSlot, tuple[str, ...]] = {
     PromptSlot.EXECUTOR_GUIDANCE: ("max_consults", "field_target_words"),
     PromptSlot.CONSULT_TOOL: ("max_consults", "field_target_words"),
     PromptSlot.BRIEF: _BRIEF,
-    PromptSlot.ADVISOR_SYSTEM: ("level", "max_answer_tokens", "answer_target_words"),
+    # `clarify` is set (non-empty) only when the arm has `clarify: true`; it is meant for a
+    # conditional section, `{{#clarify}}` ... `{{/clarify}}`.
+    PromptSlot.ADVISOR_SYSTEM: ("level", "max_answer_tokens", "answer_target_words", "clarify"),
     PromptSlot.ADVICE_INJECTION: ("advice", "consults_left"),
 }
 # Placeholders a slot must use, or the slot would drop what it exists to carry.
@@ -72,7 +74,9 @@ def read_slot(slot: PromptSlot, path: Path) -> str:
     if not text:
         raise PromptError(f"{path}: prompt slot {slot.value} is empty")
     allowed = PLACEHOLDERS[slot]
-    used = _PLACEHOLDER.findall(text)
+    _check_sections(slot, path, text)
+    # A conditional section's markers (`{{#name}}`, `{{/name}}`) name a placeholder too.
+    used = [name.lstrip("#/") for name in _PLACEHOLDER.findall(text)]
     unknown = [name for name in dict.fromkeys(used) if name not in allowed]
     if unknown:
         names, known = _braces(unknown), _braces(allowed) or "none"
@@ -83,6 +87,36 @@ def read_slot(slot: PromptSlot, path: Path) -> str:
     if missing:
         raise PromptError(f"{path}: slot {slot.value} must use {_braces(missing)}")
     return text
+
+
+_SECTION = re.compile(r"\{\{([#/])(.*?)\}\}")
+
+
+def _check_sections(slot: PromptSlot, path: Path, text: str) -> None:
+    """Conditional sections: `{{#name}}` and `{{/name}}`, each alone on its line, paired, not
+    nested. The plugin keeps the lines between them when `name` renders non-empty."""
+    open_name: str | None = None
+    for line in text.splitlines():
+        markers = _SECTION.findall(line)
+        if not markers:
+            continue
+        if len(markers) > 1 or line.strip() != f"{{{{{markers[0][0]}{markers[0][1]}}}}}":
+            raise PromptError(
+                f"{path}: slot {slot.value}: a section marker must be alone on its line"
+            )
+        kind, name = markers[0]
+        if kind == "#":
+            if open_name is not None:
+                raise PromptError(
+                    f"{path}: slot {slot.value}: sections cannot nest ({name} in {open_name})"
+                )
+            open_name = name
+        elif name != open_name:
+            raise PromptError(f"{path}: slot {slot.value}: {{{{/{name}}}}} closes no open section")
+        else:
+            open_name = None
+    if open_name is not None:
+        raise PromptError(f"{path}: slot {slot.value}: section {open_name} is not closed")
 
 
 def _braces(names: Sequence[str]) -> str:
