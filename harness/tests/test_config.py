@@ -113,8 +113,8 @@ def test_arms_without_an_advisor_keep_their_hash(repo):
     env = {"LOCAL_MODEL_URL": "u", "LOCAL_SESSION_HEADER": "h", "LOCAL_SESSION": "s",
            "LOCAL_AUTH_HEADER": "a"}  # fmt: skip
     baselines = Experiment.from_yaml(repo / "experiments/baselines.yaml", env=env)
-    assert baselines.config_hash(baselines.arm("A0")) == "dea64de9a35b7abb"
-    assert baselines.config_hash(baselines.arm("A4")) == "27f3c087ef938c75"  # pi-advisor compat
+    assert baselines.config_hash(baselines.arm("A0")) == "8c03ef1b79a37500"  # + executor sampling
+    assert baselines.config_hash(baselines.arm("A4")) == "914bf24f2bc9a105"  # pi-advisor compat, model k3
     toy = Experiment.from_yaml(repo / "experiments/toy.yaml")
     assert toy.config_hash(toy.arm("gold")) == "84562adef09adc5f"
 
@@ -125,7 +125,7 @@ def test_advisor_arm_hash_is_pinned(repo):
     # max_answer_tokens 4000). Moving either is deliberate: update these, and the Decision log.
     exp = Experiment.from_yaml(repo / "experiments/abstraction-sweep.yaml", env=ENV)
     assert exp.prompt_set("default").hash == "aaad3466794d6869"
-    assert exp.config_hash(exp.arm("A2")) == "00550c6010df69a6"
+    assert exp.config_hash(exp.arm("A2")) == "93c269647703cb1c"
     rules = exp.arm("A2").advisor.rules
     assert (rules.min_own_actions, rules.tool_cooldown_turns, rules.require_hypothesis) == (
         1, 2, True,

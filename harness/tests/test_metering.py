@@ -159,6 +159,8 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         status, kind, chunks = self.server.replies.pop(0)
         self.send_response(status)
         self.send_header("Content-Type", kind)
+        if status == 429:
+            self.send_header("Retry-After", "1")
         self.end_headers()
         for chunk in chunks:
             self.wfile.write(chunk)
@@ -199,6 +201,18 @@ def post(url, body, headers=None):
 
 def chat_url(proxy, meter, role="executor"):
     return proxy.url(meter, role, "127.0.0.1") + "/chat/completions"
+
+
+def test_a_rate_limit_is_waited_out_and_both_calls_recorded(proxy, upstream, tmp_path):
+    meter = proxy.register({"executor": endpoint(upstream)}, tmp_path / "usage.jsonl", None)
+    upstream.reply_json({"error": {"message": "quota window", "type": "rate_limit"}}, status=429)
+    upstream.reply_json({"choices": [], "usage": USAGE})
+    start = time.monotonic()
+    post(chat_url(proxy, meter), {"model": "m", "messages": []})  # the agent sees only the 200
+    assert time.monotonic() - start >= 1  # Retry-After: 1
+    meter.close(1)
+    statuses = [r.status for r in read_usage(tmp_path / "usage.jsonl")]
+    assert statuses == [429, 200] and len(upstream.requests) == 2
 
 
 def test_routes_to_the_role_endpoint_and_records_usage(proxy, upstream, tmp_path):

@@ -8,7 +8,7 @@ limits: {wall_minutes: 40, max_turns: 80}
 
 models:
   local:   {base_url: "${LOCAL_MODEL_URL}", model: qwen3.8}
-  advisor: {base_url: "${ADVISOR_URL}", model: kimi-k3, reasoning_effort: high, api_key_env: ADVISOR_API_KEY}
+  advisor: {base_url: "${ADVISOR_URL}", model: k3, reasoning_effort: high, api_key_env: ADVISOR_API_KEY}
 
 # Prompt sets: `default` is ../prompts/default/ unless defined here. A set is a directory with
 # one <slot>.md per slot, or another set with some slots replaced.

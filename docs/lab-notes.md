@@ -10,6 +10,8 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — first real-model smoke runs
 
+- Advisor moved to the Kimi Code plan (`k3`) after the API account was suspended for balance; proxy now waits out 429s.
+- Plugin e2e test still flaky under full-suite load (passes alone); open.
 - Noise (A0, 5 seeds): fmt-2394 5/5, json-3664 1/5 (calib single seed said "fails") → classify tasks by rates over ≥3 seeds: signal = A0 ≤ 1/3 and A4 ≥ 2/3 (rule tightened before the A4 reruns).
 - Executor not deterministic: temperature 0 + fixed seed gave 2 distinct of 3 answers → seeds are replicates only; sampling set explicitly (T 0.6, top_p 0.95).
 - Calibration (1 seed, dev): A0 9/24 (38%), 7 of its 15 failures don't compile. A4 6/8 valid; 16 A4 runs lost to Kimi quota (HTTP 429). Signal tasks so far 3/8 → rerun A4 on the 16 before deciding.

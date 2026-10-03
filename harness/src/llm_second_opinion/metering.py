@@ -68,6 +68,21 @@ _DROP_RESPONSE = {
 }  # fmt: skip
 
 
+# A 429 from upstream (a provider's quota window) is held by the proxy and retried, up to this
+# long per call; pi's OpenAI client times a request out at 10 minutes.
+RATE_LIMIT_MAX_WAIT_S = 480.0
+RATE_LIMIT_FIRST_WAIT_S = 15.0
+
+
+def retry_after(header: str | None, backoff: float) -> float:
+    """Seconds to wait before retrying a 429: the Retry-After header when it gives seconds,
+    else the backoff (doubling per retry, from RATE_LIMIT_FIRST_WAIT_S)."""
+    try:
+        return max(1.0, float(header)) if header else backoff
+    except ValueError:
+        return backoff
+
+
 def default_proxy_host() -> str:
     """The address the proxy binds so task containers reach it as `host.docker.internal`,
     and nothing beyond this machine does. Docker Desktop (macOS) forwards that name to the
@@ -449,7 +464,7 @@ class _Handler(BaseHTTPRequestHandler):
             endpoint.base_url.rstrip("/") + (route["rest"] or "") + (f"?{query}" if query else "")
         )
         if self.command != "POST":  # e.g. GET /models: not a model call, nothing to meter
-            self._relay(target, endpoint, body, None)
+            self._relay(target, endpoint, body, None, hold_rate_limit=False)
             return
         seq = meter.begin()
         if isinstance(seq, tuple):
@@ -457,23 +472,45 @@ class _Handler(BaseHTTPRequestHandler):
             return
         start = time.time()
         request_id = self.headers.get(REQUEST_ID_HEADER)
-        tokens, status = None, 0
-        try:
-            meter.request(seq, role, route["rest"] or "/", request, request_id, start)
-            tokens, status = self._relay(target, endpoint, body, StreamUsage())
-        finally:
-            note = f"to {route['rest'] or '/'}"
-            meter.end(seq, role, model, tokens, status, start, note, request_id)
+        note = f"to {route['rest'] or '/'}"
+        waited = 0.0
+        while True:
+            tokens, status, delay = None, 0, None
+            hold = waited < RATE_LIMIT_MAX_WAIT_S
+            try:
+                meter.request(seq, role, route["rest"] or "/", request, request_id, start)
+                tokens, status, delay = self._relay(target, endpoint, body, StreamUsage(), hold)
+            finally:
+                meter.end(seq, role, model, tokens, status, start, note, request_id)
+            if delay is None:
+                return
+            # Rate limited (quota windows): recorded above as a failed call; wait, then retry
+            # as a new call, so the agent sees a slow answer instead of an error.
+            delay = min(delay, RATE_LIMIT_MAX_WAIT_S - waited)
+            time.sleep(delay)
+            waited += delay
+            seq = meter.begin()
+            if isinstance(seq, tuple):
+                self._error(*seq)
+                return
+            start = time.time()
 
     def _relay(
-        self, target: str, endpoint: ModelEndpoint, body: bytes, usage: StreamUsage | None
-    ) -> tuple[Tokens | None, int]:
-        """Forward the request and pass the response back as it arrives."""
+        self,
+        target: str,
+        endpoint: ModelEndpoint,
+        body: bytes,
+        usage: StreamUsage | None,
+        hold_rate_limit: bool,
+    ) -> tuple[Tokens | None, int, float | None]:
+        """Forward the request and pass the response back as it arrives. With
+        `hold_rate_limit`, a 429 is not passed back: the third value is how long to wait
+        before retrying (from Retry-After, else a backoff). Otherwise it is None."""
         try:
             secret = endpoint_headers(endpoint, self.server.env)
         except KeyError as e:
             self._error(500, "proxy_error", f"secret variable {e.args[0]} is not set for the proxy")
-            return None, 0
+            return None, 0, None
         headers = {k: v for k, v in self.headers.items() if k.lower() not in _DROP_REQUEST}
         headers = {k: v for k, v in headers.items() if k.lower() not in {h.lower() for h in secret}}
         headers |= {"Accept-Encoding": "identity", **secret}
@@ -493,12 +530,16 @@ class _Handler(BaseHTTPRequestHandler):
         except (OSError, http.client.HTTPException) as e:
             conn.close()
             self._error(502, "proxy_error", f"upstream request failed: {type(e).__name__}: {e}")
-            return None, 0
+            return None, 0, None
         try:
-            return self._stream_back(resp, usage), resp.status
+            if hold_rate_limit and resp.status == 429:
+                resp.read()
+                self._backoff = getattr(self, "_backoff", RATE_LIMIT_FIRST_WAIT_S / 2) * 2
+                return None, 429, retry_after(resp.getheader("Retry-After"), self._backoff)
+            return self._stream_back(resp, usage), resp.status, None
         except (OSError, http.client.HTTPException):
             # Cut off mid-response: whatever usage arrived counts; none marks the call.
-            return (usage.tokens if usage else None), resp.status
+            return (usage.tokens if usage else None), resp.status, None
         finally:
             conn.close()
 
