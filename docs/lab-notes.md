@@ -10,6 +10,7 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — first real-model smoke runs
 
+- Executor not deterministic: temperature 0 + fixed seed gave 2 distinct of 3 answers → seeds are replicates only; sampling set explicitly (T 0.6, top_p 0.95).
 - Calibration (1 seed, dev): A0 9/24 (38%), 7 of its 15 failures don't compile. A4 6/8 valid; 16 A4 runs lost to Kimi quota (HTTP 429). Signal tasks so far 3/8 → rerun A4 on the 16 before deciding.
 - Old code scored the 429s as A4 `crash` (unresolved): A4 would have read ~25%, not ~75% → why outages must be infra (fixed since).
 - CI green on Linux only after 2 fixes: proxy bind address, then the preflight's hard-coded 127.0.0.1.

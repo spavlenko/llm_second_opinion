@@ -1,10 +1,11 @@
-# Calibration, not results: A0 (floor) and A4 (ceiling) once on every `dev` task, to check the
-# task set has headroom (enough tasks A0 fails and A4 solves) before any tuning.
-#   bench run experiments/calib-floor.yaml && bench report experiments/calib-floor.yaml
-name: calib-floor
+# Calibration, not results: run-to-run noise of A0 (5 replicates on one task A0 solved and one it
+# failed in calib-floor), to size seeds for the pilot. The server is not deterministic.
+#   bench run experiments/calib-noise.yaml --arm A0
+name: calib-noise
 tasks: ../tasks/manifests/mswe-mini-cpp-v2.yaml
 split: dev
-seeds: 1
+task_ids: [fmtlib__fmt-2394, nlohmann__json-3664]
+seeds: 5
 limits: {wall_minutes: 40, max_turns: 80}
 execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
 
