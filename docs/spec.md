@@ -335,6 +335,15 @@ is tuned on.
 - Arms are compared in pairs on the same tasks and seeds, which needs far fewer runs than
   comparing each arm's own interval. See [Paired comparisons](#paired-comparisons).
 
+**Pilot arms** (`experiments/pilot.yaml`, 10 `dev` tasks × 3 seeds, 10 arms, 300 items): the
+floor `A0` and ceiling `A4`; `H` at L2 swept over the prompt sets `default`, `structured`,
+`hints-only` (interventions `orient`, `consult`, `stuck`, `before_done`; 5 consults, cooldown 2,
+`orient_after: 3` distinct files); `H-loose` (anti-delegation rules off); and four one-change
+variants of `H-default`: `H-consult-only` (interventions `[consult]`: help only when the
+executor asks, so self-initiated help is measured; `reserve_for_end: 0`, since without
+`before_done` a reserved consult could never be used), `H-clarify` (`clarify: true`),
+`H-memory` (`memory: true`), `H-surrogates` (`surrogates: true`).
+
 ### Paired comparisons
 
 `bench report` compares every arm with a baseline arm (`--baseline`, default `A0` when the
@@ -391,8 +400,12 @@ score has a role:
 | `brief_synthesis_share` | diagnostic | Per brief, with placeholders mapped back by the run's role map and the brief template's literal lines left out: the share of characters (whitespace collapsed) not inside a 40-character window found verbatim in a tool result the executor had seen by then (pi.jsonl, the consult tool's results excluded) or in the issue text. Over the run, pooled by characters |
 | `advisor_prompt_tokens`, `advisor_completion_tokens`, `advisor_cost_usd` | diagnostic | The provider's counts from `usage.jsonl` for the advisor model (2xx calls) |
 | `placeholders_sent`, `placeholders_distinct` | diagnostic | Role placeholders in the briefs sent |
-| `leaked_units` | diagnostic | PAPILLON style: the share of the gold patch's units that appear raw in any brief, with the list. Units: identifiers in its changed lines and hunk headers (comments, string literals and `std::` names removed; C++ keywords, names under 3 characters and plain lowercase words under 8 letters left out, as the plugin's sweep leaves those raw) and the files it changes (a file leaks by path or file name). 1 for an arm whose executor is the advisor model |
-| `role_map_leaks` | diagnostic | Role-map names sent raw in a brief (the `scripts/smoke-check.py` rule), with the list |
+| `leaked_units` | diagnostic | PAPILLON style: the share of the gold patch's units that appear raw in any brief or `clarify` follow-up, with the list. Units: identifiers in its changed lines and hunk headers (comments, string literals and `std::` names removed; C++ keywords, names under 3 characters and plain lowercase words under 8 letters left out, as the plugin's sweep leaves those raw) and the files it changes (a file leaks by path or file name). 1 for an arm whose executor is the advisor model |
+| `role_map_leaks` | diagnostic | Role-map names sent raw in a brief or a `clarify` follow-up, with the list; the rule `scripts/smoke-check.py` shares (`role_leaks`): a project name in any case, short lowercase ones too, also inside a path (letters, digits and `_` bound it); a file by path or file name; any other name as a whole name, not inside a longer name or path, but after `.` or `->`; plain lowercase words under 8 letters not counted. Calibrated by a planted-leak test (`tests/test_leak_detectors.py`) |
+| `uptake`, `uptake_rate` | diagnostic | Per `advice_applied`, within K = 5 turns (from the message that carried the advice, found in pi.jsonl by its text, to the end of the 5th turn after it; when not found, turns T+1…T+5 of the event's turn T, the plan's from turn 0), signals that the executor acted on the advisor's answer (placeholders and surrogates mapped back through `brief_built.role_map`): **files**, a read (`read:`) or edit (`edited:`) of a file the advice names, by file name; **commands**, a command naming an identifier from the advice (`searched:`), a test or build run when the advice asks for one (`ran_tests`), a shell command it spells out in a code span (`ran:`), or an edit whose text uses a name it gives (`edit_uses:`); **text**, the executor's own text naming a file or identifier from it, or referring to the advice (`text:refers`). `acted`: an `edited:` or `edit_uses:` signal, or two families; `partial`: one family; `ignored`: none. `uptake_rate` = acted / consults with advice applied (null without); `uptake_acted`, `uptake_partial`, `uptake_ignored` counts |
+| `answer_overshoot` | diagnostic | Per advisor answer, words (whitespace-split `advice_text`) / `answer_target_words` (from `advisor.json`) − 1: 0 on target, 0.5 half again as long; per attempt the mean over answers (null without a target); `answer_words` the mean length |
+| `trigger_skipped`, `trigger_skipped_<reason>` | diagnostic | `trigger_skipped` events, in all and by reason; the report sums them per arm and reason |
+| `advisor_followup_tokens`, `exposure_tokens` | diagnostic | `clarify` follow-ups: their tokens (`advisor_followup.tokens`); `exposure_tokens` = Σ `advisor_request.input_tokens` + follow-up tokens, the plugin's own count of what was sent. Follow-up texts count as sent for `leaked_units`, `role_map_leaks`, placeholders and the probe. The metered `advisor_prompt_tokens` already include the follow-up calls (and `memory`'s re-sent history) |
 | `probe_*`, `probe_floor_*` | diagnostic | Re-identification probe, below |
 
 **Re-identification probe** (`--probe MODEL_KEY`, a key in `models`). For each attempt that
@@ -415,10 +428,13 @@ so scoring again does not query again. A failed probe call leaves the probe scor
 **Outputs.** `scores.json` in each attempt directory (scorer version, the parameters, each
 score's role, the scores) and `runs/<experiment>/scores.jsonl` (one line per attempt, a
 re-scored attempt replaces its line). `bench report` prints the per-arm means of `partial`,
-`gold_similarity`, `advice_copy_share`, `consult_rate`, `brief_synthesis_share`,
-`leaked_units` and the probe's repository top-1 (briefs and floor) in a block headed
-"Diagnostics (not acceptance)", also in `report.json`. With MLflow, item runs get `score_*`
-metrics and arm runs `score_mean_*`.
+`gold_similarity`, `advice_copy_share`, `consult_rate`, `uptake_rate`, `answer_overshoot`,
+`trigger_skipped`, `advisor_followup_tokens`, `brief_synthesis_share`, `leaked_units` and the
+probe's repository top-1 (briefs and floor) in a block headed "Diagnostics (not acceptance)",
+with skipped triggers summed per arm and reason below it; also in `report.json`. With MLflow,
+item runs get `score_*` metrics, arm runs `score_mean_*` and
+`score_total_trigger_skipped_<reason>`. `scorer_version` 2 (uptake, overshoot, follow-ups,
+the role-aware leak rule).
 
 **One model pair.** The study fixes one executor–advisor pair (Qwen3.8 via MLX and Kimi K3)
 and searches many prompt versions for it. Prompts are tuned to this pair; whether they
@@ -1175,3 +1191,4 @@ llm_second_opinion/
 | 2026-10-03 | Advisor through the Kimi Code plan (Allegretto): endpoint `api.kimi.ai/coding/v1`, model `k3` (the flagship; not `k3-256k`, whose equivalence is only claimed by third parties). A subscription has no per-token price, so cost is reported at the public API list price over the metered tokens. |
 | 2026-10-03 | The metering proxy holds an upstream 429 (quota window) and retries after `Retry-After` or a doubling backoff from 15 s, up to 8 min per call (under pi's 10-min client timeout); each 429 is recorded as a failed call. A 429 about money (balance, billing, suspended) is passed through at once. |
 | 2026-10-03 | Help-flow improvements from smoke round 3 (contracts): `orient_after` counts distinct files read; `reserve_for_end` keeps consults for `before_done`; optional `clarify` (advisor asks for one item, plugin fetches and redacts it; `advisor_followup`), `memory` (earlier exchanges re-sent; `advisor_request.history_turns`), `surrogates` (fake names instead of placeholders); `trigger_skipped` records triggers that did not fire and why. |
+| 2026-10-03 | Help-flow diagnostics and pilot arms. Scorers (version 2): advice `uptake` per consult (acted / partial / ignored from file, command and text signals within 5 turns) and `uptake_rate`; `answer_overshoot` = answer words / `answer_target_words` − 1; `trigger_skipped` by reason; `clarify` follow-up tokens as exposure, follow-up texts scanned by the leak scorers. The leak detectors share one role-aware rule, calibrated by a planted-leak test that found misses (member access, a file by name, short or differently-cased project names, follow-ups). Pilot gains `H-consult-only` (with `reserve_for_end: 0`), `H-clarify`, `H-memory`, `H-surrogates`: 300 items. |
