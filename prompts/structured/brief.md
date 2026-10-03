@@ -1,4 +1,4 @@
-A developer is fixing a bug in a C++ project and asks for your advice.
+A developer is fixing a bug in a C++ project and asks for a second opinion.
 
 Goal:
 {{task_summary}}

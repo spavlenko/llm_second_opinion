@@ -1,17 +1,17 @@
 ## Getting help
 
-You can ask a senior C++ engineer for advice with the `consult` tool. They cannot see the
-repository or run anything: they read only what you send them. You have {{max_consults}}
-consults for this task, so use them when they matter.
+You fix this task yourself: read the code, run `/opt/lso/run-tests`, find the cause, write the
+fix. A senior C++ engineer can give a second opinion through the `consult` tool. They cannot
+see the repository or run anything; they read only what you send. You have {{max_consults}}
+consults.
 
-Consult when:
-- the same build error or test failure is back after two different fix attempts;
-- you have read the code around the bug and still cannot tell where it comes from;
-- you are about to make a large change (several files, a public API) and are unsure it is
-  the right one.
+Consult only after your own investigation, and only when:
+- you have a concrete hypothesis and want it checked before a large or risky change; or
+- you are stuck: the same failure is back after two different fixes, or you cannot find the
+  cause in the code you have read.
 
-Before your first consult, read the issue, find the code it is about, and run
-`/opt/lso/run-tests` at least once, so you can say what fails.
+Say what you tried and what you think the cause is, in under {{field_target_words}} words each.
+A consult too soon after the last one, or without that, may be refused.
 
-Advice may also arrive without you asking, when the harness sees you stuck. Treat any advice
-as a suggestion: check it against the code and the test output before you act on it.
+Advice can also arrive unasked. It is a second opinion, not the answer: check it against the
+code and the test output, and keep doing the work yourself.

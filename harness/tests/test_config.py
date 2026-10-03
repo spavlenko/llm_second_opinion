@@ -119,6 +119,19 @@ def test_arms_without_an_advisor_keep_their_hash(repo):
     assert toy.config_hash(toy.arm("gold")) == "84562adef09adc5f"
 
 
+def test_advisor_arm_hash_is_pinned(repo):
+    # Pinned on 2026-10-03 with the pre-pilot default prompts (executor does the work, the
+    # advisor gives a second opinion) and contract defaults (consult rules, size targets,
+    # max_answer_tokens 4000). Moving either is deliberate: update these, and the Decision log.
+    exp = Experiment.from_yaml(repo / "experiments/abstraction-sweep.yaml", env=ENV)
+    assert exp.prompt_set("default").hash == "aaad3466794d6869"
+    assert exp.config_hash(exp.arm("A2")) == "00550c6010df69a6"
+    rules = exp.arm("A2").advisor.rules
+    assert (rules.min_own_actions, rules.tool_cooldown_turns, rules.require_hypothesis) == (
+        1, 2, True,
+    )  # fmt: skip
+
+
 def test_config_hash_follows_prompt_text_not_set_name(tmp_path):
     (tmp_path / "a.md").write_text("Q: {{question}}")
     (tmp_path / "b.md").write_text("Q: {{question}}\n")
