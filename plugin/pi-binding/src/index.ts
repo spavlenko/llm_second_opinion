@@ -43,6 +43,9 @@ const MAX_FILE_BYTES = 2_000_000;
 
 type Env = Record<string, string | undefined>;
 
+// Same pattern as agents/pi/toolcall-nudge.ts.
+const TEXT_TOOL_CALL = /<tool_call>|<function=[\w.-]+>/;
+
 export default function advisorExtension(pi: ExtensionAPI, env: Env = process.env): void {
   const config = loadRunConfig(env.LSO_ADVISOR_CONFIG || DEFAULT_CONFIG);
   if (!isAdvisorArm(config)) return; // an arm without an advisor: nothing to do
@@ -101,7 +104,14 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
     if (ctx.signal?.aborted || stop === "aborted" || stop === "error") return;
     const content = Array.isArray(message.content) ? (message.content as { type?: string; text?: string }[]) : [];
     session.note(content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"));
-    const stopping = stop !== "toolUse" && !content.some((c) => c.type === "toolCall") && !event.toolResults?.length;
+    // A tool call written as text is not the executor stopping: the harness's nudge extension
+    // sends it back, so before_done must not fire on it.
+    const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
+    const stopping =
+      stop !== "toolUse" &&
+      !content.some((c) => c.type === "toolCall") &&
+      !event.toolResults?.length &&
+      !TEXT_TOOL_CALL.test(text);
     const advice = await guarded("turn_end", () => session.atTurnEnd(ctx.signal, stopping));
     if (!advice) return;
     session.applied(advice);

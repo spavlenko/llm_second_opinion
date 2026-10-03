@@ -261,3 +261,23 @@ def test_pi_consult_rules_orient_and_before_done(repo, tmp_path, toy_image, mock
         "executor", "executor", "executor", "executor", "advisor",
         "executor", "executor", "advisor", "executor",
     ]  # fmt: skip
+
+
+def test_a_tool_call_written_as_text_gets_a_nudge_and_the_run_continues(
+    repo, tmp_path, toy_image, mock
+):
+    # Calibration: 4 of 62 executor runs ended on a tool call the server left as text.
+    fix = json.loads((repo / "harness/tests/fixtures/pi-toy-add.jsonl").read_text().splitlines()[0])
+    as_text = "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"
+    recordings = [
+        {"message": {"content": as_text}, "finish_reason": "stop",
+         "usage": {"prompt_tokens": 800, "completion_tokens": 30, "total_tokens": 830}},
+        fix,
+        {"message": {"content": "Fixed."}, "finish_reason": "stop",
+         "usage": {"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 1005}},
+    ]  # fmt: skip
+    outcome, result, item = run_pi(repo, tmp_path, mock(recordings))
+    assert outcome.resolved and result["exit_reason"] == "finished"
+    [nudge] = [json.loads(line) for line in (item / "nudges.jsonl").read_text().splitlines()]
+    assert nudge["nudge"] == 1 and "<tool_call>" in nudge["excerpt"]
+    assert json.loads((item / "metrics.json").read_text())["tool_call_nudges"] == 1

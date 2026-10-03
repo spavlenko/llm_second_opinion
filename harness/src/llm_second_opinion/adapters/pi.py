@@ -58,7 +58,11 @@ MOUNT = "/opt/lso-agent"
 
 RUN_DIR = "/run/lso"
 PI = f"{MOUNT}/bin/pi"
-EXTENSIONS = (f"{MOUNT}/extensions/limits.ts", f"{MOUNT}/extensions/timeline.ts")
+EXTENSIONS = (
+    f"{MOUNT}/extensions/limits.ts",
+    f"{MOUNT}/extensions/timeline.ts",
+    f"{MOUNT}/extensions/toolcall-nudge.ts",  # tool calls written as text: nudge, logged
+)
 ADVISOR_EXTENSION = f"{MOUNT}/extensions/lso-advisor.js"
 ADVISOR_CONFIG = "/run/advisor.json"
 PROVIDER = "lso"
@@ -100,6 +104,7 @@ class PiAdapter:
         f"{RUN_DIR}/pi.jsonl",
         f"{RUN_DIR}/pi.stderr",
         f"{RUN_DIR}/timeline.jsonl",
+        f"{RUN_DIR}/nudges.jsonl",  # tool calls written as text, and the nudge each got
         f"{RUN_DIR}/advice.jsonl",  # the plugin's full record of each consult (advisor arms)
     )
 
@@ -179,6 +184,7 @@ class PiAdapter:
             "LSO_MAX_TURNS": str(limits.max_turns),
             "LSO_EXIT_FILE": exit_file,
             "LSO_TIMELINE": f"{RUN_DIR}/timeline.jsonl",
+            "LSO_NUDGE_LOG": f"{RUN_DIR}/nudges.jsonl",
         }
         advisor = config.advisor is not None and config.advisor_model is not None
         if advisor:

@@ -20,7 +20,13 @@ def extract(item_dir: Path, agent: dict[str, Any]) -> dict[str, Any]:
     from 0."""
     agent = dict(agent)
     t0 = agent.pop("agent_start_ts", None)
-    return agent | context_metrics(item_dir) | advisor_metrics(item_dir, t0)
+    nudges = _records(item_dir / "nudges.jsonl")
+    return (
+        agent
+        | context_metrics(item_dir)
+        | advisor_metrics(item_dir, t0)
+        | {"tool_call_nudges": len(nudges)}  # tool calls written as text (toolcall-nudge.ts)
+    )
 
 
 def context_metrics(item_dir: Path) -> dict[str, Any]:

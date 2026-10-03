@@ -31,5 +31,5 @@ RUN test -n "$PI_VERSION" \
  && cli="$pkg/$(node -p "require('$pkg/package.json').bin.pi")" \
  && printf '#!/bin/sh\nexec /opt/lso-agent/bin/node %s "$@"\n' "$cli" > /opt/lso-agent/bin/pi \
  && chmod +x /opt/lso-agent/bin/pi
-COPY limits.ts timeline.ts /opt/lso-agent/extensions/
+COPY limits.ts timeline.ts toolcall-nudge.ts /opt/lso-agent/extensions/
 COPY --from=advisor /out/lso-advisor.js /opt/lso-agent/extensions/

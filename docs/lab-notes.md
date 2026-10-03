@@ -11,6 +11,7 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — first real-model smoke runs
 
+- Text tool calls: 4/62 executor runs (2 of the A0 "empty patch" failures in calib) → nudge extension for every arm.
 - Smoke r5 (new help flow, 1 seed): 0/3 resolved. json-18: executor emitted tool calls as text (`<tool_call><function=bash>`), server did not parse them, pi stopped at turn 3 → empty patch; the other two failed to build (within measured noise). Still 0 self-consults with the new guidance.
 - Leak checker flagged `/testbed/include` via its base name `include` (false positive) → base names only with an extension; plugin left `simdjson/*.h` raw → project names swept as path components.
 - Targeted tests missed a contract fixture that CI caught (`history_turns`): targeted runs are not enough after contract changes.
