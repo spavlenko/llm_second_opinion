@@ -93,7 +93,8 @@ class ConsultRules(Strict):
         default=2, ge=0, description="Turns after a consult before the consult tool may be used."
     )
     require_hypothesis: bool = Field(
-        default=True, description="The consult tool refuses a request without `tried` and "
+        default=True,
+        description="The consult tool refuses a request without `tried` and "
         "`hypothesis` written by the executor.",
     )
     max_advice_code_lines: int | None = Field(
