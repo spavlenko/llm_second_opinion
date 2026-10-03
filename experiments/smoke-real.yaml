@@ -45,6 +45,6 @@ arms:
     executor: local
     advisor:
       level: L2
-      interventions: [consult, stuck, on_test_failure]
+      interventions: [orient, consult, stuck, on_test_failure, before_done]
       max_consults: 4
       cooldown_turns: 2

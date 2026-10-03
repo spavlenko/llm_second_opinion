@@ -1,5 +1,5 @@
-# Pilot on `dev` (roadmap week 8): the floor (A0), the ceiling (A4), and three help policies
-# that differ only in their prompt set. Its purposes: check the whole loop on real models, get
+# Pilot on `dev` (roadmap week 8): the floor (A0), the ceiling (A4), three help policies that
+# differ only in their prompt set, and the default policy with the anti-delegation rules off. Its purposes: check the whole loop on real models, get
 # run times and a variance estimate for the power analysis and the search budget, and give
 # the first traces to study in MLflow. Endpoints, keys, and header names come from ../.env.
 #   bench run experiments/pilot.yaml --arm A0 --task nlohmann__json-2332 --parallel 1  # one item first
@@ -75,9 +75,20 @@ arms:
     advisor:
       level: L2
       prompts: [default, structured, hints-only]   # sweep: H-default, H-structured, H-hints-only
-      interventions: [plan, consult, stuck]
+      interventions: [orient, consult, stuck, before_done]
       max_consults: 5
-      max_answer_tokens: 800
       cooldown_turns: 2
       stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      # consult rules (the executor does the work): defaults, see docs/spec.md
+  - name: H-loose                                   # same policy, anti-delegation rules off
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: default
+      interventions: [orient, consult, stuck, before_done]
+      max_consults: 5
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      rules: {min_own_actions: 0, tool_cooldown_turns: 0, require_hypothesis: false, max_advice_code_lines: null}
   - {name: A4, agent: pi-advisor, executor: advisor}
