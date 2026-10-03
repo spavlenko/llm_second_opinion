@@ -114,7 +114,9 @@ def test_arms_without_an_advisor_keep_their_hash(repo):
            "LOCAL_AUTH_HEADER": "a"}  # fmt: skip
     baselines = Experiment.from_yaml(repo / "experiments/baselines.yaml", env=env)
     assert baselines.config_hash(baselines.arm("A0")) == "8c03ef1b79a37500"  # + executor sampling
-    assert baselines.config_hash(baselines.arm("A4")) == "914bf24f2bc9a105"  # pi-advisor compat, model k3
+    assert (
+        baselines.config_hash(baselines.arm("A4")) == "914bf24f2bc9a105"
+    )  # pi-advisor compat, model k3
     toy = Experiment.from_yaml(repo / "experiments/toy.yaml")
     assert toy.config_hash(toy.arm("gold")) == "84562adef09adc5f"
 

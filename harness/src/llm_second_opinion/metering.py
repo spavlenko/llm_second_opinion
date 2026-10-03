@@ -72,6 +72,9 @@ _DROP_RESPONSE = {
 # long per call; pi's OpenAI client times a request out at 10 minutes.
 RATE_LIMIT_MAX_WAIT_S = 480.0
 RATE_LIMIT_FIRST_WAIT_S = 15.0
+# A 429 that is about money, not a rate window (e.g. Moonshot's "suspended due to insufficient
+# balance"), is passed through at once.
+_BILLING = re.compile(r"balance|billing|recharge|suspend|payment", re.IGNORECASE)
 
 
 def retry_after(header: str | None, backoff: float) -> float:
@@ -533,9 +536,17 @@ class _Handler(BaseHTTPRequestHandler):
             return None, 0, None
         try:
             if hold_rate_limit and resp.status == 429:
-                resp.read()
-                self._backoff = getattr(self, "_backoff", RATE_LIMIT_FIRST_WAIT_S / 2) * 2
-                return None, 429, retry_after(resp.getheader("Retry-After"), self._backoff)
+                data = resp.read()
+                if not _BILLING.search(data.decode("utf-8", "replace")):
+                    self._backoff = getattr(self, "_backoff", RATE_LIMIT_FIRST_WAIT_S / 2) * 2
+                    return None, 429, retry_after(resp.getheader("Retry-After"), self._backoff)
+                # Out of balance, not a quota window: waiting will not help; pass it on.
+                self.send_response(resp.status, resp.reason)
+                self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return None, 429, None
             return self._stream_back(resp, usage), resp.status, None
         except (OSError, http.client.HTTPException):
             # Cut off mid-response: whatever usage arrived counts; none marks the call.

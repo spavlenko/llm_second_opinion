@@ -215,6 +215,18 @@ def test_a_rate_limit_is_waited_out_and_both_calls_recorded(proxy, upstream, tmp
     assert statuses == [429, 200] and len(upstream.requests) == 2
 
 
+def test_an_empty_balance_is_not_waited_out(proxy, upstream, tmp_path):
+    meter = proxy.register({"executor": endpoint(upstream)}, tmp_path / "usage.jsonl", None)
+    message = "Your account is suspended due to insufficient balance, please recharge"
+    upstream.reply_json({"error": {"message": message, "type": "quota"}}, status=429)
+    start = time.monotonic()
+    with pytest.raises(urllib.error.HTTPError) as e:
+        post(chat_url(proxy, meter), {"model": "m", "messages": []})
+    assert e.value.code == 429 and time.monotonic() - start < 1
+    meter.close(1)
+    assert [r.status for r in read_usage(tmp_path / "usage.jsonl")] == [429]
+
+
 def test_routes_to_the_role_endpoint_and_records_usage(proxy, upstream, tmp_path):
     meter = proxy.register({"executor": endpoint(upstream)}, tmp_path / "usage.jsonl", None)
     upstream.reply_json({"choices": [], "usage": USAGE})
