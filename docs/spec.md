@@ -305,6 +305,63 @@ the same numbers as metrics against `A0` (`paired_items`, `paired_diff` and its 
 `paired_mcnemar_p`, `paired_rel_lift`, `gap_closed` and its interval). Only the standard
 library is used.
 
+### Scorers
+
+`bench score` (`scorers.py`) computes rewards, dependence and exposure from the stored attempt
+directories, without running agents, for the counted attempt of every done item at its arm's
+current config hash (the items `bench report` counts; old `seed-<n>/` directories too). Each
+score has a role:
+
+- **acceptance**: the score that decides whether a policy is better. Only `resolve`, averaged
+  over seeds (and compared in pairs, above). No other score may replace it.
+- **feedback**: dense signals for the prompt-search proposer and for breaking ties; gameable,
+  so never the acceptance score.
+- **diagnostic**: guards and explanations. Dependence scores check that the executor does the
+  work itself; exposure scores say what left the machine.
+
+| Score | Role | Definition |
+| --- | --- | --- |
+| `resolve` | acceptance | 1 if the grade is `resolved`, else 0 |
+| `partial` | feedback | 1 if resolved; 0 if the build failed or nothing was tested (empty or unappliable patch, timeout, a task without test lists); else max(0, F2P passed / F2P total − 0.1 × broken P2P tests) |
+| `gold_similarity` | diagnostic | SWE-RL style: `difflib.SequenceMatcher` ratio between the changed lines (+/− sign kept, whitespace collapsed, files in path order, joined by newlines) of the agent's patch and the gold patch, by characters; by lines when either side exceeds 20,000 characters. 0 for an empty patch |
+| `cost_penalised` | feedback | resolve − λ × advisor cost (USD; the advisor model's calls, and for an arm whose executor is the advisor model, all calls). λ = `--lambda`, default 1. Null when the model has calls but no price |
+| `exposure_penalised` | feedback | resolve − μ × exposure, exposure = advisor prompt tokens / 1000 (default) or `leaked_units` (`--exposure-unit leaked`); μ = `--mu`, default 0.01 |
+| `advice_copy_share` | diagnostic | Share of the patch's added lines, whitespace collapsed and trivial ones left out (fewer than 3 letters or digits, or a lone `else`, `break`, `return`, …), that appear in any `advice_text` or `injected_text` (each line, a leading diff `+`/`−` dropped, and each inline code span) exactly or with difflib ratio ≥ 0.9. 0 without advice; null when the patch adds no such line |
+| `own_*_before_consult` | diagnostic | Before the first consult (executor's or a trigger's): its turn, and the tool calls (reads, edits, test runs; classified as in `metrics.json`) whose start (timeline) precedes the consult's first event. Null without a consult; the call counts null without a timeline |
+| `consults`, `consult_rate`, `consult_refusals` | diagnostic | `consult_requested` + `trigger_fired` events; per turn; `consult_refused` events |
+| `consults_on_a0_solved` | diagnostic | The attempt's consults when the A0 arm resolved the same task and seed, else 0; null without an A0 item (and for A0) |
+| `brief_synthesis_share` | diagnostic | Per brief, with placeholders mapped back by the run's role map and the brief template's literal lines left out: the share of characters (whitespace collapsed) not inside a 40-character window found verbatim in a tool result the executor had seen by then (pi.jsonl, the consult tool's results excluded) or in the issue text. Over the run, pooled by characters |
+| `advisor_prompt_tokens`, `advisor_completion_tokens`, `advisor_cost_usd` | diagnostic | The provider's counts from `usage.jsonl` for the advisor model (2xx calls) |
+| `placeholders_sent`, `placeholders_distinct` | diagnostic | Role placeholders in the briefs sent |
+| `leaked_units` | diagnostic | PAPILLON style: the share of the gold patch's units that appear raw in any brief, with the list. Units: identifiers in its changed lines and hunk headers (comments, string literals and `std::` names removed; C++ keywords, names under 3 characters and plain lowercase words under 8 letters left out, as the plugin's sweep leaves those raw) and the files it changes (a file leaks by path or file name). 1 for an arm whose executor is the advisor model |
+| `role_map_leaks` | diagnostic | Role-map names sent raw in a brief (the `scripts/smoke-check.py` rule), with the list |
+| `probe_*`, `probe_floor_*` | diagnostic | Re-identification probe, below |
+
+**Re-identification probe** (`--probe MODEL_KEY`, a key in `models`). For each attempt that
+sent briefs, its briefs, joined, go to the model with a fixed prompt asking for the repository,
+the files the fix changes and the functions, up to 3 guesses each as JSON. Truth: the
+repository from the task (or its id, `org__name-N`); the gold patch's files; its functions (names
+before `(` in its hunk headers and changed lines, and the function each hunk's change sits in).
+`probe_{repo,file,function}_top{1,3}` are 1 when the first (any of the first three) guess
+matches: a repository by `org/name` (the name alone unless it is generic, like `json`), a file by
+file name, a function by its last `::` part; null when the truth is empty. The **memorisation
+floor** (`probe_floor_*`) sends the issue text alone, redacted at the run's level by an
+approximation of the plugin: L3 verbatim; below it every role-map name of the run replaced by
+its placeholder, and at L0–L1 fenced code blocks dropped. The calls go through the metering
+proxy (usage role `probe`, after a usage preflight recorded with the others) into the attempt's
+`probe-usage.jsonl` and the ledger's `probe` table, so they count in the total spend. Answers
+are cached by a hash of the probe version, model and text (`runs/<experiment>/probe-cache/`),
+so scoring again does not query again. A failed probe call leaves the probe scores out
+(`probe_error`) and does not stop scoring.
+
+**Outputs.** `scores.json` in each attempt directory (scorer version, the parameters, each
+score's role, the scores) and `runs/<experiment>/scores.jsonl` (one line per attempt, a
+re-scored attempt replaces its line). `bench report` prints the per-arm means of `partial`,
+`gold_similarity`, `advice_copy_share`, `consult_rate`, `brief_synthesis_share`,
+`leaked_units` and the probe's repository top-1 (briefs and floor) in a block headed
+"Diagnostics (not acceptance)", also in `report.json`. With MLflow, item runs get `score_*`
+metrics and arm runs `score_mean_*`.
+
 **One model pair.** The study fixes one executor–advisor pair (Qwen3.8 via MLX and Kimi K3)
 and searches many prompt versions for it. Prompts are tuned to this pair; whether they
 transfer to other pairs is a follow-up check, not a goal of v1.
@@ -424,7 +481,7 @@ inside a run.
 | `grading` | Applies the agent's patch in a fresh container, resets the files the test patch touches to the base commit (as SWE-bench does), applies the test patch, runs the task's eval command, and checks its per-test results against the task's test lists (`testlogs` parses ctest output). Writes `grade.json`: reason, `build_failed`, per-test outcomes, F2P and P2P tallies with the failing tests, listed tests that did not run, duration, the agent's edits to test files, and the grader version. Reasons: `resolved`, `empty_patch`, `patch_failed`, `test_patch_failed`, `build_failed` (run-tests' build-failure marker; tests whose targets did not build count as not run), `tests_failed`, `timeout`. A failed build's whole `/tmp/build.log` is kept as `build.log` (run-tests prints only its tail) |
 | `tracking`, `tracing` | MLflow, mandatory for `bench run`: a run per arm with pinned inputs, git commit, and summary metrics; a child run per item with metrics, artifacts, and a trace built from the agent's logs |
 | `report` | Per-arm resolve rates with Wilson 95% intervals, exit reasons, time and turns; per-item CSV |
-| `scorers` | Capability, cost, harm, identifier leakage, re-identification, and the calibrated advice judge |
+| `scorers` | `bench score`: rewards (resolve, partial, gold similarity, cost- and exposure-penalised), dependence (advice copying, own work before consulting, consult rate, brief synthesis), exposure (advisor tokens, placeholders, leaked units, role-map leaks), and the re-identification probe; see [Scorers](#scorers). The calibrated advice judge is to come |
 | `mock_server` | OpenAI-compatible server replaying recorded completions (see Testing) |
 | `cli` | The `bench` command |
 
@@ -588,7 +645,7 @@ Each call appends one record to the item's `usage.jsonl`:
 
 | Field | Meaning |
 | --- | --- |
-| `seq`, `ts`, `role` | Call order, time, and `executor` or `advisor` |
+| `seq`, `ts`, `role` | Call order, time, and `executor` or `advisor` (`probe` in `bench score`'s `probe-usage.jsonl`) |
 | `model` | Model id as sent |
 | `prompt_tokens`, `completion_tokens` | From the provider's `usage` (streaming: `stream_options.include_usage` is forced on); the Responses API's `input_tokens`/`output_tokens` are read too |
 | `cached_tokens`, `reasoning_tokens` | `prompt_tokens_details.cached_tokens` (or Moonshot's top-level `cached_tokens`) and `completion_tokens_details.reasoning_tokens`; 0 when absent |
@@ -779,8 +836,8 @@ command counts as timed out only if it also used the full time.
 | `bench run EXP.yaml --arm A2 --task ID --debug` | One task with live logs; keeps the container afterwards |
 | `bench shell ITEM` | Open a shell in a kept container |
 | `bench replay ITEM` | Step through a stored run's events: turns, triggers, briefs, advice |
-| `bench score EXP.yaml` | Re-run scorers over stored runs |
-| `bench report EXP.yaml [--csv F] [--pairs-csv F] [--baseline A0] [--ceiling A4]` | Variants tried and final batches; per-arm table from the ledger (stale config hashes and task images ignored), with every attempt's count and spend; paired comparisons with the baseline; Pareto front against advisor cost; total spend (counted items, all attempts, preflight); per-item and per-pair CSV; `report.json` (also kept as `reports/<time>.json`). Plots to come |
+| `bench score EXP.yaml [--arm A] [--task ID] [--probe MODEL_KEY] [--lambda L] [--mu M] [--exposure-unit ktok\|leaked] [--mlflow URI] [--no-mlflow] [--no-preflight]` | Re-run the scorers over stored runs (done items at the current config hash), no agents: `scores.json` per attempt, `scores.jsonl` per experiment, MLflow `score_*` metrics. `--probe` adds the re-identification probe and its memorisation floor through the metering proxy, cached by text (see [Scorers](#scorers)) |
+| `bench report EXP.yaml [--csv F] [--pairs-csv F] [--baseline A0] [--ceiling A4]` | Variants tried and final batches; per-arm table from the ledger (stale config hashes and task images ignored), with every attempt's count and spend; paired comparisons with the baseline; Pareto front against advisor cost; total spend (counted items, all attempts, preflight, probe); per-arm means of the stored scores under "Diagnostics (not acceptance)"; per-item and per-pair CSV; `report.json` (also kept as `reports/<time>.json`). Plots to come |
 | `bench regrade EXP.yaml [--arm A] [--task ID] [--parallel N]` | Grade the stored patches of done items again with the current grader, without running agents; the ledger's grade columns follow |
 | `bench schemas [--check]` | Regenerate (or verify) the contract JSON Schemas |
 | `bench mock-server --recordings F [--upstream URL]` | Serve recorded completions; record from a real endpoint |
@@ -861,7 +918,8 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
     reason, and the same spend columns.
   - `sessions`: one row per `bench run` batch: start time, split, number of test tasks,
     `--final`. `fingerprints`: each arm's adapter fingerprint per batch. `preflight`: the
-    usage preflight's calls, tokens, and cost per endpoint and batch.
+    usage preflight's calls, tokens, and cost per endpoint and batch. `probe`: the
+    re-identification probe's new calls, tokens, and cost per scored attempt.
 - **Item directory.** One per attempt, `runs/<experiment>/<arm>/<task>/seed-<n>/
   <config_hash>/attempt-<k>/`, whether or not MLflow is on: `item.json` (harness commit and
   dirty flag, agent bundle image ID and pi version, task image and image ID, base commit,
@@ -869,8 +927,9 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
   grading's start and end times), `advisor.json`, `result.json` (or `agent-result.json` when
   the attempt failed on infrastructure), `patch.diff`, `events.jsonl`, `grade.json`,
   `grade.log` (and `build.log`), `metrics.json`, the agent's artifacts, and for metered
-  agents `usage.jsonl`, `requests.jsonl`, and `executor-request.json`. Directories from
-  before attempts (`seed-<n>/` itself) are left as they are.
+  agents `usage.jsonl`, `requests.jsonl`, and `executor-request.json`; `bench score` adds
+  `scores.json` and, with the probe, `probe-usage.jsonl`. Directories from before attempts
+  (`seed-<n>/` itself) are left as they are.
 - **Metrics** (`metrics.json`, also MLflow item metrics). From the agent's logs (pi): turns,
   tool calls by name, test runs (`/opt/lso/run-tests`) and how many failed, compactions,
   auto-retries, and the turn and time of the first edit and first test run. For every
@@ -1045,4 +1104,5 @@ llm_second_opinion/
 | 2026-10-03 | Grading resets test-patch files to base, as SWE-bench does: files the test patch touches are checked out from the base commit (or removed, if it adds them) before it is applied, so an agent's edits to them no longer fail the item as `test_patch_failed`. `grade.json` lists the agent's edits to test files (ledger `edited_tests`) and the grader version (2); `bench regrade` re-grades stored patches. Not resolved splits into `build_failed` and `tests_failed`; `grade.json` keeps F2P/P2P detail; run-tests is unchanged (the full build log is read from the grading container), so task images need no rebuild. |
 | 2026-10-03 | Per-attempt `item.json` (provenance), `metrics.json` (trajectory metrics, also in MLflow), `report.json` per `bench report`; per-item CSV gains cached and reasoning tokens, prompt hash, level, interventions, grading detail. |
 | 2026-10-03 | The metering proxy binds 127.0.0.1 on macOS (Docker Desktop forwards `host.docker.internal` there) and the Docker bridge gateway on Linux, never every interface: it adds API keys. |
+| 2026-10-03 | Scorers built (`scorers.py`, `bench score`): acceptance stays binary resolve over seeds; `partial`, the penalised rewards and gold similarity are feedback or diagnostics, labelled so in `scores.json` and the report's "Diagnostics (not acceptance)" block. `partial` = F2P share − 0.1 per broken P2P, 0 on a failed build. Gold similarity by characters up to 20,000 characters, by lines above (a one-token fix scored 0 by lines). Brief synthesis also counts the issue text as copied material, not only tool output. Usage role `probe` joins the contract (schemas regenerated); probe calls are metered per attempt (`probe-usage.jsonl`), recorded in a ledger `probe` table and the total spend, and cached by text hash. The re-identification attacker runs at scoring time only; the memorisation floor redacts the issue with the run's own role map (an approximation of the plugin's redaction). |
 | 2026-10-03 | Pre-pilot contracts: interventions `orient` and `before_done`; `ConsultRules` (min own actions, tool cooldown, required hypothesis, `max_advice_code_lines`); size targets (`answer_target_words`, `field_target_words`) with safety ceilings (`max_answer_tokens` 4000, `max_brief_tokens` 3000); events `consult_refused`, `brief_built.truncated`, `advice_applied.code_lines_removed`. |

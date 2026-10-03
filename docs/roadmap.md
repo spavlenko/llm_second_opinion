@@ -64,7 +64,7 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Tokens and cost in ledger, MLflow, and `bench report` (per arm, per resolved task);
       price table in the experiment
 - [ ] Prices for the real models in `experiments/baselines.yaml`
-- [ ] Deterministic scorers (capability, cost)
+- [x] Deterministic scorers (capability, cost): `bench score`
 - [x] Paired comparisons in `bench report`: differences with paired bootstrap CI, McNemar;
       lift over A0 and share of the A0–A4 gap closed; Pareto front of resolve rate vs cost
       (front waits for the ledger's cost columns); `--pairs-csv`; paired metrics in MLflow
@@ -121,7 +121,9 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] Heuristic stuck trigger
 - [x] Triggers `on_test_failure` and `periodic`; consult cooldown and advisor answer-token cap
 - [ ] First real advisor item (Kimi K3) on one `dev` task: check briefs at each level by hand
-- [ ] Leakage and re-identification scorers
+- [x] Leakage and re-identification scorers (`leaked_units`, `role_map_leaks`, `--probe` with a
+      memorisation floor)
+- [ ] Run the probe on the pilot's briefs per level (top-1/top-3 against the floor)
 - [ ] SWE-bench-Live import
 
 ## Before the pilot — devtest findings
@@ -129,7 +131,9 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Size limits as prompt targets + logged safety ceilings (brief in, advice out)
 - [ ] Anti-delegation: earned consults, required hypothesis, advice code cap, strictness per arm
 - [ ] "Plan after orientation" and "before done" triggers
-- [ ] Scorers: rewards (resolve, partial, gold similarity, cost/exposure-penalised), dependence, leakage
+- [x] Scorers: rewards (resolve, partial, gold similarity, cost/exposure-penalised), dependence, leakage
+- [ ] Pass the feedback scores to the prompt-search proposer (text, never the acceptance score)
+- [ ] Calibrated LLM judge of advice quality (~30 hand-labelled consults first)
 
 ## Week 8 — pilot
 
