@@ -143,6 +143,13 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 
 - [x] Pilot config `experiments/pilot.yaml`: 10 `dev` tasks (seeded stratified sample, gold
       patch ≤ 1000 lines), 3 seeds; A0, A4, and 3 prompt sets at L2 (150 items)
+- [x] Pilot arms for the help-flow changes: `H-consult-only`, `H-clarify`, `H-memory`,
+      `H-surrogates`; `orient_after: 3` explicit (now distinct files) — 300 items
+- [x] Help-flow diagnostics: advice uptake (`uptake_rate`), answer length overshoot, skipped
+      triggers by reason, `clarify` follow-up tokens; in `bench report` and MLflow
+- [x] Planted-leak test for both leak detectors; role-aware rule, follow-ups scanned
+- [ ] Plugin implements `reserve_for_end`, `clarify`, `memory`, `surrogates`, `trigger_skipped`
+      (contracts in 6a1ee51) before the pilot runs those arms
 - [ ] Pilot on `dev`: 10 tasks, 3 seeds; arms A0, A4, and 3 help policies (prompt set ×
       initiative); variance estimate for the power analysis
 - [ ] Gate A from the research proposal

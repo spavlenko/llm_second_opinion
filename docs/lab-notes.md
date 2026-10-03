@@ -4,6 +4,7 @@ Short dated observations; newest first. Smoke runs are not results.
 
 ## 2026-10-03 — scorers
 
+- Planted-leak test, misses before the fix (smoke-check / role_map_leaks / leaked_units): `ctx.parse_format_specs(` all 3; `format-inl.h` without its path 2 (role map); project `fmt`, `FmtLib`, `include/fmt/…` 2 (role map); a `clarify` follow-up all 3 (never scanned) → role-aware rule, follow-ups scanned; surrogate and clean briefs quiet before and after.
 - Gold similarity by lines scored a near-miss one-line fix 0 → by characters (≤ 1.7 s on real patches up to 37k chars), by lines above 20k.
 - Gold patches reach 276k chars (amalgamated `single_include` copies): units and similarity count both copies.
 - `test_pi_docker` fails at `prepilot`: the bundled plugin does not emit `brief_built.truncated` yet.

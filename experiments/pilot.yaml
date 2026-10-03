@@ -1,5 +1,7 @@
 # Pilot on `dev` (roadmap week 8): the floor (A0), the ceiling (A4), three help policies that
-# differ only in their prompt set, and the default policy with the anti-delegation rules off. Its purposes: check the whole loop on real models, get
+# differ only in their prompt set, the default policy with the anti-delegation rules off, and
+# four one-change variants of the default policy (consult tool only, clarify, memory,
+# surrogates). Its purposes: check the whole loop on real models, get
 # run times and a variance estimate for the power analysis and the search budget, and give
 # the first traces to study in MLflow. Endpoints, keys, and header names come from ../.env.
 #   bench run experiments/pilot.yaml --arm A0 --task nlohmann__json-2332 --parallel 1  # one item first
@@ -79,6 +81,7 @@ arms:
       prompts: [default, structured, hints-only]   # sweep: H-default, H-structured, H-hints-only
       interventions: [orient, consult, stuck, before_done]
       max_consults: 5
+      orient_after: 3   # now counts distinct files read, not read actions
       cooldown_turns: 2
       stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
       # consult rules (the executor does the work): defaults, see docs/spec.md
@@ -90,7 +93,56 @@ arms:
       prompts: default
       interventions: [orient, consult, stuck, before_done]
       max_consults: 5
+      orient_after: 3   # now counts distinct files read, not read actions
       cooldown_turns: 2
       stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
       rules: {min_own_actions: 0, tool_cooldown_turns: 0, require_hypothesis: false, max_advice_code_lines: null}
+  - name: H-consult-only                       # only the executor asks: measures self-initiated help
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: default
+      interventions: [consult]
+      max_consults: 5
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      reserve_for_end: 0   # no before_done here: a reserved consult could never be used
+  - name: H-clarify                            # default + the advisor may ask for one item first
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: default
+      interventions: [orient, consult, stuck, before_done]
+      max_consults: 5
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      clarify: true
+  - name: H-memory                             # default + the advisor sees its earlier exchanges
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: default
+      interventions: [orient, consult, stuck, before_done]
+      max_consults: 5
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      memory: true
+  - name: H-surrogates                         # default + fake names instead of placeholders
+    agent: pi
+    executor: local
+    advisor:
+      level: L2
+      prompts: default
+      interventions: [orient, consult, stuck, before_done]
+      max_consults: 5
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      surrogates: true
   - {name: A4, agent: pi-advisor, executor: advisor}

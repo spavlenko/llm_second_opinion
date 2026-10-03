@@ -16,9 +16,13 @@ from llm_second_opinion.scorers import (
     Prober,
     Truth,
     advice_copy_share,
+    advice_uptake,
     advisor_spend,
+    arm_means,
     brief_synthesis,
     consult_counts,
+    flow_counts,
+    format_diagnostics,
     gold_similarity,
     gold_units,
     leaked_units,
@@ -269,6 +273,113 @@ def test_scores_of_the_recorded_pi_run(repo):
     assert scores["advisor_prompt_tokens"] == 300 and scores["placeholders_sent"] == 4
     assert scores["leaked_units"] == 0.0
     assert all(k.startswith("score_") for k in numeric_scores(scores))
+    # The advice names math.sh; the next turn edits it with sed.
+    [c] = scores["uptake"]
+    assert c["uptake"] == "acted" and c["located"] and "edited:math.sh" in c["signals"]
+    assert scores["uptake_rate"] == 1.0
+    assert scores["answer_overshoot"] == pytest.approx(10 / 250 - 1)  # 10 words, default target
+
+
+# --- advice uptake -------------------------------------------------------------------------
+
+
+def turn(*steps):
+    """One pi turn: assistant text and tool calls, as pi.jsonl records."""
+    out = [{"type": "turn_start"}]
+    for step in steps:
+        if isinstance(step, str):
+            out.append({"type": "message_end", "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": step}]}})  # fmt: skip
+        else:
+            name, args = step
+            out.append({"type": "tool_execution_start", "toolName": name, "args": args})
+    return out + [{"type": "turn_end"}]
+
+
+def advice_result(text):
+    return {"type": "message_end", "message": {"role": "toolResult", "toolName": "consult",
+            "content": [{"type": "text", "text": text}]}}  # fmt: skip
+
+
+ADVICE = "Look at <file_1>: <function_1> stops after one sign. Rerun the tests after the fix."
+INJECTED = "Advice (1 left):\n\nLook at src/parser.cpp: readSign stops after one sign."
+UPTAKE_EVENTS = [
+    {"type": "consult_requested", "turn": 1},
+    {"type": "brief_built", "role_map": {"<file_1>": "src/parser.cpp", "<function_1>": "readSign"}},
+    {"type": "advisor_request", "request_id": "r1", "input_tokens": 300},
+    {"type": "advisor_response", "request_id": "r1", "advice_text": ADVICE},
+    {"type": "advice_applied", "request_id": "r1", "turn": 1, "injected_text": INJECTED},
+]
+
+
+def run_with(*later_turns):
+    consult_turn = turn(("consult", {"question": "?"}))
+    consult_turn.insert(-1, advice_result(INJECTED))
+    return turn(("read", {"path": "README.md"})) + consult_turn + [e for t in later_turns
+                                                                  for e in t]  # fmt: skip
+
+
+def test_uptake_classes_from_signals():
+    acted = run_with(turn(("read", {"path": "src/parser.cpp"})),
+                     turn(("edit", {"path": "src/parser.cpp", "newText": "while"})))  # fmt: skip
+    [c], summary = advice_uptake(UPTAKE_EVENTS, acted, 20)
+    assert c["uptake"] == "acted" and c["located"]
+    assert c["signals"] == ["read:parser.cpp", "edited:parser.cpp"]
+    assert summary["uptake_rate"] == 1.0 and summary["uptake_acted"] == 1
+
+    looked = run_with(turn(("bash", {"command": "grep -rn readSign src"})),
+                      turn(("bash", {"command": "/opt/lso/run-tests | tail"})))  # fmt: skip
+    [c], _ = advice_uptake(UPTAKE_EVENTS, looked, 20)
+    assert c["signals"] == ["searched:readSign", "ran_tests"]
+    assert c["uptake"] == "partial"  # one family: commands
+
+    talked = run_with(turn("The advisor thinks readSign is wrong; checking.",
+                           ("read", {"path": "src/parser.cpp"})))  # fmt: skip
+    [c], _ = advice_uptake(UPTAKE_EVENTS, talked, 20)
+    assert c["signals"] == ["text:readSign", "text:refers", "read:parser.cpp"]
+    assert c["uptake"] == "acted"  # two families: text and files
+
+    late = run_with(*[turn("thinking") for _ in range(5)], turn(("edit", {"path": "parser.cpp"})))
+    [c], summary = advice_uptake(UPTAKE_EVENTS, late, 20)
+    assert c["uptake"] == "ignored" and c["signals"] == []  # the edit is in turn 6 after
+    assert summary["uptake_rate"] == 0.0 and summary["uptake_ignored"] == 1
+
+
+def test_uptake_without_the_advice_in_pi_jsonl_counts_from_the_next_turn():
+    pi = turn("start") + turn(("edit", {"path": "x.cpp"})) + turn(("edit", {"path": "parser.cpp"}))
+    [c], _ = advice_uptake(UPTAKE_EVENTS, pi, None)
+    assert not c["located"] and c["signals"] == ["edited:parser.cpp"]
+    assert c["overshoot"] is None  # no target
+
+
+def test_uptake_maps_surrogates_back():
+    events = [dict(e) for e in UPTAKE_EVENTS]
+    events[1] = {"type": "brief_built", "role_map": {"<file_1>": "src/parser.cpp",
+                                                     "decodeSign": "readSign"}}  # fmt: skip
+    events[3] = {"type": "advisor_response", "request_id": "r1",
+                 "advice_text": "decodeSign stops after one sign."}  # fmt: skip
+    pi = run_with(turn(("bash", {"command": "grep -n readSign src/parser.cpp"})))
+    [c], _ = advice_uptake(events, pi, 20)
+    assert "searched:readSign" in c["signals"]
+
+
+def test_answer_overshoot_and_flow_counts():
+    _, summary = advice_uptake(UPTAKE_EVENTS, [], 10)
+    assert summary["answer_words"] == 14 and summary["answer_overshoot"] == pytest.approx(0.4)
+    events = UPTAKE_EVENTS + [
+        {"type": "trigger_skipped", "intervention": "stuck", "reason": "cooldown", "turn": 3},
+        {"type": "trigger_skipped", "intervention": "stuck", "reason": "cooldown", "turn": 4},
+        {"type": "trigger_skipped", "intervention": "orient", "reason": "reserved_for_end",
+         "turn": 5},
+        {"type": "advisor_followup", "request_id": "r1", "tokens": 120, "sent_text": "x"},
+    ]  # fmt: skip
+    counts = flow_counts(events)
+    assert counts == {"trigger_skipped": 3, "trigger_skipped_cooldown": 2,
+                      "trigger_skipped_reserved_for_end": 1, "advisor_followups": 1,
+                      "advisor_followup_tokens": 120, "exposure_tokens": 420}  # fmt: skip
+    records = [{"arm": "H", "scores": counts | {"uptake_rate": 0.5}}]
+    text = format_diagnostics(arm_means(records), ["H"])
+    assert "uptake" in text and "skipped triggers, H: cooldown 2, reserved_for_end 1" in text
 
 
 # --- probe ---------------------------------------------------------------------------------
@@ -455,10 +566,12 @@ def test_score_experiment_writes_scores_and_logs_to_mlflow(experiment):
     assert h3["leaked_units"] == 0.8 and h3["role_map_leaks"] == 0
     assert h0["cost_penalised"] == pytest.approx(1 - 1.2)  # $1.20 at 1000/Mtok
     lines = (runs / "sc/scores.jsonl").read_text().splitlines()
-    assert len(lines) == 5 and json.loads(lines[0])["scorer_version"] == 1
+    assert len(lines) == 5 and json.loads(lines[0])["scorer_version"] == 2
     assert json.loads(lines[0])["roles"]["resolve"] == "acceptance"
     assert tracker.items["run-H0"]["score_advice_copy_share"] == 1.0
     assert tracker.arms["H"]["score_mean_leaked_units"] == pytest.approx(0.1)
+    assert tracker.arms["H"]["score_mean_uptake_rate"] == 0.0  # no pi.jsonl: nothing done
+    assert all(isinstance(v, (int, float)) for m in tracker.arms.values() for v in m.values())
     assert tracker.arms["A0"]["score_mean_partial"] == 0.75
 
 
