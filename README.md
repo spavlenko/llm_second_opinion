@@ -131,11 +131,14 @@ Built and tested:
   request's parameters. Endpoint outages are retried, not scored as agent failures.
 - **Calibration:** grader controls on real tasks (gold resolves, empty and no-op patches fail);
   a smoke suite (`experiments/smoke-*.yaml`) with an anomaly checker (`scripts/smoke-check.py`).
+- **Scorers:** `bench score` re-scores stored runs (resolve is the acceptance score; partial
+  credit, gold similarity, advice copying, consult rate, leaked identifiers and a
+  re-identification probe are diagnostics).
 - **Mock model server:** CI and development run without a GPU or API keys.
 
 In progress:
 - headroom check on `dev` (A0 and A4 once per task) before any tuning
-- anti-delegation rules (the executor must do the work), size targets, new triggers, scorers
+- anti-delegation rules (the executor must do the work), size targets, new triggers
 - then the pilot of help policies and prompt search
 
 Progress is tracked in [docs/roadmap.md](docs/roadmap.md).

@@ -1,6 +1,7 @@
 """The `bench` command line."""
 
 import os
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from llm_second_opinion import __version__
 from llm_second_opinion.config import ConfigError, Experiment, load_dotenv
 from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
+from llm_second_opinion.metering import read_usage, spend
 from llm_second_opinion.mock_server import MockServer
 from llm_second_opinion.report import (
     current_rows,
@@ -30,6 +32,18 @@ from llm_second_opinion.report import (
     write_report_json,
 )
 from llm_second_opinion.runner import Runner, task_image
+from llm_second_opinion.scorers import (
+    DEFAULT_LAMBDA,
+    DEFAULT_MU,
+    Params,
+    Prober,
+    arm_means,
+    attempt_rel,
+    format_diagnostics,
+    probe_env,
+    read_scores,
+    score_experiment,
+)
 from llm_second_opinion.tasks import Manifest
 from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
 
@@ -223,7 +237,10 @@ def report(
         raise click.ClickException(str(e)) from e
     summaries = summarize(exp, rows, len(selected), hashes, images, attempts)
     front = pareto(exp, rows, hashes, images)
-    spent = spend_summary(exp, rows, attempts, ledger.preflight(exp.name), hashes, images)
+    spent = spend_summary(
+        exp, rows, attempts, ledger.preflight(exp.name), hashes, images, ledger.probe(exp.name)
+    )
+    diagnostics = _diagnostics(exp, rows, runs_dir / exp.name, hashes, images)
     click.echo(provenance(exp, rows, sessions))
     click.echo()
     click.echo(format_table(summaries))
@@ -233,7 +250,9 @@ def report(
     click.echo(format_pareto(front))
     click.echo()
     click.echo(format_spend(spent))
-    record = report_record(exp, summaries, pairs, front, spent, rows, sessions)
+    click.echo()
+    click.echo(format_diagnostics(diagnostics, [a.name for a in exp.arms]))
+    record = report_record(exp, summaries, pairs, front, spent, rows, sessions, diagnostics)
     click.echo(f"wrote {write_report_json(record, runs_dir / exp.name)}")
     if csv_path:
         write_csv(current_rows(exp, rows, hashes, images), csv_path)
@@ -241,6 +260,17 @@ def report(
     if pairs_csv:
         write_pairs_csv(pairs, pairs_csv)
         click.echo(f"wrote {pairs_csv}")
+
+
+def _diagnostics(exp: Experiment, rows: list, exp_dir: Path, hashes, images) -> dict:
+    """Per-arm means of the stored scores of the items the report counts."""
+    scores = read_scores(exp_dir)
+    records = []
+    for r in current_rows(exp, rows, hashes, images):
+        record = scores.get(attempt_rel(r)) if r["status"] == "done" else None
+        if record and record.get("config_hash") == r["config_hash"]:
+            records.append(record)
+    return arm_means(records)
 
 
 @main.command()
@@ -274,6 +304,165 @@ def regrade(
     )
     if counts["failed"]:
         raise click.ClickException(f"{counts['failed']} item(s) could not be regraded")
+
+
+@main.command()
+@EXPERIMENT
+@RUNS_DIR
+@click.option("--arm", help="Score only this arm.")
+@click.option("--task", help="Score only this task id.")
+@click.option(
+    "--probe",
+    "probe_key",
+    metavar="MODEL_KEY",
+    help="Also run the re-identification probe with this model (a key in `models`), through "
+    "the metering proxy; answers are cached, so scoring again does not query again.",
+)
+@click.option(
+    "--lambda",
+    "cost_lambda",
+    type=float,
+    default=DEFAULT_LAMBDA,
+    show_default=True,
+    help="cost_penalised = resolve - LAMBDA * advisor cost (USD).",
+)
+@click.option(
+    "--mu",
+    type=float,
+    default=DEFAULT_MU,
+    show_default=True,
+    help="exposure_penalised = resolve - MU * exposure (see --exposure-unit).",
+)
+@click.option(
+    "--exposure-unit",
+    type=click.Choice(["ktok", "leaked"]),
+    default="ktok",
+    show_default=True,
+    help="ktok: advisor prompt tokens / 1000; leaked: the leaked_units share.",
+)
+@click.option(
+    "--mlflow",
+    envvar="MLFLOW_TRACKING_URI",
+    default=DEFAULT_URI,
+    show_default=True,
+    help="MLflow tracking URI: item runs get score_* metrics, arm runs score_mean_*.",
+)
+@click.option("--no-mlflow", is_flag=True, help="Skip MLflow (tests and CI).")
+@click.option(
+    "--no-preflight",
+    is_flag=True,
+    help="Skip the probe endpoint's usage preflight (mock server and tests only).",
+)
+def score(
+    experiment: str,
+    runs_dir: Path,
+    arm: str | None,
+    task: str | None,
+    probe_key: str | None,
+    cost_lambda: float,
+    mu: float,
+    exposure_unit: str,
+    mlflow: str,
+    no_mlflow: bool,
+    no_preflight: bool,
+) -> None:
+    """Re-run the scorers over stored runs, without running agents.
+
+    Resolve is the acceptance score; everything else (partial, gold similarity, the
+    penalised rewards, dependence and exposure) is feedback or a diagnostic. Writes
+    scores.json per attempt and RUNS_DIR/<experiment>/scores.jsonl.
+    """
+    exp = _load(experiment)
+    exp_dir = runs_dir / exp.name
+    if not (exp_dir / "ledger.sqlite").exists():
+        raise click.ClickException(f"no ledger in {exp_dir}; run the experiment first")
+    tracker = None
+    if no_mlflow:
+        click.echo("MLflow is off (--no-mlflow): scores go to files only", err=True)
+    else:
+        try:
+            check_server(mlflow)
+        except TrackingError as e:
+            raise click.ClickException(f"{e}; or pass --no-mlflow (tests and CI only)") from e
+        tracker = Tracker(mlflow, exp.name)
+    params = Params(cost_lambda, mu, exposure_unit)
+    ledger = Ledger(exp_dir / "ledger.sqlite")
+    prober = None
+    try:
+        if probe_key:
+            prober = _prober(exp, probe_key, exp_dir, ledger, preflight=not no_preflight)
+        score_experiment(
+            exp, runs_dir, arm=arm, task=task, params=params, prober=prober, tracker=tracker,
+            echo=click.echo,
+        )  # fmt: skip
+    except (ConfigError, KeyError) as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        if prober:
+            prober.stop()
+        if tracker:
+            tracker.close()
+    if prober:
+        click.echo(f"probe: {prober.calls} new call(s), the rest from the cache")
+
+
+def _prober(exp: Experiment, key: str, exp_dir: Path, ledger: Ledger, preflight: bool) -> Prober:
+    """The probe's proxy, after a usage preflight of its endpoint (recorded in the ledger's
+    preflight table, so it counts in the total spend)."""
+    if key not in exp.models:
+        raise ConfigError(f"--probe {key!r} is not in models: {', '.join(exp.models)}")
+    endpoint = exp.models[key]
+
+    def record(out: Path, records: list, cost: float | None) -> None:
+        ok = [r for r in records if 200 <= r.status < 300]
+        ledger.record_probe(
+            exp.name,
+            dir=str(out.relative_to(exp_dir)),
+            model_key=key,
+            model=endpoint.model,
+            calls=len(ok),
+            failed_calls=len(records) - len(ok),
+            prompt_tokens=sum(r.prompt_tokens for r in ok),
+            completion_tokens=sum(r.completion_tokens for r in ok),
+            cached_tokens=sum(r.cached_tokens for r in ok),
+            reasoning_tokens=sum(r.reasoning_tokens for r in ok),
+            cost_usd=cost,
+        )
+
+    prober = Prober(
+        exp, key, exp_dir / "probe-cache", probe_env(endpoint, os.environ), record=record
+    )
+    if not preflight:
+        click.echo("probe preflight skipped (--no-preflight: mock server and tests only)")
+        return prober.start(None)
+    started = time.time()
+    out = exp_dir / "preflight" / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime(started))}-probe"
+    try:
+        prober.start(out)
+    except ConfigError:
+        prober.stop()
+        raise
+    finally:
+        usage = read_usage(out / key / "usage.jsonl")
+        if usage:
+            ok = [r for r in usage if 200 <= r.status < 300]
+            ledger.record_preflight(
+                exp.name,
+                started,
+                model_key=key,
+                model=endpoint.model,
+                calls=len(ok),
+                failed_calls=len(usage) - len(ok),
+                prompt_tokens=sum(r.prompt_tokens for r in usage),
+                completion_tokens=sum(r.completion_tokens for r in usage),
+                cached_tokens=sum(r.cached_tokens for r in usage),
+                reasoning_tokens=sum(r.reasoning_tokens for r in usage),
+                cost_usd=spend(out / key / "usage.jsonl", {"executor": exp.prices.get(key)})[
+                    "cost_usd"
+                ],
+            )
+    click.echo(f"probe preflight passed: {key}")
+    return prober
 
 
 @main.command()

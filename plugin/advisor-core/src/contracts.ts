@@ -327,7 +327,7 @@ export interface AgentInfo {
  * via the `definition` "RoleUsage".
  */
 export interface RoleUsage {
-  role: "executor" | "advisor";
+  role: "executor" | "advisor" | "probe";
   calls: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -518,7 +518,7 @@ export interface UsageRecord {
    * Unix time in seconds when the call started.
    */
   ts: number;
-  role: "executor" | "advisor";
+  role: "executor" | "advisor" | "probe";
   /**
    * Model id as sent.
    */

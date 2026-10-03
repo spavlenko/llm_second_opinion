@@ -44,7 +44,7 @@ from llm_second_opinion.contracts import ModelEndpoint, Role, RoleUsage, RunConf
 CONTAINER_HOST = "host.docker.internal"  # how task containers reach the Mac (host gateway)
 UPSTREAM_TIMEOUT_S = 600  # per socket read; a reasoning model can think for minutes
 DRAIN_TIMEOUT_S = 600  # how long an item waits for its in-flight calls after the agent stops
-ROLES: tuple[Role, ...] = ("executor", "advisor")
+ROLES: tuple[Role, ...] = ("executor", "advisor")  # an agent's; `probe` is bench score's
 PREFLIGHT_HEADER = "X-LSO-Preflight"  # lets the mock server answer without using a recording
 # The advisor plugin's request id, which joins a usage record to its advisor_request event.
 # Read by the proxy, not forwarded.
@@ -53,7 +53,9 @@ REQUESTS_FILE = "requests.jsonl"
 FIRST_REQUEST_FILE = "executor-request.json"
 _SECRET_FIELDS = {"api_key", "apikey", "authorization", "key"}  # never written, if a body has one
 
-_ROUTE = re.compile(r"^/items/(?P<item>[0-9a-f]+)/(?P<role>executor|advisor)/v1(?P<rest>/.*)?$")
+_ROUTE = re.compile(
+    r"^/items/(?P<item>[0-9a-f]+)/(?P<role>executor|advisor|probe)/v1(?P<rest>/.*)?$"
+)
 # Not forwarded: hop-by-hop headers, and what the proxy sets itself.
 _DROP_REQUEST = {
     "connection", "keep-alive", "proxy-authorization", "proxy-connection", "te", "trailer",

@@ -21,7 +21,8 @@
     "role": {
       "enum": [
         "executor",
-        "advisor"
+        "advisor",
+        "probe"
       ],
       "type": "string"
     },

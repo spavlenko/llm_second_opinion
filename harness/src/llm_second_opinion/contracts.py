@@ -353,7 +353,8 @@ class AgentResult(Strict):
 # --- Usage (out): usage.jsonl, written by the metering proxy -------------------
 
 
-Role = Literal["executor", "advisor"]
+# `probe`: the re-identification probe of `bench score`, not part of an agent's run.
+Role = Literal["executor", "advisor", "probe"]
 
 
 class UsageRecord(Strict):
