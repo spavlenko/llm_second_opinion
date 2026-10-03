@@ -25,6 +25,8 @@ import os
 import re
 import secrets
 import socketserver
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -62,6 +64,21 @@ _DROP_RESPONSE = {
     "connection", "keep-alive", "proxy-authenticate", "te", "trailer", "transfer-encoding",
     "upgrade", "content-length", "server", "date",
 }  # fmt: skip
+
+
+def default_proxy_host() -> str:
+    """The address the proxy binds so task containers reach it as `host.docker.internal`,
+    and nothing beyond this machine does. Docker Desktop (macOS) forwards that name to the
+    host's loopback; on Linux it maps to the bridge gateway, so bind that address (binding
+    every interface would expose a proxy that adds API keys)."""
+    if sys.platform == "darwin":
+        return "127.0.0.1"
+    done = subprocess.run(
+        ["docker", "network", "inspect", "bridge", "--format",
+         "{{range .IPAM.Config}}{{.Gateway}}{{end}}"],
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    return done.stdout.strip() or "172.17.0.1"
 
 
 class MeteringError(RuntimeError):

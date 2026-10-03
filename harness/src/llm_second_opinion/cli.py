@@ -104,10 +104,8 @@ def _load(experiment: str) -> Experiment:
 )
 @click.option(
     "--proxy-host",
-    default="127.0.0.1",
-    show_default=True,
-    help="Address the metering proxy binds. Docker Desktop reaches 127.0.0.1 through "
-    "host.docker.internal; a VM that does not (e.g. Colima) needs one it can reach.",
+    help="Address the metering proxy binds. Default: 127.0.0.1 on macOS (Docker Desktop "
+    "forwards host.docker.internal there), the Docker bridge gateway on Linux.",
 )
 @click.option("--dry-run", is_flag=True, help="List the work items and stop.")
 def run(
@@ -120,7 +118,7 @@ def run(
     no_mlflow: bool,
     final: bool,
     no_preflight: bool,
-    proxy_host: str,
+    proxy_host: str | None,
     dry_run: bool,
 ) -> None:
     """Run an experiment in containers; resumes where it stopped.

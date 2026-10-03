@@ -33,6 +33,7 @@ from llm_second_opinion.metering import (
     ItemMeter,
     MeteringError,
     MeteringProxy,
+    default_proxy_host,
     preflight,
     read_usage,
     rewrite,
@@ -108,7 +109,7 @@ class Runner:
         final: bool = False,
         echo: Callable[[str], None] = print,
         preflight: bool = True,
-        proxy_host: str = "127.0.0.1",
+        proxy_host: str | None = None,
     ):
         self.exp = exp
         self.manifest = exp.select(Manifest.from_yaml(exp.tasks))
@@ -121,7 +122,7 @@ class Runner:
         self.echo = echo
         self.adapters = {arm.name: _adapter_for(exp, arm) for arm in exp.arms}
         self.preflight = preflight
-        self.proxy_host = proxy_host
+        self.proxy_host = proxy_host or default_proxy_host()
         self.proxy: MeteringProxy | None = None  # while a batch with model calls runs
         self._hashes: dict[str, str] | None = None
 
