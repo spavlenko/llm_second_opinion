@@ -64,9 +64,30 @@
         },
         "orient_after": {
           "default": 3,
-          "description": "Own read actions before the `orient` trigger fires.",
+          "description": "Distinct files the executor has read before the `orient` trigger fires.",
           "minimum": 1,
           "type": "integer"
+        },
+        "reserve_for_end": {
+          "default": 1,
+          "description": "Consults kept for `before_done`: other triggers and the tool stop short of them.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "clarify": {
+          "default": false,
+          "description": "The advisor may ask for one item (a file excerpt or the latest test output) before answering; the plugin fetches it, redacts it at the level, and sends it.",
+          "type": "boolean"
+        },
+        "memory": {
+          "default": false,
+          "description": "The advisor sees this run's earlier briefs and its own answers.",
+          "type": "boolean"
+        },
+        "surrogates": {
+          "default": false,
+          "description": "Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.",
+          "type": "boolean"
         },
         "rules": {
           "$ref": "#/$defs/ConsultRules"
@@ -104,6 +125,10 @@
         "max_brief_tokens",
         "field_target_words",
         "orient_after",
+        "reserve_for_end",
+        "clarify",
+        "memory",
+        "surrogates",
         "rules",
         "cooldown_turns",
         "periodic_every",

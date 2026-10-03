@@ -112,6 +112,58 @@
       "title": "AdvisorError",
       "type": "object"
     },
+    "AdvisorFollowup": {
+      "additionalProperties": false,
+      "description": "`clarify`: the advisor asked for one item; this is what was sent back (exposure).",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "advisor_followup",
+          "default": "advisor_followup",
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "requested": {
+          "description": "What the advisor asked for, as it wrote it.",
+          "type": "string"
+        },
+        "sent_text": {
+          "description": "The exact text sent in reply, after redaction.",
+          "type": "string"
+        },
+        "tokens": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "request_id",
+        "requested",
+        "sent_text",
+        "tokens"
+      ],
+      "title": "AdvisorFollowup",
+      "type": "object"
+    },
     "AdvisorRequest": {
       "additionalProperties": false,
       "properties": {
@@ -148,6 +200,11 @@
         "prompt_hash": {
           "description": "Hash of the prompt set that produced the request.",
           "type": "string"
+        },
+        "history_turns": {
+          "description": "Earlier exchanges re-sent with this request (`memory`); 0 otherwise.",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -158,7 +215,8 @@
         "request_id",
         "input_tokens",
         "brief_text",
-        "prompt_hash"
+        "prompt_hash",
+        "history_turns"
       ],
       "title": "AdvisorRequest",
       "type": "object"
@@ -573,12 +631,60 @@
       ],
       "title": "TriggerFired",
       "type": "object"
+    },
+    "TriggerSkipped": {
+      "additionalProperties": false,
+      "description": "A harness trigger that would have fired, and why it did not.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Monotonic per run, starting at 0.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "Unix time in seconds.",
+          "type": "number"
+        },
+        "type": {
+          "const": "trigger_skipped",
+          "default": "trigger_skipped",
+          "type": "string"
+        },
+        "intervention": {
+          "$ref": "#/$defs/Intervention"
+        },
+        "reason": {
+          "description": "e.g. `tests_passed`, `reserved_for_end`, `cooldown`.",
+          "type": "string"
+        },
+        "turn": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "seq",
+        "ts",
+        "type",
+        "intervention",
+        "reason",
+        "turn"
+      ],
+      "title": "TriggerSkipped",
+      "type": "object"
     }
   },
   "discriminator": {
     "mapping": {
       "advice_applied": "#/$defs/AdviceApplied",
       "advisor_error": "#/$defs/AdvisorError",
+      "advisor_followup": "#/$defs/AdvisorFollowup",
       "advisor_request": "#/$defs/AdvisorRequest",
       "advisor_response": "#/$defs/AdvisorResponse",
       "brief_built": "#/$defs/BriefBuilt",
@@ -586,7 +692,8 @@
       "consult_refused": "#/$defs/ConsultRefused",
       "consult_requested": "#/$defs/ConsultRequested",
       "policy_rendered": "#/$defs/PolicyRendered",
-      "trigger_fired": "#/$defs/TriggerFired"
+      "trigger_fired": "#/$defs/TriggerFired",
+      "trigger_skipped": "#/$defs/TriggerSkipped"
     },
     "propertyName": "type"
   },
@@ -604,6 +711,9 @@
       "$ref": "#/$defs/TriggerFired"
     },
     {
+      "$ref": "#/$defs/TriggerSkipped"
+    },
+    {
       "$ref": "#/$defs/BriefBuilt"
     },
     {
@@ -614,6 +724,9 @@
     },
     {
       "$ref": "#/$defs/AdvisorError"
+    },
+    {
+      "$ref": "#/$defs/AdvisorFollowup"
     },
     {
       "$ref": "#/$defs/AdviceApplied"

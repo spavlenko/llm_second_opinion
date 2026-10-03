@@ -34,7 +34,7 @@ class Intervention(StrEnum):
     STUCK = "stuck"  # harness: the stuck heuristic
     ON_TEST_FAILURE = "on_test_failure"  # harness: after a failed test run
     PERIODIC = "periodic"  # harness: every `periodic_every` turns
-    ORIENT = "orient"  # harness: once, after `orient_after` own reads or before the first edit
+    ORIENT = "orient"  # harness: once, after `orient_after` distinct files read, or before the first edit
     BEFORE_DONE = "before_done"  # harness: once, when the executor stops with a change made
 
 
@@ -132,7 +132,28 @@ class AdvisorSettings(Strict):
         description="Length the consult tool asks for in each field the executor writes.",
     )
     orient_after: int = Field(
-        default=3, ge=1, description="Own read actions before the `orient` trigger fires."
+        default=3,
+        ge=1,
+        description="Distinct files the executor has read before the `orient` trigger fires.",
+    )
+    reserve_for_end: int = Field(
+        default=1,
+        ge=0,
+        description="Consults kept for `before_done`: other triggers and the tool stop short of them.",
+    )
+    clarify: bool = Field(
+        default=False,
+        description="The advisor may ask for one item (a file excerpt or the latest test output) "
+        "before answering; the plugin fetches it, redacts it at the level, and sends it.",
+    )
+    memory: bool = Field(
+        default=False,
+        description="The advisor sees this run's earlier briefs and its own answers.",
+    )
+    surrogates: bool = Field(
+        default=False,
+        description="Below L3, redacted names become plausible fake names instead of "
+        "`<role_N>` placeholders.",
     )
     rules: ConsultRules = Field(default_factory=ConsultRules)
     cooldown_turns: int = Field(
@@ -241,6 +262,9 @@ class AdvisorRequest(_Event):
     input_tokens: int = Field(ge=0)
     brief_text: str = Field(description="The exact text sent to the advisor.")
     prompt_hash: str = Field(description="Hash of the prompt set that produced the request.")
+    history_turns: int = Field(
+        ge=0, description="Earlier exchanges re-sent with this request (`memory`); 0 otherwise."
+    )
 
 
 class AdvisorResponse(_Event):
@@ -269,6 +293,25 @@ class AdvisorError(_Event):
     message: str
     status: int | None = Field(default=None, description="HTTP status; None if none came back.")
     latency_ms: float = Field(ge=0)
+
+
+class AdvisorFollowup(_Event):
+    """`clarify`: the advisor asked for one item; this is what was sent back (exposure)."""
+
+    type: Literal["advisor_followup"] = "advisor_followup"
+    request_id: str
+    requested: str = Field(description="What the advisor asked for, as it wrote it.")
+    sent_text: str = Field(description="The exact text sent in reply, after redaction.")
+    tokens: int = Field(ge=0)
+
+
+class TriggerSkipped(_Event):
+    """A harness trigger that would have fired, and why it did not."""
+
+    type: Literal["trigger_skipped"] = "trigger_skipped"
+    intervention: Intervention
+    reason: str = Field(description="e.g. `tests_passed`, `reserved_for_end`, `cooldown`.")
+    turn: int = Field(ge=0)
 
 
 class AdviceApplied(_Event):
@@ -303,10 +346,12 @@ Event = Annotated[
     | ConsultRequested
     | ConsultRefused
     | TriggerFired
+    | TriggerSkipped
     | BriefBuilt
     | AdvisorRequest
     | AdvisorResponse
     | AdvisorError
+    | AdvisorFollowup
     | AdviceApplied
     | BudgetExhausted,
     Field(discriminator="type"),

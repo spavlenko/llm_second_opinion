@@ -10,10 +10,12 @@ export type Event =
   | ConsultRequested
   | ConsultRefused
   | TriggerFired
+  | TriggerSkipped
   | BriefBuilt
   | AdvisorRequest
   | AdvisorResponse
   | AdvisorError
+  | AdvisorFollowup
   | AdviceApplied
   | BudgetExhausted;
 /**
@@ -134,6 +136,30 @@ export interface TriggerFired {
   turn: number;
 }
 /**
+ * A harness trigger that would have fired, and why it did not.
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "TriggerSkipped".
+ */
+export interface TriggerSkipped {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "trigger_skipped";
+  intervention: Intervention;
+  /**
+   * e.g. `tests_passed`, `reserved_for_end`, `cooldown`.
+   */
+  reason: string;
+  turn: number;
+}
+/**
  * This interface was referenced by `Contracts`'s JSON-Schema
  * via the `definition` "BriefBuilt".
  */
@@ -188,6 +214,10 @@ export interface AdvisorRequest {
    * Hash of the prompt set that produced the request.
    */
   prompt_hash: string;
+  /**
+   * Earlier exchanges re-sent with this request (`memory`); 0 otherwise.
+   */
+  history_turns: number;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -244,6 +274,34 @@ export interface AdvisorError {
    */
   status: number | null;
   latency_ms: number;
+}
+/**
+ * `clarify`: the advisor asked for one item; this is what was sent back (exposure).
+ *
+ * This interface was referenced by `Contracts`'s JSON-Schema
+ * via the `definition` "AdvisorFollowup".
+ */
+export interface AdvisorFollowup {
+  schema_version: "1";
+  /**
+   * Monotonic per run, starting at 0.
+   */
+  seq: number;
+  /**
+   * Unix time in seconds.
+   */
+  ts: number;
+  type: "advisor_followup";
+  request_id: string;
+  /**
+   * What the advisor asked for, as it wrote it.
+   */
+  requested: string;
+  /**
+   * The exact text sent in reply, after redaction.
+   */
+  sent_text: string;
+  tokens: number;
 }
 /**
  * This interface was referenced by `Contracts`'s JSON-Schema
@@ -429,9 +487,25 @@ export interface AdvisorSettings {
    */
   field_target_words: number;
   /**
-   * Own read actions before the `orient` trigger fires.
+   * Distinct files the executor has read before the `orient` trigger fires.
    */
   orient_after: number;
+  /**
+   * Consults kept for `before_done`: other triggers and the tool stop short of them.
+   */
+  reserve_for_end: number;
+  /**
+   * The advisor may ask for one item (a file excerpt or the latest test output) before answering; the plugin fetches it, redacts it at the level, and sends it.
+   */
+  clarify: boolean;
+  /**
+   * The advisor sees this run's earlier briefs and its own answers.
+   */
+  memory: boolean;
+  /**
+   * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
+   */
+  surrogates: boolean;
   rules: ConsultRules;
   /**
    * Turns after a consult before a harness trigger may fire.
