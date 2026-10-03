@@ -29,7 +29,7 @@ from typing import Any
 
 from llm_second_opinion.adapters.pi import _SHELL_EDIT, EDIT_TOOLS, TEST_COMMAND
 from llm_second_opinion.config import ADVISOR_MODEL, Arm, ConfigError, Experiment, Price
-from llm_second_opinion.contracts import ModelEndpoint, RoleUsage, UsageRecord
+from llm_second_opinion.contracts import AdvisorSettings, ModelEndpoint, RoleUsage, UsageRecord
 from llm_second_opinion.grading import diff_files
 from llm_second_opinion.metering import (
     UPSTREAM_TIMEOUT_S,
@@ -43,7 +43,7 @@ from llm_second_opinion.metering import (
 )
 from llm_second_opinion.tasks import Task
 
-SCORER_VERSION = 1
+SCORER_VERSION = 2  # 2: role-aware leak rule, follow-ups, uptake, overshoot
 P2P_PENALTY = 0.1  # `partial`: subtracted per broken pass-to-pass test
 FUZZY_RATIO = 0.9  # `advice_copy_share`: a patch line this similar to an advice line is copied
 SHINGLE = 40  # `brief_synthesis_share`: characters in a verbatim window
@@ -51,6 +51,7 @@ SIMILARITY_CHARS = 20_000  # `gold_similarity`: by characters up to this size, e
 PROBE_VERSION = 1  # bump when the probe prompt changes (part of the cache key)
 DEFAULT_LAMBDA = 1.0  # `cost_penalised`: per USD of advisor cost
 DEFAULT_MU = 0.01  # `exposure_penalised`: per 1000 advisor prompt tokens (or per leaked share)
+UPTAKE_TURNS = 5  # `uptake`: turns after a piece of advice in which acting on it counts
 
 ROLES: dict[str, str] = {
     "resolve": "acceptance",
@@ -75,6 +76,11 @@ ROLES: dict[str, str] = {
     "placeholders_sent": "diagnostic",
     "leaked_units": "diagnostic",
     "role_map_leaks": "diagnostic",
+    "uptake_rate": "diagnostic",
+    "answer_overshoot": "diagnostic",
+    "trigger_skipped*": "diagnostic",
+    "advisor_followup_tokens": "diagnostic",
+    "exposure_tokens": "diagnostic",
     "probe_*": "diagnostic",
 }
 
@@ -437,7 +443,14 @@ def tool_outputs(pi_events: list[dict]) -> list[tuple[float | None, str]]:
 
 
 def unredact(text: str, role_map: Mapping[str, str]) -> str:
-    return PLACEHOLDER.sub(lambda m: role_map.get(m[0], m[0]), text)
+    """Placeholders mapped back to names by the run's role map; with `surrogates`, a key that
+    is a fake name rather than a `<role_N>` placeholder is mapped back as a whole name."""
+    text = PLACEHOLDER.sub(lambda m: role_map.get(m[0], m[0]), text)
+    fakes = sorted((k for k in role_map if not PLACEHOLDER.fullmatch(k)), key=len, reverse=True)
+    if not fakes:
+        return text
+    pattern = "|".join(re.escape(k) for k in fakes)
+    return re.sub(rf"(?<![\w/])(?:{pattern})(?![\w/])", lambda m: role_map[m[0]], text)
 
 
 def template_lines(template: str) -> set[str]:
@@ -505,6 +518,237 @@ def consult_counts(events: list[dict], turns: int | None) -> dict[str, Any]:
         "consult_rate": consults / turns if turns else None,
         "consult_refusals": sum(e.get("type") == "consult_refused" for e in events),
     }
+
+
+# --- advice uptake --------------------------------------------------------------------------
+
+
+_FILE_NAME = re.compile(
+    r"(?<![\w.-])(?:[\w.+-]+/)*[\w+-]+\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|ipp|inl|tpp|cmake|py|sh)\b"
+)
+# Code-like names in prose, as the plugin's prose redaction finds them: a::b, f(, snake_case,
+# camelCase, PascalCase with two humps, ALL_CAPS_WITH_UNDERSCORES.
+_PROSE_NAME = re.compile(
+    r"\b[A-Za-z_]\w*(?=\()|\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b"
+    r"|\b[a-z][a-z0-9]*[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|(?<=::)~?[A-Za-z_]\w*"
+)
+_SUGGESTS_TESTS = re.compile(
+    r"run-tests|\bctest\b|\b(?:re-?run|run|build|rebuild|compile)\b[^.\n]{0,40}\btests?\b"
+    r"|\btest suite\b|\brebuild\b",
+    re.IGNORECASE,
+)
+_BUILD_OR_TEST = re.compile(r"\bctest\b|\bmake\b|cmake --build|\bninja\b")
+_SHELL_WORDS = ("grep", "rg", "git", "ctest", "cmake", "make", "sed", "cat", "find", "ls")
+_REFERS = re.compile(
+    r"\b(?:advisor|advice|advised|senior engineer|suggest\w*|recommend\w*)\b", re.IGNORECASE
+)
+
+
+def advice_targets(advice: str) -> dict[str, Any]:
+    """What a piece of advice (names mapped back) points at: file names, identifiers, whether
+    it asks for a test run, and the shell commands it spells out in code spans."""
+    files = {m.rsplit("/", 1)[-1] for m in _FILE_NAME.findall(advice)}
+    names: set[str] = set()
+    for span in _INLINE_CODE.findall(advice):
+        names.update(code_names(span))
+    names.update(n.lstrip("~") for n in _PROSE_NAME.findall(_INLINE_CODE.sub(" ", advice)))
+    names = {n for n in names if n not in KEYWORDS and len(n) >= 3
+             and not re.fullmatch(r"[a-z]{1,7}", n)}  # fmt: skip
+    spans = [normalise(s) for s in _INLINE_CODE.findall(advice)]
+    commands = {s for s in spans if s.split(" ", 1)[0] in _SHELL_WORDS}
+    return {"files": files, "names": names, "tests": bool(_SUGGESTS_TESTS.search(advice)),
+            "commands": {c for c in commands if len(c) >= 6}}  # fmt: skip
+
+
+def _message_text(message: Mapping[str, Any], kinds: tuple[str, ...] = ("text",)) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(b.get("text") or "")
+        for b in content or []
+        if isinstance(b, dict) and b.get("type") in kinds
+    )
+
+
+def _turn_starts(pi_events: list[dict]) -> list[int]:
+    """Index in pi.jsonl of each turn_start: turn n (the plugin's count, from 0) starts there."""
+    return [i for i, e in enumerate(pi_events) if e.get("type") == "turn_start"]
+
+
+def advice_window(
+    pi_events: list[dict], injected: str, after: int, turn: int | None, plan: bool
+) -> tuple[int, int, bool]:
+    """(start, end, located): the slice of pi.jsonl in which the executor may act on one
+    piece of advice: from the message that carried it (found by its text, at or after
+    `after`) to the end of the UPTAKE_TURNS-th turn after that message's own turn. When the
+    text is not found, from the turn after `turn` (the plan's from turn 0) for UPTAKE_TURNS
+    turns."""
+    starts = _turn_starts(pi_events)
+    snippet = normalise(injected)[:160]
+    located = None
+    if snippet:
+        for i in range(after, len(pi_events)):
+            e = pi_events[i]
+            message = e.get("message") if e.get("type") == "message_end" else None
+            if isinstance(message, dict) and snippet in normalise(_message_text(message)):
+                located = i
+                break
+    if located is not None:
+        current = sum(s < located for s in starts) - 1  # the turn the advice arrived in
+        first_turn, start = current + 1, located + 1
+    else:
+        first_turn = 0 if plan else (turn or 0) + 1
+        start = starts[first_turn] if first_turn < len(starts) else len(pi_events)
+    last = first_turn + UPTAKE_TURNS
+    end = starts[last] if last < len(starts) else len(pi_events)
+    return start, end, located is not None
+
+
+def uptake_signals(window: list[dict], targets: Mapping[str, Any]) -> list[str]:
+    """What the executor did in the window that the advice pointed at: `read:<file>`,
+    `edited:<file>`, `edit_uses:<name>`, `searched:<name>`, `ran_tests`, `ran:<command>`,
+    `text:<name or file>`, `text:refers`."""
+    files, names = targets["files"], targets["names"]
+    found: list[str] = []
+
+    def add(signal: str) -> None:
+        if signal not in found:
+            found.append(signal)
+
+    def mentioned(text: str) -> list[str]:
+        out = [f for f in files if file_leaks(f, text)]
+        return out + [n for n in names if re.search(rf"\b{re.escape(n)}\b", text)]
+
+    for e in window:
+        if e.get("type") == "tool_execution_start":
+            name = e.get("toolName") or ""
+            args = e.get("args") if isinstance(e.get("args"), dict) else {}
+            command = str(args.get("command") or "") if name == "bash" else ""
+            path = str(args.get("path") or args.get("file_path") or "")
+            edit = name in EDIT_TOOLS or bool(_SHELL_EDIT.search(command))
+            kind = "edited" if edit else "read"
+            if path and path.rsplit("/", 1)[-1] in files:
+                add(f"{kind}:{path.rsplit('/', 1)[-1]}")
+            for f in files:
+                if command and file_leaks(f, command):
+                    add(f"{kind}:{f}")
+            if edit and name in EDIT_TOOLS:
+                body = json.dumps({k: v for k, v in args.items() if k != "path"})
+                for n in names:
+                    if re.search(rf"\b{re.escape(n)}\b", body):
+                        add(f"edit_uses:{n}")
+            if command and not edit:
+                for n in names:
+                    if re.search(rf"\b{re.escape(n)}\b", command):
+                        add(f"searched:{n}")
+            if targets["tests"] and (TEST_COMMAND in command or _BUILD_OR_TEST.search(command)):
+                add("ran_tests")
+            for c in targets["commands"]:
+                if c in normalise(command):
+                    add(f"ran:{c}")
+        elif e.get("type") == "message_end":
+            message = e.get("message")
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            text = _message_text(message)
+            for m in mentioned(text):
+                add(f"text:{m}")
+            if _REFERS.search(text):
+                add("text:refers")
+    return found
+
+
+def uptake_class(signals: list[str]) -> str:
+    """`acted`: the executor edited a file the advice names or put a name it gives into an
+    edit, or showed signals of two families (files, commands, its own text); `partial`: one
+    family; `ignored`: none."""
+    if any(s.startswith(("edited:", "edit_uses:")) for s in signals):
+        return "acted"
+    families = {
+        "file" if s.startswith("read:") else "text" if s.startswith("text:") else "command"
+        for s in signals
+    }
+    return "acted" if len(families) >= 2 else "partial" if families else "ignored"
+
+
+def overshoot(words: int, target: int | None) -> float | None:
+    """Answer words over `answer_target_words`, minus 1: 0 on target, 0.5 half again as long,
+    negative when shorter. None without a target."""
+    return words / target - 1 if target else None
+
+
+def advice_uptake(
+    events: list[dict], pi_events: list[dict], target_words: int | None
+) -> tuple[list[dict], dict[str, Any]]:
+    """(per consult, per attempt): for each `advice_applied`, the signals that the executor
+    acted on it within UPTAKE_TURNS turns and its class; the answer's length against the
+    target. Per attempt: `uptake_rate` (acted / consults with advice applied), the counts per
+    class, mean answer words and `answer_overshoot` (mean over answers)."""
+    role_map: dict[str, str] = {}
+    answers: dict[str, str] = {}
+    trigger: str | None = None
+    per_consult: list[dict] = []
+    words: list[int] = []
+    after = 0
+    for e in events:
+        kind = e.get("type")
+        if kind == "brief_built":
+            role_map |= e.get("role_map") or {}
+        elif kind == "consult_requested":
+            trigger = "consult"
+        elif kind == "trigger_fired":
+            trigger = str(e.get("intervention"))
+        elif kind == "advisor_response":
+            text = str(e.get("advice_text") or "")
+            answers[str(e.get("request_id"))] = text
+            words.append(len(text.split()))
+        elif kind == "advice_applied":
+            rid = str(e.get("request_id"))
+            injected = str(e.get("injected_text") or "")
+            # The advisor's own answer, names mapped back (the injection wrapper says nothing
+            # about the task); the injected text when no answer was recorded.
+            advice = unredact(answers.get(rid) or injected, role_map)
+            start, end, located = advice_window(
+                pi_events, injected, after, e.get("turn"), trigger == "plan"
+            )
+            after = start if located else after
+            signals = uptake_signals(pi_events[start:end], advice_targets(advice))
+            n = len(answers.get(rid, "").split())
+            per_consult.append({"request_id": rid, "trigger": trigger, "turn": e.get("turn"),
+                                "uptake": uptake_class(signals), "signals": signals,
+                                "located": located, "answer_words": n,
+                                "overshoot": overshoot(n, target_words)})  # fmt: skip
+    classes = [c["uptake"] for c in per_consult]
+    over = [o for w in words if (o := overshoot(w, target_words)) is not None]
+    summary = {
+        "uptake_rate": classes.count("acted") / len(classes) if classes else None,
+        "uptake_acted": classes.count("acted"),
+        "uptake_partial": classes.count("partial"),
+        "uptake_ignored": classes.count("ignored"),
+        "answer_words": sum(words) / len(words) if words else None,
+        "answer_target_words": target_words,
+        "answer_overshoot": sum(over) / len(over) if over else None,
+    }
+    return per_consult, summary
+
+
+def flow_counts(events: list[dict]) -> dict[str, Any]:
+    """`trigger_skipped` events in all and by reason (`trigger_skipped_<reason>`), and the
+    `clarify` follow-ups: their number and tokens. `exposure_tokens` is what the plugin counted
+    as sent to the advisor: brief tokens plus follow-up tokens."""
+    skipped = [e for e in events if e.get("type") == "trigger_skipped"]
+    followups = [e for e in events if e.get("type") == "advisor_followup"]
+    out: dict[str, Any] = {"trigger_skipped": len(skipped)}
+    for e in skipped:
+        key = "trigger_skipped_" + re.sub(r"\W+", "_", str(e.get("reason") or "unknown"))
+        out[key] = out.get(key, 0) + 1
+    out["advisor_followups"] = len(followups)
+    out["advisor_followup_tokens"] = sum(int(e.get("tokens") or 0) for e in followups)
+    out["exposure_tokens"] = out["advisor_followup_tokens"] + sum(
+        int(e.get("input_tokens") or 0) for e in events if e.get("type") == "advisor_request"
+    )
+    return out
 
 
 # --- exposure -------------------------------------------------------------------------------
@@ -944,6 +1188,12 @@ def score_attempt(
     )
     scores["brief_synthesis_share"] = run_share
     scores["brief_synthesis_by_brief"] = per_brief
+    target = (att.advisor.get("advisor") or {}).get(
+        "answer_target_words", AdvisorSettings.model_fields["answer_target_words"].default
+    )
+    per_consult, uptake = advice_uptake(att.events, pi_events, target)
+    scores |= uptake | {"uptake": per_consult}
+    scores |= flow_counts(att.events)
 
     scores |= spent
     sent, distinct = placeholders(sent_text)
@@ -1036,6 +1286,10 @@ DIAGNOSTIC_KEYS = (
     "gold_similarity",
     "advice_copy_share",
     "consult_rate",
+    "uptake_rate",
+    "answer_overshoot",
+    "trigger_skipped",
+    "advisor_followup_tokens",
     "brief_synthesis_share",
     "leaked_units",
     "probe_repo_top1",
@@ -1055,6 +1309,13 @@ def arm_means(records: Iterable[Mapping[str, Any]], keys: Iterable[str] = DIAGNO
         for k in keys:
             values = [s[k] for s in scores if isinstance(s.get(k), (int, float))]
             means[k] = sum(values) / len(values) if values else None
+        reasons: dict[str, int] = {}
+        for sc in scores:
+            for k, v in sc.items():
+                if k.startswith("trigger_skipped_") and isinstance(v, int):
+                    reason = k.removeprefix("trigger_skipped_")
+                    reasons[reason] = reasons.get(reason, 0) + v
+        means["trigger_skipped_by_reason"] = reasons or None  # totals, not means
         out[arm] = means
     return out
 
@@ -1066,21 +1327,29 @@ def format_diagnostics(means: Mapping[str, Mapping[str, Any]], arms: list[str]) 
         return f"{title}\n  none: run `bench score` first"
     keys = [k for k in DIAGNOSTIC_KEYS if any(m.get(k) is not None for m in means.values())]
     short = {"partial": "partial", "gold_similarity": "gold sim", "advice_copy_share": "copy",
-             "consult_rate": "consult/turn", "brief_synthesis_share": "synth",
+             "consult_rate": "consult/turn", "uptake_rate": "uptake",
+             "answer_overshoot": "overshoot", "trigger_skipped": "skips",
+             "advisor_followup_tokens": "followup tok", "brief_synthesis_share": "synth",
              "leaked_units": "leaked", "probe_repo_top1": "probe repo@1",
              "probe_floor_repo_top1": "floor repo@1"}  # fmt: skip
-    header = f"{'arm':<12} {'scored':>6} " + " ".join(f"{short[k]:>12}" for k in keys)
+    header = f"{'arm':<14} {'scored':>6} " + " ".join(f"{short[k]:>12}" for k in keys)
     lines = [title, header, "-" * len(header)]
     for arm in arms:
         m = means.get(arm)
         if not m:
             continue
         cells = " ".join(f"{_fmt(m.get(k)):>12}" for k in keys)
-        lines.append(f"{arm:<12} {m['scored']:>6} {cells}")
+        lines.append(f"{arm:<14} {m['scored']:>6} {cells}")
+    for arm in arms:
+        reasons = (means.get(arm) or {}).get("trigger_skipped_by_reason")
+        if reasons:
+            counts = ", ".join(f"{r} {n}" for r, n in sorted(reasons.items()))
+            lines.append(f"skipped triggers, {arm}: {counts}")
     lines.append(
         "partial = F2P share - 0.1 per broken P2P (feedback); copy = patch lines found in the "
-        "advice; synth = brief share not copied from tool output; leaked = gold-patch names "
-        "and files sent raw; probe repo@1 = repository named first from the briefs (floor: "
+        "advice; uptake = share of advice acted on within 5 turns; overshoot = answer words / "
+        "target - 1; skips = triggers not fired; followup tok = clarify tokens sent; synth = "
+        "brief share not copied from tool output; leaked = gold-patch names and files sent raw; probe repo@1 = repository named first from the briefs (floor: "
         "from the issue alone). Resolve stays the only acceptance score."
     )
     return "\n".join(lines)
@@ -1155,7 +1424,11 @@ def score_experiment(
     path = write_scores(exp_dir, records)
     if tracker is not None:
         for name, means in arm_means(records, _MLFLOW_MEANS).items():
-            metrics = {f"score_mean_{k}": v for k, v in means.items() if v is not None}
+            metrics: dict[str, float] = {
+                f"score_mean_{k}": v for k, v in means.items() if isinstance(v, (int, float))
+            }
+            for reason, n in (means.get("trigger_skipped_by_reason") or {}).items():
+                metrics[f"score_total_trigger_skipped_{reason}"] = n
             tracker.log_arm_summary(name, hashes[name], {}, metrics)
     echo(f"wrote {len(records)} score record(s) to {path}")
     return records
@@ -1164,7 +1437,8 @@ def score_experiment(
 # Arm means logged to MLflow: the report's diagnostics plus the penalised rewards.
 _MLFLOW_MEANS = (*DIAGNOSTIC_KEYS, "resolve", "cost_penalised", "exposure_penalised",
                  "consult_refusals", "consults_on_a0_solved", "role_map_leaks",
-                 "advisor_prompt_tokens", "probe_file_top1", "probe_function_top1")  # fmt: skip
+                 "advisor_prompt_tokens", "probe_file_top1", "probe_function_top1",
+                 "uptake_acted", "uptake_ignored", "answer_words", "exposure_tokens")  # fmt: skip
 
 
 def _score_with_probe(
