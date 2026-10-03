@@ -505,7 +505,14 @@ def model_agent(monkeypatch):
 
 
 def run_metered(exp, tmp_path, preflight=False, tracker=None):
-    runner = Runner(exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None, preflight=preflight)
+    runner = Runner(
+        exp,
+        tmp_path,
+        runtime=FakeRuntime(),
+        echo=lambda _: None,
+        preflight=preflight,
+        proxy_host="127.0.0.1",
+    )
     runner.tracker = tracker
     [outcome] = runner.run()
     [item] = sorted((tmp_path / "m/A/toy-add/seed-0").glob("*/attempt-*"))[-1:]
@@ -581,7 +588,7 @@ def test_missing_usage_fails_the_item(repo, tmp_path, upstream, model_agent):
 def test_preflight_failure_stops_the_batch(repo, tmp_path, upstream, model_agent):
     upstream.reply_stream(sse({"choices": []}))
     runner = Runner(metered_experiment(repo, upstream), tmp_path, runtime=FakeRuntime(),
-                    echo=lambda _: None)  # fmt: skip
+                    echo=lambda _: None, proxy_host="127.0.0.1")  # fmt: skip
     with pytest.raises(PreflightError):
         runner.run()
     assert runner.ledger.rows("m") == [] and runner.proxy is None
@@ -702,7 +709,9 @@ def test_retry_keeps_both_attempts_and_both_spends(repo, tmp_path, upstream, mod
     exp = metered_experiment(repo, upstream, execution={"retries": 1})
     outcome, row, item = run_metered(exp, tmp_path)
     assert outcome.status == "done" and item.name == "attempt-2"
-    runner = Runner(exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None)
+    runner = Runner(
+        exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None, proxy_host="127.0.0.1"
+    )
     attempts = runner.ledger.attempts("m")
     assert [(a["attempt"], a["status"]) for a in attempts] == [(1, "failed"), (2, "done")]
     assert [a["executor_prompt_tokens"] for a in attempts] == [120, 120]

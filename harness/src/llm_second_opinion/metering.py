@@ -567,7 +567,9 @@ def preflight(proxy: MeteringProxy, endpoints: Mapping[str, ModelEndpoint], out_
     for key, endpoint in endpoints.items():
         meter = proxy.register({"executor": endpoint}, out_dir / key / "usage.jsonl", None)
         try:
-            error = _preflight_call(proxy.url(meter, "executor", "127.0.0.1"), endpoint.model)
+            error = _preflight_call(
+                proxy.url(meter, "executor", proxy.server_address[0]), endpoint.model
+            )
             if error is None:
                 meter.close(UPSTREAM_TIMEOUT_S)
                 if not meter.calls:
