@@ -107,9 +107,16 @@ to it. So a turn-0 `plan` brief has no empty "What they have tried:".
 | | `{{trigger}}` | What started the consult: `consult` (the executor) or the intervention's name |
 | `advisor_system` | `{{level}}` | `L0`–`L3` |
 | | `{{max_answer_tokens}}` | The arm's `max_answer_tokens` (a safety ceiling), or `unlimited`; the default set does not use it |
-| | `{{answer_target_words}}` | The arm's `answer_target_words`: the answer length asked for; empty when null, so a `Heading: {{answer_target_words}}` line is dropped |
+| | `{{answer_target_words}}` | The arm's `answer_target_words`: the answer length asked for; empty when null, so a `Heading: {{answer_target_words}}` line or a `{{#answer_target_words}}` section is dropped |
+| | `{{clarify}}` | Non-empty only when the arm has `clarify: true`; for the `{{#clarify}}` section that tells the advisor how to ask for one item |
 | `advice_injection` | `{{advice}}` (required) | The advisor's answer, with abstracted names mapped back |
 | | `{{consults_left}}` | Consults left in the budget after this one |
+
+**Conditional sections.** Lines between `{{#name}}` and `{{/name}}` (each marker alone on its
+line, paired, not nested, `name` one of the slot's placeholders) are kept without the markers
+when `name` renders non-empty, and dropped otherwise, with one blank line next to them. The
+harness checks the markers when it loads a set. The default `advisor_system` puts the word
+limit in such a section at the start and at the end, and the `clarify` instructions in another.
 
 Slot texts are stored with line endings normalised to `\n` and trailing whitespace removed.
 
@@ -156,7 +163,18 @@ placeholders in the brief and `role_map_size` the names mapped so far; `brief_bu
 maps each placeholder that appears in this brief to the real identifier, for the leakage and
 re-identification scorers. The map stays on the machine (`events.jsonl` is local; only the brief
 text is sent). `tokens` is an estimate (4 characters a token), which is the exposure measure
-(cost comes from the metering proxy).
+(cost comes from the metering proxy). The final sweep replaces a known name left raw anywhere
+in the brief as a whole name, also after `.` or `->` (member access, `ctx.parse_specs(`), but
+not inside a longer name or a path (`include/fmt/format.h` stays one file name).
+
+With `surrogates` (below L3), the role map hands out plausible fake names instead of
+placeholders, by role: functions `compute_value_3`, types `Widget7`, macros `TOKEN_FLAG_2`,
+variables `node_4`, namespaces `state_ns1`, files `src/module_2.cpp` (the real extension kept for
+source files), tests `test_item_1`, projects `bufferlib1`. They are drawn from fixed word
+lists by a PRNG seeded with the run identity (experiment, arm, task, seed), so a rerun gets
+the same names, and never equal a word the run has seen (the issue, tool calls and output, the
+executor's words) or another name in the map. `brief_built.role_map` is keyed by the surrogate;
+advice is mapped back by surrogate (and a file surrogate's base name) as a whole name.
 
 **Consult rules.** The consult tool checks, in order, and refuses with a short tool result the
 executor sees, emitting `consult_refused` with the rule's name (and nothing else: no
@@ -165,6 +183,7 @@ executor sees, emitting `consult_refused` with the rule's name (and nothing else
 | Rule (`reason`) | Refuses when | The executor is told |
 | --- | --- | --- |
 | `max_consults` | the budget is spent (`budget_exhausted` the first time too) | "No advisor consults left (N used). Continue on your own." |
+| `reserved_for_end` | `before_done` is enabled and has not fired, and `max_consults − reserve_for_end` consults are used | "The last advisor consult is kept for a final check before you finish (4 of 5 used). Continue on your own." |
 | `tool_cooldown_turns` | the turn is within `rules.tool_cooldown_turns` turns of the last consult, any kind (0: no limit) | "Too soon after the last consult: keep working on your own for N more turns, then consult again if you still need to." |
 | `min_own_actions` | fewer than `rules.min_own_actions` own tool calls since the last consult (or the start) | "Investigate first: run or read something yourself before consulting (0 of 1 tool call so far)." ("since your last consult" after one) |
 | `require_hypothesis` | `rules.require_hypothesis` and `tried` or `hypothesis` has under 5 words | "Say what you tried and what you think the cause is: `tried` and `hypothesis` need at least 5 words each." |
@@ -190,34 +209,45 @@ still over, so the question and short sections survive; `brief_built.truncated` 
 
 - `plan`: once, before the first model call. The question is a fixed "How should I approach
   this task?" over the issue text, so there is no executor plan to review yet.
-- `orient`: once, at the end of the turn in which the executor's own read-type actions reach
-  `orient_after` (default 3): the `read`, `grep`, `find` and `ls` tools, and shell commands
-  whose first word (after any `cd dir &&`) is `cat`, `head`, `tail`, `grep`, `rg`, `ls`,
-  `find`, `sed` (not `-i`), `wc` and the like, or `git log/show/diff/grep/status/blame`; not
-  the tests. If the executor's first edit comes earlier (the edit and write tools, or an
-  in-place shell edit), orient fires just before it, from pi's `tool_call`: the edit is
-  blocked and its tool result is "This edit was not applied: the advisor reviewed your
-  findings before your first change. Read the advice, then re-issue the edit if it still
-  fits." followed by the advice. That is orient's last chance (in cooldown or out of budget,
-  it is skipped); after an edit it never fires. Its brief's `tried` is the recent actions plus
+- `orient`: once, at the end of the turn in which the distinct files the executor has read
+  reach `orient_after` (default 3): the `read` tool's path, and the file arguments of shell
+  commands that print files (`cat`, `head`, `tail`, `nl`, `less`, `sed -n`, `awk`, `grep`,
+  `egrep`, `rg`, in any segment of a `&&`, `;` or `|` chain), where they can be told: a word
+  with an extension, not an option's value, not the pattern or script of grep/sed/awk (unless
+  given with `-e`/`-f`), not a glob or a redirect; `./` is dropped. Directories (`grep -rn x
+  src/`) and the `grep`/`find`/`ls` tools do not count, nor do the tests or edits. Reading the
+  same file again does not count. If the executor's first edit comes earlier (the edit and
+  write tools, or an in-place shell edit), orient fires just before it, from pi's
+  `tool_call`: the edit is blocked and its tool result is "This edit was not applied: the
+  advisor reviewed your findings before your first change. Read the advice, then re-issue the
+  edit if it still fits." followed by the advice. That is orient's last chance (in cooldown,
+  held by the reserve or out of budget, it is skipped); after an edit it never fires. Its brief's `tried` is the recent actions plus
   "Their notes so far:" (the executor's own text from its last 3 turns, each up to 600
   characters, abstracted like the executor's other words), and its question asks whether the
   executor is looking in the right place and what to check before changing anything. This is
   the "consult after orientation" timing (`docs/related-work.md`).
 - `before_done`: once, at the end of a turn whose assistant message has no tool calls (the
-  executor is about to stop), if it has edited a file. The advice is appended with
+  executor is about to stop), if it has edited a file, unless the latest test run since the
+  last edit passed (then `trigger_skipped`, `tests_passed`). The advice is appended with
   `continue: true`, which gives the executor one more turn. The question: "I think I am done."
-  plus the last test result since the last edit ("passed", "failed (output above)", or "I have
-  not run the tests since my last change.") and "Sanity-check my approach given that: is the
-  fix in the right place, and what might I have missed?". When the tests passed after the last
-  edit, older failures are left out of `{{error}}`.
+  plus the last test result since the last edit ("failed (output above)", or "I have not run
+  the tests since my last change.") and "Sanity-check my approach given that: is the fix in
+  the right place, and what might I have missed?".
 - `on_test_failure`: a `bash` call that runs `/opt/lso/run-tests` and fails: non-zero exit, or
   (when piped through `tail`) ctest's "N tests failed out of" with N > 0, "The following tests
   FAILED", or run-tests' "build failed".
 - `stuck`, any of: the same tool call (name and arguments) `repeat_calls` times in a row; the
-  same error `same_error` times since the last consult (error lines compared with numbers and
+  same error `same_error` times since the last reset (error lines compared with numbers and
   whitespace normalised); `no_diff_turns` turns in a row without a file edit (the edit and
-  write tools, or an in-place shell edit such as `sed -i`, `git apply`, `patch`).
+  write tools, or an in-place shell edit such as `sed -i`, `git apply`, `patch`) or progress.
+  **Progress** resets all three counters: a test run, unless it repeats the previous failure
+  (same failing tests and an error already counted), so a passing run, a change in the failing
+  set or a new error is progress; and a new distinct error from a build or a run (not from a
+  read). Repeating the same error counts toward `same_error`, and reverting the executor's own
+  edit (an edit whose replacements undo an earlier edit's, or `git checkout/restore/stash`
+  after an edit) is not an edit for `no_diff_turns`. Never fires while the latest test run
+  passed (`trigger_skipped`, `tests_passed`); a skipped `stuck` resets its counters, so it is
+  not skipped again every turn.
 - `periodic`: at the end of every `periodic_every`-th turn.
 
 Harness triggers are checked at the end of each turn, at most one per turn, in the order
@@ -226,7 +256,17 @@ counters and the own-action count. A harness trigger (orient's edit-time chance 
 not fire in the turn of a consult nor in the `cooldown_turns` turns after it.
 `max_consults` covers every consult, the executor's and the harness's, and counts attempts
 (an advisor error uses one up); a consult refused for budget emits `budget_exhausted` the
-first time only. An answer the provider cut at `max_answer_tokens` (`finish_reason` "length") is still injected, with
+first time only. **Reserve:** while `before_done` is enabled and has not fired, every other
+harness trigger and the consult tool may use at most `max_consults − reserve_for_end`
+(default 1) consults; `before_done` may use all of them. Budget use is read from the events
+(one `consult_requested` or `trigger_fired` per consult); the reserve adds no event of its own
+beyond `trigger_skipped` and `consult_refused`.
+
+A trigger whose condition is met but that does not fire emits `trigger_skipped` with the
+reason, checked in this order: `tests_passed` (`stuck`, `before_done`), `cooldown`, `budget`
+(with `budget_exhausted` the first time), `reserved_for_end`. After a skip for any reason but
+the budget, the next trigger in order may still fire that turn. `orient` skipped by the reserve
+or the budget is done; skipped for cooldown it waits for a later turn. An answer the provider cut at `max_answer_tokens` (`finish_reason` "length") is still injected, with
 "[advice truncated: the advisor hit its answer length limit]" appended on its own line;
 `advisor_response.advice_text` keeps it as received.
 
@@ -240,14 +280,38 @@ appended to pi's system prompt from `before_agent_start` (`appendSystemPrompt`),
 flag is needed. The task text for briefs is the issue inside the adapter's prompt
 (`<issue>…</issue>`).
 
+**Options** (advisor settings, each off by default):
+
+- `clarify`: the advisor's first reply may be a single request, exactly one line,
+  `FILE <path>:<start>-<end>` (at most 40 lines; the path as the brief names it, a placeholder
+  or surrogate mapped back) or `TEST_OUTPUT`; the `{{#clarify}}` section of `advisor_system`
+  says so, and is dropped when the option is off. The plugin fetches the item from the
+  workspace (relative paths only, no `..`) or the latest test run, abstracts it at the arm's
+  level (L3 verbatim; L2 code redacted like excerpts, the last 40 output lines redacted as
+  prose; L1 no code, "Code is not shared at this level (L1).", and the output's error lines;
+  L0 no code and the output as a category) and the role-map sweep, and sends it as a
+  follow-up message: "Here is <the file excerpt | the latest test output> you asked for:", the
+  item, "Now answer the question in the brief." It emits `advisor_followup`, then the second
+  call's `advisor_response`. At most one follow-up per consult (a second request is taken as
+  the answer). Both calls are one consult for the budget, are metered separately by the proxy,
+  and carry the same `X-LSO-Request-Id`.
+- `memory`: each request carries this run's earlier briefs and the advisor's answers (as
+  received, before mapping back) as prior user/assistant messages, after the system message.
+  `advisor_request.history_turns` counts the exchanges, `input_tokens` includes them, and
+  `brief_text` is the new brief only (earlier ones were logged when first sent). A failed
+  consult adds nothing; a `clarify` exchange is kept as its brief and final answer.
+- `surrogates`: fake names instead of placeholders below L3 (see Abstraction levels).
+
 **What is logged.** Once at session start, before any trigger, `policy_rendered` records the
 help-policy text the executor sees: the prompt hash, the rendered `executor_guidance` exactly as
 appended to the system prompt, and the rendered consult tool description (null when the tool is
 not registered). Every consult then emits, in order, `consult_requested` (the executor's
 question) or `trigger_fired`, `brief_built`, `advisor_request` (before sending: the exact user
-message and the prompt hash), then `advisor_response` or `advisor_error`, and `advice_applied`
+message and the prompt hash), then `advisor_response` or `advisor_error` (with `clarify`
+possibly `advisor_response`, `advisor_followup`, `advisor_response`), and `advice_applied`
 when the advice was injected (with the turn it was injected in and the code lines cut). A
-refused consult tool call emits only `consult_refused` (see Consult rules).
+refused consult tool call emits only `consult_refused` (see Consult rules); a harness trigger
+that was due but did not fire emits only `trigger_skipped`.
 `advisor_request.input_tokens`
 is the 4-characters-a-token estimate; `advisor_response.prompt_tokens` and `reasoning_tokens`
 are the provider's own counts from its `usage` (`prompt_tokens`,
@@ -787,10 +851,12 @@ field named like a key is dropped too).
 | --- | --- |
 | `policy_rendered` | once per advisor run, first: prompt hash, the executor guidance as appended to the system prompt, the consult tool description (null when not registered) |
 | `consult_requested` | the executor's question, turn |
-| `consult_refused` | the rule that refused the consult tool (`max_consults`, `tool_cooldown_turns`, `min_own_actions`, `require_hypothesis`), turn |
+| `consult_refused` | the rule that refused the consult tool (`max_consults`, `reserved_for_end`, `tool_cooldown_turns`, `min_own_actions`, `require_hypothesis`), turn |
 | `trigger_fired` | intervention, reason, turn |
-| `brief_built` | level, tokens, identifiers redacted, role-map size, whether it was cut at `max_brief_tokens`, role map (placeholder to identifier, for the placeholders in this brief) |
-| `advisor_request` | request id, input tokens (an estimate: 4 characters a token), brief text, prompt hash |
+| `trigger_skipped` | intervention, reason (`tests_passed`, `cooldown`, `reserved_for_end`, `budget`), turn: a harness trigger whose condition was met but that did not fire |
+| `brief_built` | level, tokens, identifiers redacted, role-map size, whether it was cut at `max_brief_tokens`, role map (placeholder, or surrogate with `surrogates`, to identifier, for those in this brief) |
+| `advisor_request` | request id, input tokens (an estimate: 4 characters a token; with `memory`, the re-sent history included), brief text (the new brief only), prompt hash, history turns (earlier exchanges re-sent, `memory`; 0 otherwise) |
+| `advisor_followup` | `clarify`: request id, what the advisor asked for (as it wrote it), the exact text sent back (redacted at the level), its tokens (estimate). Between the consult's two `advisor_response` events |
 | `advisor_response` | request id, output tokens, cached tokens, prompt and reasoning tokens (the provider's counts; null when not reported), finish reason (`stop`, `length`, ...; null when not reported), latency (ms), the advice text exactly as received |
 | `advisor_error` | request id, message, HTTP status (null when no response came back), latency (ms) |
 | `advice_applied` | request id, turn it was injected at, the exact text the executor was given, code lines cut by `max_advice_code_lines` |
@@ -1192,3 +1258,4 @@ llm_second_opinion/
 | 2026-10-03 | The metering proxy holds an upstream 429 (quota window) and retries after `Retry-After` or a doubling backoff from 15 s, up to 8 min per call (under pi's 10-min client timeout); each 429 is recorded as a failed call. A 429 about money (balance, billing, suspended) is passed through at once. |
 | 2026-10-03 | Help-flow improvements from smoke round 3 (contracts): `orient_after` counts distinct files read; `reserve_for_end` keeps consults for `before_done`; optional `clarify` (advisor asks for one item, plugin fetches and redacts it; `advisor_followup`), `memory` (earlier exchanges re-sent; `advisor_request.history_turns`), `surrogates` (fake names instead of placeholders); `trigger_skipped` records triggers that did not fire and why. |
 | 2026-10-03 | Help-flow diagnostics and pilot arms. Scorers (version 2): advice `uptake` per consult (acted / partial / ignored from file, command and text signals within 5 turns) and `uptake_rate`; `answer_overshoot` = answer words / `answer_target_words` − 1; `trigger_skipped` by reason; `clarify` follow-up tokens as exposure, follow-up texts scanned by the leak scorers. The leak detectors share one role-aware rule, calibrated by a planted-leak test that found misses (member access, a file by name, short or differently-cased project names, follow-ups). Pilot gains `H-consult-only` (with `reserve_for_end: 0`), `H-clarify`, `H-memory`, `H-surrogates`: 300 items. |
+| 2026-10-03 | Help flow implemented in the plugin. `orient` counts distinct files read (the read tool's path, file arguments of printing shell commands). `stuck`: progress (a test run that does not repeat the previous failure, a new error from a build or run) resets its counters; repeated errors and reverts count; never after a passing test run. `before_done` is skipped when the tests passed since the last edit. `trigger_skipped` (`tests_passed`, `cooldown`, `budget`, `reserved_for_end`); the next trigger may fire after a skip. `reserve_for_end` (default 1) holds consults for `before_done` from other triggers and the tool (`consult_refused`, `reserved_for_end`). `clarify`, `memory`, `surrogates` as specified under Options. Prompt slots gain conditional sections (`{{#name}}`…`{{/name}}`, checked at load) and `advisor_system` the `{{clarify}}` placeholder. Default prompts: the executor is given concrete moments to consult, without wording that makes it sound risky; the advisor gets the word limit first and last and at most 3 next steps. The sweep now replaces names after `.` and `->`. The default prompt hash and the advisor arm hash change, deliberately (re-pinned in `test_config.py`). |
