@@ -184,6 +184,11 @@ class Attempt:
         return [str(e.get("brief_text") or "") for e in self.of("advisor_request")]
 
     @property
+    def sent(self) -> list[str]:
+        """The briefs and the `clarify` follow-ups: all text sent to the advisor."""
+        return sent_texts(self.events)
+
+    @property
     def level(self) -> str | None:
         built = self.of("brief_built")
         if built:
@@ -506,11 +511,21 @@ def consult_counts(events: list[dict], turns: int | None) -> dict[str, Any]:
 
 
 def leaks(name: str, text: str) -> bool:
-    """A name appearing raw as a whole name, by the plugin's own sweep rule (and
-    scripts/smoke-check.py): plain lowercase words under 8 letters are not counted."""
+    """A name appearing raw as a whole name: not inside a longer name or a path, but after a
+    `.` or `->` (a member access) it counts. Plain lowercase words under 8 letters are not
+    counted (the plugin's sweep leaves those raw by design)."""
     if len(name) < 3 or re.fullmatch(r"[a-z]{1,7}", name):
         return False
-    return re.search(rf"(?<![\w/.]){re.escape(name)}(?![\w/])", text) is not None
+    return re.search(rf"(?<![\w/]){re.escape(name)}(?![\w/])", text) is not None
+
+
+def project_leaks(name: str, text: str) -> bool:
+    """A project name appearing raw, as the plugin's sweep treats project names: in any case,
+    short lowercase names too (`fmt`), and inside a path (`include/fmt/core.h`)."""
+    if len(name) < 3:
+        return False
+    pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 
 def file_leaks(path: str, text: str) -> bool:
@@ -519,6 +534,26 @@ def file_leaks(path: str, text: str) -> bool:
         return True
     name = path.rsplit("/", 1)[-1]
     return re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", text) is not None
+
+
+def role_leaks(placeholder: str, name: str, text: str) -> bool:
+    """A role-map name appearing raw, by its role: project names by `project_leaks`, files by
+    `file_leaks` (path or file name), every other name (and a surrogate's) by `leaks`."""
+    if placeholder.startswith("<project_"):
+        return project_leaks(name, text)
+    if placeholder.startswith("<file_"):
+        return file_leaks(name, text)
+    return leaks(name, text)
+
+
+def sent_texts(events: list[dict]) -> list[str]:
+    """Everything that left the machine for the advisor: the briefs, and what `clarify` sent
+    back after the advisor asked for an item."""
+    return [
+        str(e.get("brief_text") if e.get("type") == "advisor_request" else e.get("sent_text"))
+        for e in events
+        if e.get("type") in ("advisor_request", "advisor_followup")
+    ]
 
 
 _COMMENT = re.compile(r"//.*$|/\*.*?\*/|/\*.*$|^\s*\*.*$")
@@ -553,7 +588,7 @@ def gold_units(gold: str) -> tuple[list[str], list[str]]:
 
 def leaked_units(briefs: list[str], gold: str) -> tuple[float | None, list[str], int]:
     """(share, leaked, units): PAPILLON-style, the share of the gold patch's identifiers and
-    file paths that appear raw in any brief. None without a gold patch."""
+    file paths that appear raw in any text sent (briefs and `clarify` follow-ups). None without a gold patch."""
     identifiers, files = gold_units(gold)
     units = len(identifiers) + len(files)
     if not units:
@@ -564,17 +599,17 @@ def leaked_units(briefs: list[str], gold: str) -> tuple[float | None, list[str],
 
 
 def role_map_leaks(events: list[dict]) -> list[str]:
-    """Names of the run's role map that appear raw in a brief (by `leaks`): what the
-    redaction meant to hide and sent anyway. Counted against the role map known when each
-    brief was sent."""
+    """Names of the run's role map that appear raw in a brief or a `clarify` follow-up (by
+    `role_leaks`): what the redaction meant to hide and sent anyway. Counted against the role
+    map known when each text was sent."""
     names: dict[str, str] = {}
     found: set[str] = set()
     for e in events:
         if e.get("type") == "brief_built":
             names |= e.get("role_map") or {}
-        elif e.get("type") == "advisor_request":
-            brief = str(e.get("brief_text") or "")
-            found.update(n for n in names.values() if leaks(n, brief))
+        elif e.get("type") in ("advisor_request", "advisor_followup"):
+            [text] = sent_texts([e])
+            found.update(n for p, n in names.items() if role_leaks(p, n, text))
     return sorted(found)
 
 
@@ -883,6 +918,7 @@ def score_attempt(
     if turns is None and pi_events:
         turns = sum(e.get("type") == "turn_end" for e in pi_events)
     briefs = att.briefs
+    sent_text = att.sent  # briefs and `clarify` follow-ups
     advice = [str(e.get("advice_text") or "") for e in att.of("advisor_response")]
     advice += [str(e.get("injected_text") or "") for e in att.of("advice_applied")]
 
@@ -910,14 +946,14 @@ def score_attempt(
     scores["brief_synthesis_by_brief"] = per_brief
 
     scores |= spent
-    sent, distinct = placeholders(briefs)
+    sent, distinct = placeholders(sent_text)
     scores |= {"briefs": len(briefs), "placeholders_sent": sent, "placeholders_distinct": distinct}
     if att.cloud_executor:  # the advisor model is the executor: it reads the code itself
         identifiers, files = gold_units(att.task.gold_patch)
         units = identifiers + files
         leaked, names, n_units = (1.0 if units else None), units, len(units)
     else:
-        leaked, names, n_units = leaked_units(briefs, att.task.gold_patch)
+        leaked, names, n_units = leaked_units(sent_text, att.task.gold_patch)
     scores |= {"leaked_units": leaked, "leaked_units_list": names, "gold_units": n_units}
     role_leaks = role_map_leaks(att.events)
     scores |= {"role_map_leaks": len(role_leaks), "role_map_leaks_list": role_leaks}
@@ -929,10 +965,10 @@ def score_attempt(
         None if exposure is None else resolve - params.exposure_mu * exposure
     )
 
-    if ask is not None and briefs:
+    if ask is not None and sent_text:
         truth = truth_of(att.task)
         separator = "\n\n----- next message -----\n\n"
-        scores |= probe_scores(ask(separator.join(briefs)), truth, "probe")
+        scores |= probe_scores(ask(separator.join(sent_text)), truth, "probe")
         floor = redact_issue(att.task.problem_statement, att.level, full_role_map(att.events))
         scores |= probe_scores(ask(floor), truth, "probe_floor")
     return scores

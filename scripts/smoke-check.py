@@ -11,13 +11,13 @@ plugin events.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness/src"))
 from llm_second_opinion.contracts import parse_events
+from llm_second_opinion.scorers import role_leaks
 
 AGENT_FILES = ("pi.jsonl", "timeline.jsonl", "usage.jsonl", "patch.diff", "grade.log")
 
@@ -28,12 +28,24 @@ def jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def leaks(name: str, text: str) -> bool:
-    """A role-map name appearing raw as a whole name, by the plugin's own sweep rule: plain
-    lowercase words under 8 letters (`name`, `parse`) are not counted."""
-    if len(name) < 3 or re.fullmatch(r"[a-z]{1,7}", name):
-        return False
-    return re.search(rf"(?<![\w/.]){re.escape(name)}(?![\w/])", text) is not None
+def brief_leaks(events: list[dict], level: str) -> list[str]:
+    """Below L3: one problem per text sent to the advisor (a brief, or a `clarify` follow-up)
+    that holds a role-map name raw, by the scorers' rule (`role_leaks`: projects in any case,
+    files by path or file name, member accesses count; short plain lowercase words do not)."""
+    if level == "L3":
+        return []
+    names: dict[str, str] = {}
+    problems = []
+    for e in events:
+        if e["type"] == "brief_built":
+            names |= e.get("role_map") or {}
+        elif e["type"] in ("advisor_request", "advisor_followup"):
+            text = e["brief_text"] if e["type"] == "advisor_request" else e["sent_text"]
+            leaked = sorted({n for p, n in names.items() if role_leaks(p, n, text)})
+            if leaked:
+                what = "brief" if e["type"] == "advisor_request" else "follow-up"
+                problems.append(f"{e['request_id']}: {level} {what} contains {leaked}")
+    return problems
 
 
 def counts(item: Path) -> Counter[str]:
@@ -96,19 +108,14 @@ def check(item: Path) -> list[str]:
         problems.append(f"first event is {events[0]['type']}, not policy_rendered")
 
     level = advisor["level"]
-    names: dict[str, str] = {}
+    problems += brief_leaks(events, level)
     for e in events:
         kind = e["type"]
         if kind == "brief_built":
-            names |= e["role_map"]
             if e["truncated"]:
                 problems.append(f"brief cut at max_brief_tokens ({e['tokens']} tokens)")
         elif kind == "advisor_request":
             brief = e["brief_text"]
-            if level != "L3":
-                leaked = sorted({n for n in names.values() if leaks(n, brief)})
-                if leaked:
-                    problems.append(f"{e['request_id']}: {level} brief contains {leaked[:5]}")
             if len(brief) < 120:
                 problems.append(f"{e['request_id']}: brief only {len(brief)} chars")
         elif kind == "advisor_response":
