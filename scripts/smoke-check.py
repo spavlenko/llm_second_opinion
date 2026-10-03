@@ -1,9 +1,11 @@
-"""Flag anomalies in a smoke run: one line per problem, nothing when the run is clean.
+"""Flag anomalies in a smoke run: one line per problem, nothing when the run is clean, then
+the anti-delegation counts: consults refused (by rule), advice code lines cut, briefs cut.
 
     harness/.venv/bin/python scripts/smoke-check.py RUNS_DIR/<experiment>
 
 Walks every item directory (any directory holding result.json) and checks artifacts, events,
-advisor exchanges, leakage below L3, and proxy usage against plugin events.
+advisor exchanges, leakage below L3, briefs cut at max_brief_tokens, and proxy usage against
+plugin events.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness/src"))
@@ -33,6 +36,30 @@ def leaks(name: str, text: str) -> bool:
     return re.search(rf"(?<![\w/.]){re.escape(name)}(?![\w/])", text) is not None
 
 
+def counts(item: Path) -> Counter[str]:
+    """Consults refused (`refused` and `refused:<rule>`), advice code lines cut, briefs cut."""
+    out: Counter[str] = Counter()
+    for e in jsonl(item / "events.jsonl"):
+        if e.get("type") == "consult_refused":
+            out["refused"] += 1
+            out[f"refused:{e.get('reason')}"] += 1
+        elif e.get("type") == "advice_applied":
+            out["code_lines_removed"] += e.get("code_lines_removed") or 0
+        elif e.get("type") == "brief_built" and e.get("truncated"):
+            out["briefs_truncated"] += 1
+    return out
+
+
+def describe(c: Counter[str]) -> str:
+    rules = ", ".join(
+        f"{k.split(':', 1)[1]} {n}" for k, n in sorted(c.items()) if k.startswith("refused:")
+    )
+    return (
+        f"consults refused {c['refused']}{f' ({rules})' if rules else ''}; "
+        f"advice code lines cut {c['code_lines_removed']}; briefs cut {c['briefs_truncated']}"
+    )
+
+
 def check(item: Path) -> list[str]:
     problems: list[str] = []
     result = json.loads((item / "result.json").read_text())
@@ -46,11 +73,7 @@ def check(item: Path) -> list[str]:
         problems.append(f"crash: {(result.get('detail') or '')[:200]}")
     elif result["exit_reason"] != "finished":
         problems.append(f"exit {result['exit_reason']} after {result['turns']} turns")
-    stderr = (
-        (item / "pi.stderr").read_text().strip()
-        if (item / "pi.stderr").exists()
-        else ""
-    )
+    stderr = (item / "pi.stderr").read_text().strip() if (item / "pi.stderr").exists() else ""
     if stderr:
         problems.append(f"pi stderr: {stderr[-200:]}")
 
@@ -62,9 +85,7 @@ def check(item: Path) -> list[str]:
     if not advisor:
         return problems
 
-    text = (
-        (item / "events.jsonl").read_text() if (item / "events.jsonl").exists() else ""
-    )
+    text = (item / "events.jsonl").read_text() if (item / "events.jsonl").exists() else ""
     try:
         events = [e.model_dump() for e in parse_events(text)]
     except Exception as e:  # noqa: BLE001 - report any schema failure
@@ -80,14 +101,14 @@ def check(item: Path) -> list[str]:
         kind = e["type"]
         if kind == "brief_built":
             names |= e["role_map"]
+            if e["truncated"]:
+                problems.append(f"brief cut at max_brief_tokens ({e['tokens']} tokens)")
         elif kind == "advisor_request":
             brief = e["brief_text"]
             if level != "L3":
                 leaked = sorted({n for n in names.values() if leaks(n, brief)})
                 if leaked:
-                    problems.append(
-                        f"{e['request_id']}: {level} brief contains {leaked[:5]}"
-                    )
+                    problems.append(f"{e['request_id']}: {level} brief contains {leaked[:5]}")
             if len(brief) < 120:
                 problems.append(f"{e['request_id']}: brief only {len(brief)} chars")
         elif kind == "advisor_response":
@@ -107,9 +128,7 @@ def check(item: Path) -> list[str]:
     requests = sum(e["type"] == "advisor_request" for e in events)
     metered = sum(u["role"] == "advisor" for u in usage)
     if requests != metered:
-        problems.append(
-            f"{requests} advisor_request events but {metered} metered advisor calls"
-        )
+        problems.append(f"{requests} advisor_request events but {metered} metered advisor calls")
     applied = sum(e["type"] == "advice_applied" for e in events)
     answered = sum(e["type"] == "advisor_response" for e in events)
     if applied != answered:
@@ -123,14 +142,20 @@ def main(root: Path) -> int:
         print(f"no items under {root}")
         return 1
     bad = 0
+    total: Counter[str] = Counter()
     for item in items:
         problems = check(item)
-        if problems:
-            bad += 1
+        c = counts(item)
+        total += c
+        if problems or c["refused"] or c["code_lines_removed"]:
             print(f"{item.relative_to(root)}")
-            for p in problems:
-                print(f"  - {p}")
+        for p in problems:
+            print(f"  - {p}")
+        if c["refused"] or c["code_lines_removed"]:
+            print(f"  · {describe(c)}")
+        bad += bool(problems)
     print(f"{len(items)} item(s), {bad} with problems")
+    print(describe(total))
     return 1 if bad else 0
 
 

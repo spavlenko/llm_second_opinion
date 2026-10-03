@@ -57,7 +57,24 @@ export function editsFiles(obs: ToolObservation): boolean {
   return obs.name === "bash" && BASH_EDIT.test(String(obs.args.command ?? ""));
 }
 
-const ERROR_LINE = /\berror\b|\bfailed\b|\bFAILED\b|\bassert|\bexception\b|\bundefined reference\b|\bnot found\b|\bfatal\b/i;
+const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+// Shell commands that only look: the first word of the command (after any `cd dir &&`).
+const READ_COMMANDS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "rg", "ag", "ls", "find", "tree", "wc", "nl", "sed", "awk", "file", "stat"]);
+const GIT_READ = new Set(["log", "show", "diff", "grep", "status", "blame", "ls-files"]);
+
+/** Did the call only look at the code? The read-type tools, and shell commands that read
+ * (cat, grep, ls, find, git log, ...), not the tests and not an in-place edit. */
+export function readsCode(obs: Pick<ToolObservation, "name" | "args">): boolean {
+  if (READ_TOOLS.has(obs.name)) return true;
+  if (obs.name !== "bash") return false;
+  const command = String(obs.args.command ?? "");
+  if (command.includes(TEST_COMMAND) || BASH_EDIT.test(command)) return false;
+  const words = command.replace(/^\s*(cd\s+\S+\s*(&&|;)\s*)+/, "").trim().split(/\s+/);
+  if (words[0] === "git") return GIT_READ.has(words.find((w, i) => i > 0 && !w.startsWith("-")) ?? "");
+  return READ_COMMANDS.has(words[0] ?? "");
+}
+
+const ERROR_LINE =/\berror\b|\bfailed\b|\bFAILED\b|\bassert|\bexception\b|\bundefined reference\b|\bnot found\b|\bfatal\b/i;
 const EXIT_STATUS = /^Command exited with code \d+$/;
 
 /** The error lines of a failed call's output (up to `max`), or its last lines when none look

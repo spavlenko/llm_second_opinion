@@ -55,13 +55,13 @@ def advisor_spans(events: list[dict], advice: dict[str, dict] | None = None) -> 
     """One span per consult from the plugin's events.jsonl: trigger or request, then the brief
     and the advisor call, ending when the advice was applied. `advice` (request id -> record of
     the plugin's advice.jsonl) adds the system prompt and the advice text, which events do
-    not carry. A consult refused for budget is a span of its own."""
+    not carry. A consult refused (by a consult rule or the budget) is a span of its own."""
     advice = advice or {}
     groups: list[dict[str, dict]] = []
     by_request: dict[str, dict[str, dict]] = {}
     for e in events:
         kind = e.get("type")
-        if kind in ("trigger_fired", "consult_requested", "budget_exhausted"):
+        if kind in ("trigger_fired", "consult_requested", "budget_exhausted", "consult_refused"):
             groups.append({"start": e})
         elif kind in ("brief_built", "advisor_request") and groups:
             groups[-1][kind] = e
@@ -80,6 +80,9 @@ def _consult_span(g: dict[str, dict], advice: dict[str, dict]) -> Span:
     if start["type"] == "budget_exhausted":
         attrs = {"consults_used": start["consults_used"], "limit": start["limit"]}
         return Span("advisor: budget exhausted", "CHAIN", t0, t0, attributes=attrs)
+    if start["type"] == "consult_refused":
+        attrs = {"reason": start["reason"], "turn": start["turn"]}
+        return Span("advisor: consult refused", "CHAIN", t0, t0, attributes=attrs)
     intervention = start.get("intervention", "consult")
     brief, request = g.get("brief_built"), g.get("advisor_request")
     error, response = g.get("advisor_error"), g.get("advisor_response")
@@ -131,13 +134,23 @@ def _consult_span(g: dict[str, dict], advice: dict[str, dict]) -> Span:
     )
 
 
+NEST_SKEW_NS = 100_000_000
+"""How much earlier than its parent a nested span may start: pi's extension handlers run
+asynchronously, so the timeline's `tool_start` mark can land a few ms after the consult tool's
+first event."""
+
+
 def nest(spans: list[Span], extra: list[Span]) -> list[Span]:
     """`extra` spans placed under the deepest span that was open when each started (a consult
-    tool call inside its tool span), else among `spans`; siblings in start order."""
+    tool call inside its tool span), else among `spans`; siblings in start order. A span that
+    starts just before a sibling (within NEST_SKEW_NS) and inside no other goes under it."""
     for span in extra:
         siblings = spans
         while True:
-            parent = next((s for s in siblings if s.start_ns <= span.start_ns <= s.end_ns), None)
+            t = span.start_ns
+            parent = next((s for s in siblings if s.start_ns <= t <= s.end_ns), None) or next(
+                (s for s in siblings if s.start_ns - NEST_SKEW_NS <= t <= s.end_ns), None
+            )
             if parent is None:
                 break
             siblings = parent.children

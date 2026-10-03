@@ -21,10 +21,10 @@ from llm_second_opinion.contracts import PromptSet, PromptSlot, PromptTexts, Str
 # The placeholders each slot may use. Changing a list changes what the plugin must render.
 _BRIEF = ("task_summary", "tried", "error", "hypothesis", "question", "code", "level", "trigger")
 PLACEHOLDERS: dict[PromptSlot, tuple[str, ...]] = {
-    PromptSlot.EXECUTOR_GUIDANCE: ("max_consults",),
-    PromptSlot.CONSULT_TOOL: ("max_consults",),
+    PromptSlot.EXECUTOR_GUIDANCE: ("max_consults", "field_target_words"),
+    PromptSlot.CONSULT_TOOL: ("max_consults", "field_target_words"),
     PromptSlot.BRIEF: _BRIEF,
-    PromptSlot.ADVISOR_SYSTEM: ("level", "max_answer_tokens"),
+    PromptSlot.ADVISOR_SYSTEM: ("level", "max_answer_tokens", "answer_target_words"),
     PromptSlot.ADVICE_INJECTION: ("advice", "consults_left"),
 }
 # Placeholders a slot must use, or the slot would drop what it exists to carry.

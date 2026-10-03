@@ -82,7 +82,25 @@ def test_unknown_placeholder_fails_with_file_and_name(tmp_path):
     message = str(e.value)
     assert str(bad / "advisor_system.md") in message
     assert "{{advice}}, {{ level }}" in message
-    assert "allowed: {{level}}, {{max_answer_tokens}}" in message
+    assert "allowed: {{level}}, {{max_answer_tokens}}, {{answer_target_words}}" in message
+
+
+def test_size_targets_are_placeholders_of_their_slots_only(tmp_path):
+    good = prompt_dir(
+        tmp_path / "good",
+        executor_guidance="Fields under {{field_target_words}} words.",
+        consult_tool="Each field under {{field_target_words}} words.",
+        advisor_system="At most this many words: {{answer_target_words}}",
+    )
+    assert "{{answer_target_words}}" in read_directory(good)[PromptSlot.ADVISOR_SYSTEM]
+    for slot, name in [
+        ("consult_tool", "answer_target_words"),
+        ("advisor_system", "field_target_words"),
+        ("brief", "field_target_words"),
+    ]:
+        bad = prompt_dir(tmp_path / f"bad-{slot}", **{slot: f"x {{{{{name}}}}}"})
+        with pytest.raises(PromptError, match=f"unknown placeholder\\(s\\) {{{{{name}}}}}"):
+            read_directory(bad)
 
 
 @pytest.mark.parametrize(

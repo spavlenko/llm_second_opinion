@@ -6,8 +6,10 @@ import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } fr
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession, TRUNCATED_MARKER } from "../src/session.js";
-import { promptSet, runConfig, validateEvent } from "./helpers.js";
+import { type AdviceRecord, AdvisorSession, type ConsultArgs, TRUNCATED_MARKER } from "../src/session.js";
+import { CODE_CUT_NOTE } from "../src/advice.js";
+import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
+import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
 
 const PROMPTS: PromptSet = {
   name: "test",
@@ -15,7 +17,7 @@ const PROMPTS: PromptSet = {
   texts: {
     executor_guidance: "Consult at most {{max_consults}} times.",
     consult_tool: "Ask the advisor ({{max_consults}} max).",
-    brief: "[{{trigger}} {{level}}] {{task_summary}}\nQ: {{question}}\nE: {{error}}",
+    brief: "[{{trigger}} {{level}}] {{task_summary}}\n\nQ: {{question}}\nT: {{tried}}\nE: {{error}}",
     advisor_system: "Advise at {{level}}. Max {{max_answer_tokens}} tokens.",
     advice_injection: "{{advice}} ({{consults_left}} left)",
   },
@@ -203,11 +205,232 @@ describe("advisor session", () => {
       "brief_built",
       "advisor_request",
       "advisor_response",
-      "consult_requested",
+      "consult_refused",
       "budget_exhausted",
-      "consult_requested",
+      "consult_refused",
     ]);
+    expect(ev[5]).toMatchObject({ reason: "max_consults" });
     expect(ev[6]).toMatchObject({ consults_used: 1, limit: 1 });
+  });
+
+  describe("consult rules", () => {
+    const strict = { rules: DEFAULT_RULES };
+    const good = {
+      question: "Why does `parse_value()` fail?",
+      tried: "Ran the tests and read the parser code.",
+      hypothesis: "The empty case returns before setting the result.",
+    };
+    const read: ToolObservation = { name: "read", args: { path: "src/v.cpp" }, result: "code", isError: false };
+
+    async function refused(session: AdvisorSession, args: ConsultArgs = good) {
+      const { text, advice } = await session.consultTool(args);
+      expect(advice).toBeNull();
+      return text;
+    }
+
+    it("min_own_actions: no consult before the executor has done anything, nor right after one", async () => {
+      const { session, client, events } = setup({ ...strict, rules: { ...DEFAULT_RULES, tool_cooldown_turns: 0 } }, ["a", "b"]);
+      session.turnStart(0);
+      expect(await refused(session)).toBe("Investigate first: run or read something yourself before consulting (0 of 1 tool call so far).");
+      session.observe(read);
+      expect((await session.consultTool(good)).advice).not.toBeNull();
+      expect(await refused(session)).toMatch(/^Investigate first: run or read something since your last consult/);
+      session.observe(read);
+      expect((await session.consultTool(good)).advice).not.toBeNull();
+      const ev = events();
+      expectValid(ev);
+      expect(ev.filter((e) => e.type === "consult_refused")).toMatchObject([
+        { reason: "min_own_actions", turn: 0 },
+        { reason: "min_own_actions", turn: 0 },
+      ]);
+      expect(ev.filter((e) => e.type === "consult_requested")).toHaveLength(2);
+      expect(client.requests).toHaveLength(2);
+      expect(session.engine.consultsUsed).toBe(2); // refusals use up nothing
+    });
+
+    it("tool_cooldown_turns: refused within that many turns of the last consult, harness ones included", async () => {
+      const { session, events } = setup({ ...strict, interventions: ["plan", "consult"] }, ["plan", "a"]);
+      session.turnStart(0);
+      await session.atStart(); // a consult at turn 0
+      for (const turn of [0, 1, 2]) {
+        session.turnStart(turn);
+        session.observe(read);
+        expect(await refused(session)).toMatch(new RegExp(`^Too soon after the last consult: keep working on your own for ${3 - turn} more turns?,`));
+      }
+      session.turnStart(3);
+      expect((await session.consultTool(good)).advice).not.toBeNull();
+      const reasons = events().filter((e) => e.type === "consult_refused").map((e: any) => e.reason);
+      expect(reasons).toEqual(["tool_cooldown_turns", "tool_cooldown_turns", "tool_cooldown_turns"]);
+    });
+
+    it("require_hypothesis: tried and hypothesis of at least 5 words each", async () => {
+      const { session, events } = setup(strict, ["a"]);
+      session.observe(read);
+      const message = "Say what you tried and what you think the cause is: `tried` and `hypothesis` need at least 5 words each.";
+      expect(await refused(session, { question: "q" })).toBe(message);
+      expect(await refused(session, { ...good, hypothesis: "none yet" })).toBe(message);
+      expect(await refused(session, { ...good, tried: "read the issue" })).toBe(message);
+      expect((await session.consultTool(good)).advice).not.toBeNull();
+      expect(events().filter((e) => e.type === "consult_refused").map((e: any) => e.reason)).toEqual([
+        "require_hypothesis",
+        "require_hypothesis",
+        "require_hypothesis",
+      ]);
+    });
+
+    it("loose rules refuse nothing", async () => {
+      const { session } = setup({}, ["a", "b"]);
+      expect((await session.consultTool({ question: "q" })).advice).not.toBeNull();
+      expect((await session.consultTool({ question: "q" })).advice).not.toBeNull();
+    });
+
+    it("the budget is checked first, and a budget refusal is consult_refused too", async () => {
+      const { session, events } = setup({ ...strict, max_consults: 0 });
+      expect(await refused(session, { question: "q" })).toBe("No advisor consults left (0 used). Continue on your own.");
+      expect(events().map((e) => e.type)).toEqual(["policy_rendered", "consult_refused", "budget_exhausted"]);
+    });
+  });
+
+  describe("max_advice_code_lines", () => {
+    const answer = ["Check the loop:", "```cpp", "a();", "b();", "c();", "```", "Then `d()` it."].join("\n");
+
+    it("long code blocks are cut before injection; advice_text keeps the original", async () => {
+      const { session, records, events } = setup({ rules: { ...LOOSE, max_advice_code_lines: 2 } }, [answer]);
+      const { text, advice } = await session.consultTool({ question: "q" });
+      expect(text).toBe(["Check the loop:", "```cpp", "a();", "b();", "```", CODE_CUT_NOTE, "Then `d()` it. (4 left)"].join("\n"));
+      session.applied(advice!);
+      const ev = events();
+      expectValid(ev);
+      expect(ev.find((e) => e.type === "advisor_response")).toMatchObject({ advice_text: answer });
+      expect(ev.find((e) => e.type === "advice_applied")).toMatchObject({ code_lines_removed: 1, injected_text: text });
+      expect(records[0]!.advice).toBe(answer);
+    });
+
+    it("0 removes code blocks, keeps inline code; null keeps everything", async () => {
+      const none = setup({ rules: { ...LOOSE, max_advice_code_lines: 0 } }, [answer]);
+      const r = await none.session.consultTool({ question: "q" });
+      expect(r.text).toBe(["Check the loop:", CODE_CUT_NOTE, "Then `d()` it. (4 left)"].join("\n"));
+      expect(r.advice!.codeLinesRemoved).toBe(3);
+      const all = setup({}, [answer]);
+      const s = await all.session.consultTool({ question: "q" });
+      expect(s.text).toBe(`${answer} (4 left)`);
+      expect(s.advice!.codeLinesRemoved).toBe(0);
+    });
+  });
+
+  it("max_brief_tokens: a long brief is cut and brief_built says so; the question survives", async () => {
+    const { session, client, events } = setup({ level: "L3", max_brief_tokens: 40 }, ["a"]);
+    session.setTask(Array.from({ length: 40 }, (_, i) => `line ${i} of a long issue`).join("\n"));
+    await session.consultTool({ question: "Where is the bug?" });
+    const brief = events().find((e) => e.type === "brief_built") as any;
+    expect(brief).toMatchObject({ truncated: true });
+    expect(brief.tokens).toBeLessThanOrEqual(40);
+    expect(client.requests[0]!.user).toContain(BRIEF_CUT_MARKER);
+    expect(client.requests[0]!.user).toContain("Q: Where is the bug?");
+    expect(client.requests[0]!.user).toMatch(/^\[consult L3\] line 0 of a long issue/);
+  });
+
+  it("answer_target_words and field_target_words reach the prompts; a null target drops its line", () => {
+    const texts = {
+      ...PROMPTS.texts,
+      executor_guidance: "Fields: {{field_target_words}} words.",
+      consult_tool: "Each field under {{field_target_words}} words.",
+      advisor_system: "Advise.\nAnswer in at most this many words: {{answer_target_words}}",
+    };
+    const make = (s: Partial<AdvisorSettings>) =>
+      new AdvisorSession({ config: runConfig(s, { ...PROMPTS, texts }), emit: () => {}, client: new FakeClient([]) });
+    const session = make({ field_target_words: 60, answer_target_words: 120 });
+    expect(session.executorGuidance()).toBe("Fields: 60 words.");
+    expect(session.consultToolDescription()).toBe("Each field under 60 words.");
+    expect(session.advisorSystem()).toBe("Advise.\nAnswer in at most this many words: 120");
+    expect(make({ answer_target_words: null }).advisorSystem()).toBe("Advise.");
+  });
+
+  describe("orient and before_done", () => {
+    const read = (path: string): ToolObservation => ({ name: "read", args: { path }, result: "code", isError: false });
+    const grep: ToolObservation = { name: "bash", args: { command: "grep -rn parse_value src" }, result: "src/v.cpp:3", isError: false };
+    const editObs: ToolObservation = { name: "edit", args: { path: "src/v.cpp", edits: [{ newText: "if (s.empty()) return {};" }] }, result: "ok", isError: false };
+    const pass: ToolObservation = { name: "bash", args: { command: "/opt/lso/run-tests | tail" }, result: "100% tests passed, 0 tests failed out of 2", isError: false };
+
+    it("orient fires once after orient_after reads, with the executor's notes in the brief", async () => {
+      const { session, client, events } = setup({ level: "L3", interventions: ["orient"], orient_after: 3 }, ["Look at the empty case."]);
+      session.turnStart(0);
+      session.observe(read("src/v.cpp"));
+      session.note("The parser lives in src/v.cpp.");
+      expect(await session.atTurnEnd()).toBeNull();
+      session.turnStart(1);
+      session.observe(grep);
+      session.observe(read("src/v.h"));
+      session.note("parse_value returns early when the input is empty.");
+      const advice = await session.atTurnEnd();
+      expect(advice?.text).toBe("Look at the empty case. (4 left)");
+      session.turnStart(2);
+      session.observe(read("src/w.cpp"));
+      expect(await session.atTurnEnd()).toBeNull(); // once only
+      expect(await session.beforeEdit()).toBeNull();
+      const ev = events();
+      expectValid(ev);
+      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "orient", reason: "3 read actions", turn: 1 }]);
+      const brief = client.requests[0]!.user;
+      expect(brief).toContain("- read src/v.cpp\n- ran `grep -rn parse_value src`\n- read src/v.h");
+      expect(brief).toContain("Their notes so far:\nThe parser lives in src/v.cpp.\nparse_value returns early when the input is empty.");
+      expect(brief).toContain(`Q: ${DEFAULT_QUESTIONS.orient}`);
+    });
+
+    it("orient fires before the first edit if the reads have not triggered it; never after an edit", async () => {
+      const { session, events } = setup({ interventions: ["orient"], orient_after: 5 }, ["advice"]);
+      session.turnStart(0);
+      session.observe(read("a.cpp"));
+      expect(session.isEdit("edit", { path: "a.cpp" })).toBe(true);
+      expect(session.isEdit("bash", { command: "sed -i s/a/b/ a.cpp" })).toBe(true);
+      expect(session.isEdit("bash", { command: "cat a.cpp" })).toBe(false);
+      expect((await session.beforeEdit())?.text).toBe("advice (4 left)");
+      expect(await session.beforeEdit()).toBeNull();
+      expect(events().filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "orient", reason: "before the first edit" }]);
+
+      const late = setup({ interventions: ["orient"], orient_after: 1 }, ["advice"]);
+      late.session.turnStart(0);
+      late.session.observe(editObs);
+      late.session.observe(read("a.cpp"));
+      expect(await late.session.atTurnEnd()).toBeNull();
+      expect(await late.session.beforeEdit()).toBeNull();
+      expect(late.events().filter((e) => e.type === "trigger_fired")).toEqual([]);
+    });
+
+    it("before_done fires once, when the executor stops after an edit, with the last test result", async () => {
+      const { session, client, events } = setup({ level: "L3", interventions: ["before_done"] }, ["Looks right.", "x"]);
+      session.turnStart(0);
+      expect(await session.atTurnEnd(undefined, true)).toBeNull(); // no edit yet
+      session.turnStart(1);
+      session.observe(fail);
+      session.observe(editObs);
+      session.observe(pass);
+      expect(await session.atTurnEnd()).toBeNull(); // not stopping
+      session.turnStart(2);
+      expect((await session.atTurnEnd(undefined, true))?.text).toBe("Looks right. (4 left)");
+      session.turnStart(3);
+      expect(await session.atTurnEnd(undefined, true)).toBeNull(); // once only
+      const ev = events();
+      expectValid(ev);
+      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "before_done", reason: "stopped after editing", turn: 2 }]);
+      const brief = client.requests[0]!.user;
+      expect(brief).toContain("The last test run after my change passed.");
+      expect(brief).not.toContain("E: "); // the failure before the fix is stale
+    });
+
+    it("before_done says so when the tests fail or were not run after the change", async () => {
+      const failing = setup({ level: "L3", interventions: ["before_done"] }, ["x"]);
+      failing.session.observe(editObs);
+      failing.session.observe(fail);
+      await failing.session.atTurnEnd(undefined, true);
+      expect(failing.client.requests[0]!.user).toContain("The last test run after my change failed");
+      expect(failing.client.requests[0]!.user).toContain("E: src/v.cpp:3: error: parse_value failed");
+      const untested = setup({ level: "L3", interventions: ["before_done"] }, ["x"]);
+      untested.session.observe(pass);
+      untested.session.observe(editObs);
+      await untested.session.atTurnEnd(undefined, true);
+      expect(untested.client.requests[0]!.user).toContain("I have not run the tests since my last change.");
+    });
   });
 
   it("renders the executor's guidance and the tool description from the prompt set", () => {

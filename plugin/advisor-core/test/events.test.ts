@@ -18,7 +18,7 @@ describe("EventWriter", () => {
     writer.emit({ type: "policy_rendered", prompt_hash: "0123456789abcdef", executor_guidance: "Consult wisely.", consult_tool: null });
     writer.emit({ type: "consult_requested", reason: "build fails, unsure why", turn: 11 });
     writer.emit({ type: "trigger_fired", intervention: "stuck", reason: "same error x3", turn: 12 });
-    writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9, role_map: { "<function_1>": "parse" } });
+    writer.emit({ type: "brief_built", level: "L2", tokens: 800, identifiers_redacted: 4, role_map_size: 9, truncated: true, role_map: { "<function_1>": "parse" } });
     writer.emit({ type: "advisor_request", request_id: "r1", input_tokens: 812, brief_text: "brief", prompt_hash: "0123456789abcdef" });
     writer.emit({ type: "advisor_error", request_id: "r0", message: "HTTP 503", status: 503, latency_ms: 40 });
     writer.emit({ type: "advisor_error", request_id: "r0", message: "request failed", status: null, latency_ms: 3 });
@@ -33,11 +33,14 @@ describe("EventWriter", () => {
       finish_reason: "length",
       advice_text: "check <function_1>",
     });
-    writer.emit({ type: "advice_applied", request_id: "r1", turn: 13, injected_text: "Advisor: check parse()" });
+    writer.emit({ type: "advice_applied", request_id: "r1", turn: 13, injected_text: "Advisor: check parse()", code_lines_removed: 7 });
+    writer.emit({ type: "consult_refused", reason: "min_own_actions", turn: 14 });
+    writer.emit({ type: "trigger_fired", intervention: "orient", reason: "3 read actions", turn: 3 });
+    writer.emit({ type: "trigger_fired", intervention: "before_done", reason: "stopped after editing", turn: 9 });
     writer.emit({ type: "budget_exhausted", consults_used: 5, limit: 5 });
 
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(lines.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     for (const event of lines) {
       expect(validate(event), JSON.stringify(validate.errors)).toBe(true);
     }
@@ -45,5 +48,9 @@ describe("EventWriter", () => {
 
   it("the schema rejects a malformed event", () => {
     expect(validate({ schema_version: "1", seq: 0, ts: 1, type: "budget_exhausted", consults_used: 5 })).toBe(false);
+    expect(validate({ schema_version: "1", seq: 0, ts: 1, type: "consult_refused", turn: 2 })).toBe(false);
+    const applied = { schema_version: "1", seq: 0, ts: 1, type: "advice_applied", request_id: "r1", turn: 2, injected_text: "x" };
+    expect(validate(applied)).toBe(false); // code_lines_removed is required
+    expect(validate({ ...applied, code_lines_removed: 0 })).toBe(true);
   });
 });

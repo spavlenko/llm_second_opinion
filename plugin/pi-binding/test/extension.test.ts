@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
-import advisorExtension, { ADVICE_MESSAGE, taskText } from "../src/index.js";
+import advisorExtension, { ADVICE_MESSAGE, EDIT_HELD, taskText } from "../src/index.js";
 
 const schema = JSON.parse(readFileSync(new URL("../../../schemas/event.schema.json", import.meta.url), "utf8"));
 const validate = new Ajv2020({ strict: false }).compile(schema);
@@ -52,7 +52,7 @@ function fakePi() {
   return { pi, tools, handlers, fire };
 }
 
-function writeConfig(dir: string, advisorUrl: string, interventions: string[], advisorSettings = true) {
+function writeConfig(dir: string, advisorUrl: string, interventions: string[], advisorSettings = true, extra: object = {}) {
   const endpoint = { base_url: "http://unreachable.invalid/v1", model: "m", reasoning_effort: null, api_key_env: null, headers: {}, header_env: {}, temperature: null, top_p: null, sampling_seed: null };
   const config = {
     schema_version: "1",
@@ -66,9 +66,15 @@ function writeConfig(dir: string, advisorUrl: string, interventions: string[], a
           prompts: "p",
           max_consults: 5,
           max_answer_tokens: 100,
+          answer_target_words: 50,
+          max_brief_tokens: 3000,
+          field_target_words: 40,
+          orient_after: 3,
+          rules: { min_own_actions: 0, tool_cooldown_turns: 0, require_hypothesis: false, max_advice_code_lines: null },
           cooldown_turns: 0,
           periodic_every: null,
           stuck: { repeat_calls: 3, same_error: 3, no_diff_turns: 8 },
+          ...extra,
         }
       : null,
     prompts: {
@@ -162,6 +168,97 @@ describe("pi extension", () => {
     ]);
   });
 
+  const readEvents = (dir: string) =>
+    readFileSync(join(dir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+
+  it("orient holds the first edit for advice; before_done continues a stopping turn once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ext-"));
+    const { url, bodies } = await advisor(["Check the empty case first.", "```sh\na\nb\nc\n```\nLooks right."]);
+    const env = writeConfig(dir, url, ["orient", "before_done"], true, {
+      orient_after: 5,
+      rules: { min_own_actions: 1, tool_cooldown_turns: 2, require_hypothesis: true, max_advice_code_lines: 1 },
+    });
+    const { pi, fire } = fakePi();
+    advisorExtension(pi, env);
+    await fire("before_agent_start", { prompt: PROMPT, systemPrompt: "", systemPromptOptions: { appendSystemPrompt: "" } });
+
+    await fire("turn_start", { turnIndex: 0 });
+    await fire("tool_result", { toolName: "read", input: { path: "math.sh" }, content: [{ type: "text", text: "add() { echo $(($1 - $2)); }" }], isError: false });
+    const toolUse = { stopReason: "toolUse", content: [{ type: "text", text: "add subtracts." }, { type: "toolCall" }] };
+    expect(await fire("turn_end", { message: toolUse, toolResults: [{}] })).toBeUndefined();
+
+    // The first edit: held, with the advice as the reason; a read is not held.
+    await fire("turn_start", { turnIndex: 1 });
+    expect(await fire("tool_call", { toolName: "read", input: { path: "math.sh" } })).toBeUndefined();
+    const held = await fire("tool_call", { toolName: "edit", input: { path: "math.sh", edits: [] } });
+    expect(held).toEqual({ block: true, reason: `${EDIT_HELD}\n\nADVICE: Check the empty case first. (4 left)` });
+    expect(bodies[0].messages[1].content).toContain("Am I looking in the right place");
+    expect(await fire("tool_call", { toolName: "edit", input: { path: "math.sh", edits: [] } })).toBeUndefined();
+    await fire("tool_result", { toolName: "edit", input: { path: "math.sh", edits: [] }, content: [{ type: "text", text: "ok" }], isError: false });
+    expect(await fire("turn_end", { message: toolUse, toolResults: [{}] })).toBeUndefined();
+
+    // The executor stops: before_done, with its code cut to max_advice_code_lines, and continue.
+    await fire("turn_start", { turnIndex: 2 });
+    const done = { stopReason: "stop", content: [{ type: "text", text: "Fixed." }] };
+    const end = await fire("turn_end", { message: done, toolResults: [] });
+    expect(end).toEqual({
+      entries: [
+        {
+          type: "custom_message",
+          customType: ADVICE_MESSAGE,
+          content: "ADVICE: ```sh\na\n```\n[code shortened: the advisor gives hints, you write the fix]\nLooks right. (3 left)",
+          display: true,
+        },
+      ],
+      continue: true,
+    });
+    expect(bodies[1].messages[1].content).toContain("I think I am done. I have not run the tests since my last change.");
+    await fire("turn_start", { turnIndex: 3 });
+    expect(await fire("turn_end", { message: done, toolResults: [] })).toBeUndefined(); // once
+
+    const events = readEvents(dir);
+    for (const e of events) expect(validate(e), JSON.stringify(validate.errors)).toBe(true);
+    expect(events.filter((e) => e.type === "trigger_fired").map((e) => [e.intervention, e.reason, e.turn])).toEqual([
+      ["orient", "before the first edit", 1],
+      ["before_done", "stopped after editing", 2],
+    ]);
+    expect(events.filter((e) => e.type === "advice_applied").map((e) => e.code_lines_removed)).toEqual([0, 2]);
+  });
+
+  it("the consult tool refuses under the consult rules, and the executor sees why", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ext-"));
+    const { url, bodies } = await advisor(["Look at the operator."]);
+    const env = writeConfig(dir, url, ["consult"], true, {
+      rules: { min_own_actions: 1, tool_cooldown_turns: 2, require_hypothesis: true, max_advice_code_lines: 5 },
+    });
+    const { pi, tools, fire } = fakePi();
+    advisorExtension(pi, env);
+    await fire("turn_start", { turnIndex: 0 });
+    const args = { question: "Why -1?", tried: "I read math.sh and ran add 2 3.", hypothesis: "The function subtracts instead of adding." };
+    const first = await tools[0].execute("c1", args, undefined);
+    expect(first.content[0].text).toMatch(/^Investigate first/);
+    await fire("tool_result", { toolName: "bash", input: { command: "cat math.sh" }, content: [{ type: "text", text: "x" }], isError: false });
+    const vague = await tools[0].execute("c2", { question: "Why?", tried: "stuff", hypothesis: "none yet" }, undefined);
+    expect(vague.content[0].text).toMatch(/^Say what you tried/);
+    const ok = await tools[0].execute("c3", args, undefined);
+    expect(ok.content[0].text).toBe("ADVICE: Look at the operator. (4 left)");
+    await fire("turn_start", { turnIndex: 1 });
+    await fire("tool_result", { toolName: "bash", input: { command: "cat math.sh" }, content: [{ type: "text", text: "x" }], isError: false });
+    const soon = await tools[0].execute("c4", args, undefined);
+    expect(soon.content[0].text).toMatch(/^Too soon after the last consult/);
+    expect(bodies).toHaveLength(1);
+    const events = readEvents(dir);
+    for (const e of events) expect(validate(e), JSON.stringify(validate.errors)).toBe(true);
+    expect(events.filter((e) => e.type === "consult_refused").map((e) => e.reason)).toEqual([
+      "min_own_actions",
+      "require_hypothesis",
+      "tool_cooldown_turns",
+    ]);
+  });
+
   it("an unreachable advisor gives the executor a plain answer and an advisor_error", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-ext-"));
     const env = writeConfig(dir, "http://127.0.0.1:9/v1", ["consult"]);
@@ -180,7 +277,7 @@ describe("pi extension", () => {
     const a = fakePi();
     advisorExtension(a.pi, writeConfig(dir, "http://x/v1", ["stuck"]));
     expect(a.tools).toEqual([]);
-    expect([...a.handlers.keys()].sort()).toEqual(["before_agent_start", "tool_result", "turn_end", "turn_start"]);
+    expect([...a.handlers.keys()].sort()).toEqual(["before_agent_start", "tool_call", "tool_result", "turn_end", "turn_start"]);
     const b = fakePi();
     advisorExtension(b.pi, writeConfig(dir, "http://x/v1", [], false));
     expect(b.handlers.size + b.tools.length).toBe(0);

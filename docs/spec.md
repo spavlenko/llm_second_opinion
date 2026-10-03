@@ -94,7 +94,9 @@ to it. So a turn-0 `plan` brief has no empty "What they have tried:".
 | Slot | Placeholders | Rendered as |
 | --- | --- | --- |
 | `executor_guidance` | `{{max_consults}}` | The arm's `max_consults` |
+| | `{{field_target_words}}` | The arm's `field_target_words`: the length asked for in each consult field |
 | `consult_tool` | `{{max_consults}}` | The arm's `max_consults` |
+| | `{{field_target_words}}` | As above |
 | `brief` | `{{task_summary}}` | The issue text, abstracted at the arm's level |
 | | `{{tried}}` | The consult call's `tried`; for a harness trigger, the plugin's summary of recent actions |
 | | `{{error}}` | The latest failing build or test output, trimmed and abstracted; empty if none |
@@ -104,7 +106,8 @@ to it. So a turn-0 `plan` brief has no empty "What they have tried:".
 | | `{{level}}` | `L0`–`L3` |
 | | `{{trigger}}` | What started the consult: `consult` (the executor) or the intervention's name |
 | `advisor_system` | `{{level}}` | `L0`–`L3` |
-| | `{{max_answer_tokens}}` | The arm's `max_answer_tokens`, or `unlimited` |
+| | `{{max_answer_tokens}}` | The arm's `max_answer_tokens` (a safety ceiling), or `unlimited`; the default set does not use it |
+| | `{{answer_target_words}}` | The arm's `answer_target_words`: the answer length asked for; empty when null, so a `Heading: {{answer_target_words}}` line is dropped |
 | `advice_injection` | `{{advice}}` (required) | The advisor's answer, with abstracted names mapped back |
 | | `{{consults_left}}` | Consults left in the budget after this one |
 
@@ -113,12 +116,17 @@ Slot texts are stored with line endings normalised to `\n` and trailing whitespa
 **Approach: when, what, and how much.**
 
 - **Initiative:** who decides to ask. The executor (the consult tool), the harness (triggers:
-  plan review at the start, the stuck heuristic, a failed test run, every N turns), or both.
-  These are `interventions`, extended with `on_test_failure` and `periodic`.
+  plan review at the start, after orientation, the stuck heuristic, a failed test run, every N
+  turns, before finishing), or both. These are `interventions`, extended with
+  `on_test_failure`, `periodic`, `orient`, and `before_done`.
 - **Content:** the abstraction level L0–L3 (how much code and how many identifiers leave the
   machine) together with the `brief` prompt.
-- **Budget:** `max_consults`, a cap on advisor answer tokens, and a cooldown in turns between
-  consults.
+- **Budget:** `max_consults`, answer and field size targets (with safety ceilings), and a
+  cooldown in turns between consults.
+- **Anti-delegation** (`rules`): the executor does the work and the advisor gives a second
+  opinion, not the solution. The consult tool refuses a consult without own work since the
+  last one, too soon after it, or without `tried` and `hypothesis`; code in advice is cut to a
+  few lines. Strictness is an arm setting, so strict and loose rules can be compared.
 
 ### The advisor plugin
 
@@ -150,10 +158,59 @@ re-identification scorers. The map stays on the machine (`events.jsonl` is local
 text is sent). `tokens` is an estimate (4 characters a token), which is the exposure measure
 (cost comes from the metering proxy).
 
-**Triggers.** The executor's consult tool needs only budget. Harness triggers:
+**Consult rules.** The consult tool checks, in order, and refuses with a short tool result the
+executor sees, emitting `consult_refused` with the rule's name (and nothing else: no
+`consult_requested`, no budget used):
+
+| Rule (`reason`) | Refuses when | The executor is told |
+| --- | --- | --- |
+| `max_consults` | the budget is spent (`budget_exhausted` the first time too) | "No advisor consults left (N used). Continue on your own." |
+| `tool_cooldown_turns` | the turn is within `rules.tool_cooldown_turns` turns of the last consult, any kind (0: no limit) | "Too soon after the last consult: keep working on your own for N more turns, then consult again if you still need to." |
+| `min_own_actions` | fewer than `rules.min_own_actions` own tool calls since the last consult (or the start) | "Investigate first: run or read something yourself before consulting (0 of 1 tool call so far)." ("since your last consult" after one) |
+| `require_hypothesis` | `rules.require_hypothesis` and `tried` or `hypothesis` has under 5 words | "Say what you tried and what you think the cause is: `tried` and `hypothesis` need at least 5 words each." |
+
+Harness triggers are not subject to these rules. `rules.max_advice_code_lines` (default 5)
+cuts every fenced code block in the advice (``` or ~~~; one left open runs to the end) to its
+first N lines before injection, 0 removing the block, each cut block followed by "[code
+shortened: the advisor gives hints, you write the fix]"; inline code stays, `advice_text` keeps
+the answer as received, and `advice_applied.code_lines_removed` counts the lines cut. Null
+cuts nothing.
+
+**Size targets and ceilings.** The working limits are the prompts' targets:
+`answer_target_words` (default 250) in `advisor_system` and `field_target_words` (default 80)
+in `consult_tool` and `executor_guidance`. `max_answer_tokens` (default 4000) is only a
+safety ceiling, sent as `max_tokens`. A brief over `max_brief_tokens` (default 3000, by the
+4-characters estimate) is cut after the redaction sweep (a cut before it could leave part of
+a name the sweep no longer recognises): the longest section (blocks between blank lines) is
+cut at a line boundary (or a word, if that keeps under half), keeping its heading, and
+followed by "[cut: the brief was over its size limit]", then the next longest while it is
+still over, so the question and short sections survive; `brief_built.truncated` records it.
+
+**Triggers.** Harness triggers:
 
 - `plan`: once, before the first model call. The question is a fixed "How should I approach
   this task?" over the issue text, so there is no executor plan to review yet.
+- `orient`: once, at the end of the turn in which the executor's own read-type actions reach
+  `orient_after` (default 3): the `read`, `grep`, `find` and `ls` tools, and shell commands
+  whose first word (after any `cd dir &&`) is `cat`, `head`, `tail`, `grep`, `rg`, `ls`,
+  `find`, `sed` (not `-i`), `wc` and the like, or `git log/show/diff/grep/status/blame`; not
+  the tests. If the executor's first edit comes earlier (the edit and write tools, or an
+  in-place shell edit), orient fires just before it, from pi's `tool_call`: the edit is
+  blocked and its tool result is "This edit was not applied: the advisor reviewed your
+  findings before your first change. Read the advice, then re-issue the edit if it still
+  fits." followed by the advice. That is orient's last chance (in cooldown or out of budget,
+  it is skipped); after an edit it never fires. Its brief's `tried` is the recent actions plus
+  "Their notes so far:" (the executor's own text from its last 3 turns, each up to 600
+  characters, abstracted like the executor's other words), and its question asks whether the
+  executor is looking in the right place and what to check before changing anything. This is
+  the "consult after orientation" timing (`docs/related-work.md`).
+- `before_done`: once, at the end of a turn whose assistant message has no tool calls (the
+  executor is about to stop), if it has edited a file. The advice is appended with
+  `continue: true`, which gives the executor one more turn. The question: "I think I am done."
+  plus the last test result since the last edit ("passed", "failed (output above)", or "I have
+  not run the tests since my last change.") and "Sanity-check my approach given that: is the
+  fix in the right place, and what might I have missed?". When the tests passed after the last
+  edit, older failures are left out of `{{error}}`.
 - `on_test_failure`: a `bash` call that runs `/opt/lso/run-tests` and fails: non-zero exit, or
   (when piped through `tail`) ctest's "N tests failed out of" with N > 0, "The following tests
   FAILED", or run-tests' "build failed".
@@ -164,20 +221,19 @@ text is sent). `tokens` is an estimate (4 characters a token), which is the expo
 - `periodic`: at the end of every `periodic_every`-th turn.
 
 Harness triggers are checked at the end of each turn, at most one per turn, in the order
-`on_test_failure`, `stuck`, `periodic`. Every consult resets the stuck counters. A harness
-trigger may not fire in the turn of a consult nor in the `cooldown_turns` turns after it.
+`before_done`, `orient`, `on_test_failure`, `stuck`, `periodic`. Every consult resets the stuck
+counters and the own-action count. A harness trigger (orient's edit-time chance included) may
+not fire in the turn of a consult nor in the `cooldown_turns` turns after it.
 `max_consults` covers every consult, the executor's and the harness's, and counts attempts
 (an advisor error uses one up); a consult refused for budget emits `budget_exhausted` the
-first time only. `max_answer_tokens` is sent as the advisor request's `max_tokens`, and the
-default `advisor_system` states it ("Answer length limit, in tokens, with your reasoning
-counted toward it: 400.", or "unlimited"), since reasoning models spend part of it before the
-answer. An answer the provider cut there (`finish_reason` "length") is still injected, with
+first time only. An answer the provider cut at `max_answer_tokens` (`finish_reason` "length") is still injected, with
 "[advice truncated: the advisor hit its answer length limit]" appended on its own line;
 `advisor_response.advice_text` keeps it as received.
 
 **Where advice goes.** For the consult tool, the rendered `advice_injection` is the tool
 result. For harness triggers it is a custom message (rendered by pi as a user message): the
-plan review's is added by the `before_agent_start` handler, next to the prompt; the others are
+plan review's is added by the `before_agent_start` handler, next to the prompt; orient's at the
+first edit is the blocked edit's tool result (see Triggers); the others are
 appended at the turn's end (`turn_end` boundary entry with `continue: true`, so the model sees
 it in its next request even when the turn would have ended the run). `executor_guidance` is
 appended to pi's system prompt from `before_agent_start` (`appendSystemPrompt`), so no CLI
@@ -190,7 +246,9 @@ appended to the system prompt, and the rendered consult tool description (null w
 not registered). Every consult then emits, in order, `consult_requested` (the executor's
 question) or `trigger_fired`, `brief_built`, `advisor_request` (before sending: the exact user
 message and the prompt hash), then `advisor_response` or `advisor_error`, and `advice_applied`
-when the advice was injected (with the turn it was injected in). `advisor_request.input_tokens`
+when the advice was injected (with the turn it was injected in and the code lines cut). A
+refused consult tool call emits only `consult_refused` (see Consult rules).
+`advisor_request.input_tokens`
 is the 4-characters-a-token estimate; `advisor_response.prompt_tokens` and `reasoning_tokens`
 are the provider's own counts from its `usage` (`prompt_tokens`,
 `completion_tokens_details.reasoning_tokens`), null when it leaves them out. `advisor_error`
@@ -713,12 +771,13 @@ field named like a key is dropped too).
 | --- | --- |
 | `policy_rendered` | once per advisor run, first: prompt hash, the executor guidance as appended to the system prompt, the consult tool description (null when not registered) |
 | `consult_requested` | the executor's question, turn |
+| `consult_refused` | the rule that refused the consult tool (`max_consults`, `tool_cooldown_turns`, `min_own_actions`, `require_hypothesis`), turn |
 | `trigger_fired` | intervention, reason, turn |
-| `brief_built` | level, tokens, identifiers redacted, role-map size, role map (placeholder to identifier, for the placeholders in this brief) |
+| `brief_built` | level, tokens, identifiers redacted, role-map size, whether it was cut at `max_brief_tokens`, role map (placeholder to identifier, for the placeholders in this brief) |
 | `advisor_request` | request id, input tokens (an estimate: 4 characters a token), brief text, prompt hash |
 | `advisor_response` | request id, output tokens, cached tokens, prompt and reasoning tokens (the provider's counts; null when not reported), finish reason (`stop`, `length`, ...; null when not reported), latency (ms), the advice text exactly as received |
 | `advisor_error` | request id, message, HTTP status (null when no response came back), latency (ms) |
-| `advice_applied` | request id, turn it was injected at, the exact text the executor was given |
+| `advice_applied` | request id, turn it was injected at, the exact text the executor was given, code lines cut by `max_advice_code_lines` |
 | `budget_exhausted` | consults used, limit |
 
 Every `advisor_request` stores the exact text sent. The exposure scorers read only these
@@ -934,7 +993,7 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
   tool calls by name, test runs (`/opt/lso/run-tests`) and how many failed, compactions,
   auto-retries, and the turn and time of the first edit and first test run. For every
   agent: largest and final executor prompt (`max_context_tokens`, `final_context_tokens`,
-  from the proxy), consults by trigger, the first consult's turn and time, advisor errors,
+  from the proxy), consults by trigger, consults refused, the first consult's turn and time, advisor errors,
   advice applied, and whether the final patch touches files the advice named. Times are
   seconds since the agent started; turns count from 0.
 - **MLflow is mandatory.** Every experiment run is tracked; `bench run` checks the server's
@@ -959,7 +1018,9 @@ A small SQLite ledger tracks what has run; MLflow stores what happened.
   <trigger>` (inputs: reason and turn; output: the injected text; attributes: level, brief
   tokens, identifiers redacted, request id, prompt hash, applied turn) with a `brief` span (the
   exact text sent) and an `advisor` model span (system and user messages, the advice, tokens,
-  latency, or the error), plus a span for a consult refused for budget. A consult is placed
+  latency, or the error), plus a span for each consult refused (by a rule or the budget). A
+  span may start up to 100 ms before its tool span (pi marks `tool_start` from an async
+  handler) and still nest under it. A consult is placed
   under the deepest span open when it started: the `consult` tool span for the executor's,
   between turns for a turn-end trigger. Long values are clipped to 20k
   characters, keeping both ends; the artifacts keep everything.
@@ -1008,9 +1069,12 @@ llm_second_opinion/
 - **Tests.** Unit tests on both sides, plus contract tests that check the plugin's events
   against the schemas. Plugin tests are type-checked (`tsconfig.test.json`) before vitest runs.
   `test_pi_docker.py` runs pi with the plugin on `toy-add` against one mock server for both
-  roles, through the metering proxy (`fixtures/pi-toy-add-consult.jsonl`: the executor calls
-  `consult`, the advisor answers, the executor fixes the bug), and checks the events, the
-  redaction at L1, the advice reaching pi, metering per role, and the trace.
+  roles, through the metering proxy (`fixtures/pi-toy-add-consult.jsonl`: the executor reads
+  the code, calls `consult`, the advisor answers with a snippet that is cut, the executor
+  fixes the bug), and checks the events, the redaction at L1, the advice reaching pi, metering
+  per role, and the trace. `fixtures/pi-toy-add-rules.jsonl` covers the default consult rules
+  and the new triggers in real pi: a consult refused for `min_own_actions`, one for
+  `require_hypothesis`, the first edit held for `orient`, and `before_done` continuing the run.
 - **Generated types.** `plugin/scripts/gen-types.mjs` merges `schemas/*.schema.json` into
   `advisor-core/src/contracts.ts` (committed); `pnpm check:types` fails on drift.
 - **Local MLflow.** `scripts/mlflow-server.sh` runs a tracking server on 127.0.0.1:5050 with
@@ -1106,3 +1170,4 @@ llm_second_opinion/
 | 2026-10-03 | The metering proxy binds 127.0.0.1 on macOS (Docker Desktop forwards `host.docker.internal` there) and the Docker bridge gateway on Linux, never every interface: it adds API keys. |
 | 2026-10-03 | Scorers built (`scorers.py`, `bench score`): acceptance stays binary resolve over seeds; `partial`, the penalised rewards and gold similarity are feedback or diagnostics, labelled so in `scores.json` and the report's "Diagnostics (not acceptance)" block. `partial` = F2P share − 0.1 per broken P2P, 0 on a failed build. Gold similarity by characters up to 20,000 characters, by lines above (a one-token fix scored 0 by lines). Brief synthesis also counts the issue text as copied material, not only tool output. Usage role `probe` joins the contract (schemas regenerated); probe calls are metered per attempt (`probe-usage.jsonl`), recorded in a ledger `probe` table and the total spend, and cached by text hash. The re-identification attacker runs at scoring time only; the memorisation floor redacts the issue with the run's own role map (an approximation of the plugin's redaction). |
 | 2026-10-03 | Pre-pilot contracts: interventions `orient` and `before_done`; `ConsultRules` (min own actions, tool cooldown, required hypothesis, `max_advice_code_lines`); size targets (`answer_target_words`, `field_target_words`) with safety ceilings (`max_answer_tokens` 4000, `max_brief_tokens` 3000); events `consult_refused`, `brief_built.truncated`, `advice_applied.code_lines_removed`. |
+| 2026-10-03 | Pre-pilot plugin. Consult rules refuse with a message the executor sees and only `consult_refused` (budget first, then cooldown, own actions, a 5-word `tried`/`hypothesis`); refusals use up nothing; harness triggers are exempt. Code in advice is cut per fenced block after the role map is restored. Briefs are cut after the redaction sweep, longest section first at a line boundary, so headings and the question survive. `orient` fires at the turn end that reaches `orient_after` reads, or holds the first edit (blocked in `tool_call`, the advice as its result) since pi gives no other way to inject before a tool runs; it never fires after an edit. `before_done` fires on a turn without tool calls after an edit and continues the run once; its question carries the last test result since the edit. Default prompts rewritten (executor investigates and fixes; advisor gives cause, checks, next steps, few-line code only), the default brief now sends `{{hypothesis}}`: the default prompt hash and advisor arm config hashes change, deliberately, and are pinned in `test_config.py`. Trace nesting tolerates 100 ms of skew (the plugin e2e flake). |

@@ -128,9 +128,13 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 
 ## Before the pilot — devtest findings
 
-- [ ] Size limits as prompt targets + logged safety ceilings (brief in, advice out)
-- [ ] Anti-delegation: earned consults, required hypothesis, advice code cap, strictness per arm
-- [ ] "Plan after orientation" and "before done" triggers
+- [x] Size limits as prompt targets + logged safety ceilings (brief in, advice out)
+- [x] Anti-delegation: earned consults, required hypothesis, advice code cap, strictness per arm
+- [x] Default prompts rewritten: the executor investigates and fixes, the advisor advises
+- [x] "Plan after orientation" and "before done" triggers (`orient`, `before_done`)
+- [ ] Revisit `experiments/pilot.yaml` for the new defaults: `max_answer_tokens: 800` is now
+      below the 4000 safety ceiling, and `orient`/`before_done` are not in its interventions
+- [ ] Smoke run with real models under the default (strict) rules: how often consults are refused
 - [x] Scorers: rewards (resolve, partial, gold similarity, cost/exposure-penalised), dependence, leakage
 - [ ] Pass the feedback scores to the prompt-search proposer (text, never the acceptance score)
 - [ ] Calibrated LLM judge of advice quality (~30 hand-labelled consults first)

@@ -54,9 +54,10 @@ the results:
   - **Advisor system prompt:** hint, plan, or code; how long.
   - **Advice injection:** how the answer re-enters the executor's context.
 - **Approach: when, what, and how much.**
-  - **Initiative:** the executor asks through a consult tool; the harness triggers help at planning, when the agent looks stuck, after a failed test run, or every N turns; or both.
+  - **Initiative:** the executor asks through a consult tool; the harness triggers help at planning, after orientation, when the agent looks stuck, after a failed test run, every N turns, or before it finishes; or both.
   - **Content:** four abstraction levels, L0–L3, for how much code and how many identifiers leave the machine.
   - **Budget:** consults per task, answer length, cooldown between consults.
+  - **Anti-delegation:** the executor does the work; consults must be earned (own work, a cooldown, a stated hypothesis) and code in advice is cut to a few lines. Strictness is set per arm.
 
 ### What is measured
 
@@ -122,7 +123,7 @@ Built and tested:
   containers hold no secrets), enforces an optional token budget, and refuses endpoints that
   do not report usage. Tokens and cost (from a price table) reach the ledger, MLflow, and
   `bench report`.
-- **Advisor plugin:** a pi extension with the consult tool and harness triggers (plan review,
+- **Advisor plugin:** a pi extension with the consult tool (and its anti-delegation rules) and harness triggers (plan review, orient, before_done,
   stuck heuristic, failed test run, periodic), cooldown and budget, briefs at levels L0–L3
   with identifiers redacted to placeholders and mapped back in the advice, and every request
   logged exactly; advisor spans in the item traces.

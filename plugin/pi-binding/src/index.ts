@@ -6,9 +6,14 @@
 // - The plan review runs in that same handler, before the first model call; its advice is the
 //   handler's custom message, which pi adds to the context next to the prompt.
 // - Consult tool: the advice is the tool result.
-// - Harness triggers (stuck, on_test_failure, periodic) are checked in `turn_end`; their advice
-//   is a custom message entry appended at that boundary, with `continue: true` so the model sees
-//   it in its next request even if the turn would have ended the run.
+// - Harness triggers (orient, before_done, stuck, on_test_failure, periodic) are checked in
+//   `turn_end`; their advice is a custom message entry appended at that boundary, with
+//   `continue: true` so the model sees it in its next request even if the turn would have ended
+//   the run. A turn whose assistant message has no tool calls is the executor stopping, which is
+//   when before_done fires (and its continuation gives the executor one more turn).
+// - orient, if it has not fired by the executor's first edit, fires in `tool_call` for that
+//   edit: the edit is blocked, and the block reason (the tool result) carries the advice and asks
+//   the executor to re-issue the edit if it still fits.
 //
 // Environment: LSO_ADVISOR_CONFIG (default /run/advisor.json); LSO_ADVISOR_BASE_URL overrides the
 // advisor endpoint's base_url (the host as the container reaches it); LSO_ADVICE_LOG, if set, is a
@@ -30,6 +35,10 @@ import { Type } from "typebox";
 export const DEFAULT_CONFIG = "/run/advisor.json";
 /** customType of the messages that carry advice into pi's context. */
 export const ADVICE_MESSAGE = "lso-advice";
+/** Leads the tool result of the first edit when orient holds it for advice. */
+export const EDIT_HELD =
+  "This edit was not applied: the advisor reviewed your findings before your first change. " +
+  "Read the advice, then re-issue the edit if it still fits.";
 const MAX_FILE_BYTES = 2_000_000;
 
 type Env = Record<string, string | undefined>;
@@ -77,10 +86,23 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
     session.observe({ name: event.toolName, args: event.input, result: resultText(event), isError: event.isError });
   });
 
+  pi.on("tool_call", async (event, ctx: ExtensionContext) => {
+    if (event.toolName === CONSULT_TOOL || event.parentToolCallId) return;
+    if (!session.isEdit(event.toolName, event.input as Record<string, unknown>)) return;
+    const advice = await guarded("tool_call", () => session.beforeEdit(ctx.signal));
+    if (!advice) return;
+    session.applied(advice);
+    return { block: true, reason: `${EDIT_HELD}\n\n${advice.text}` };
+  });
+
   pi.on("turn_end", async (event, ctx: ExtensionContext) => {
-    const stop = (event.message as { stopReason?: string }).stopReason;
+    const message = event.message as { stopReason?: string; content?: unknown };
+    const stop = message.stopReason;
     if (ctx.signal?.aborted || stop === "aborted" || stop === "error") return;
-    const advice = await guarded("turn_end", () => session.atTurnEnd(ctx.signal));
+    const content = Array.isArray(message.content) ? (message.content as { type?: string; text?: string }[]) : [];
+    session.note(content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"));
+    const stopping = stop !== "toolUse" && !content.some((c) => c.type === "toolCall") && !event.toolResults?.length;
+    const advice = await guarded("turn_end", () => session.atTurnEnd(ctx.signal, stopping));
     if (!advice) return;
     session.applied(advice);
     return {

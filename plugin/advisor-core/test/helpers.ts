@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { AdvisorRunConfig } from "../src/config.js";
-import type { AdvisorSettings, PromptSet, PromptTexts } from "../src/contracts.js";
+import type { AdvisorSettings, ConsultRules, PromptSet, PromptTexts } from "../src/contracts.js";
 
 const schema = (name: string) =>
   JSON.parse(readFileSync(new URL(`../../../schemas/${name}.schema.json`, import.meta.url), "utf8"));
@@ -10,6 +10,12 @@ const ajv = new Ajv2020({ strict: false });
 export const validateEvent = ajv.compile(schema("event"));
 export const validateRunConfigSchema = ajv.compile(schema("run-config"));
 
+/** Consult rules that refuse nothing and cut no code. */
+export const LOOSE: ConsultRules = { min_own_actions: 0, tool_cooldown_turns: 0, require_hypothesis: false, max_advice_code_lines: null };
+/** The contract's default consult rules. */
+export const DEFAULT_RULES: ConsultRules = { min_own_actions: 1, tool_cooldown_turns: 2, require_hypothesis: true, max_advice_code_lines: 5 };
+
+/** Advisor settings as the harness writes them, with loose consult rules unless overridden. */
 export function settings(overrides: Partial<AdvisorSettings> = {}): AdvisorSettings {
   return {
     level: "L2",
@@ -17,6 +23,11 @@ export function settings(overrides: Partial<AdvisorSettings> = {}): AdvisorSetti
     prompts: "default",
     max_consults: 5,
     max_answer_tokens: null,
+    answer_target_words: 250,
+    max_brief_tokens: 3000,
+    field_target_words: 80,
+    orient_after: 3,
+    rules: LOOSE,
     cooldown_turns: 0,
     periodic_every: null,
     stuck: { repeat_calls: 3, same_error: 3, no_diff_turns: 8 },
