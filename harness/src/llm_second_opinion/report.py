@@ -591,11 +591,12 @@ class SpendSummary:
     attempts: Spend  # every attempt in the ledger, all configs and outcomes
     attempt_statuses: dict[str, int]
     preflight: Spend
+    probe: Spend = field(default_factory=Spend)  # `bench score --probe` calls
 
     @property
     def total(self) -> Spend:
         total = Spend()
-        for part in (self.attempts, self.preflight):
+        for part in (self.attempts, self.preflight, self.probe):
             total.rows += part.rows
             total.calls += part.calls
             total.failed_calls += part.failed_calls
@@ -615,9 +616,11 @@ def spend_summary(
     preflight: list[dict[str, Any]],
     hashes: Hashes | None = None,
     images: Images | None = None,
+    probe: list[dict[str, Any]] | None = None,
 ) -> SpendSummary:
     """The spend of the counted items next to the total: every attempt (failed, interrupted,
-    and stale configs included) plus the usage preflight calls."""
+    and stale configs included), the usage preflight calls, and the re-identification
+    probe's calls (`bench score --probe`)."""
     counted, every = Spend(), Spend()
     for r in current_rows(exp, rows, hashes, images):
         if r["status"] == "done" and r.get("model_calls") is not None:
@@ -625,12 +628,13 @@ def spend_summary(
     for r in attempts:
         if r.get("model_calls") is not None:
             every.add(r["model_calls"], r.get("failed_calls") or 0, _tokens(r), r["cost_usd"])
-    checks = Spend()
-    for r in preflight:
-        tokens = r["prompt_tokens"] + r["completion_tokens"]
-        checks.add(r["calls"], r["failed_calls"], tokens, r["cost_usd"])
+    checks, probes = Spend(), Spend()
+    for part, records in ((checks, preflight), (probes, probe or [])):
+        for r in records:
+            tokens = r["prompt_tokens"] + r["completion_tokens"]
+            part.add(r["calls"], r["failed_calls"], tokens, r["cost_usd"])
     statuses = Counter(r["status"] for r in attempts)
-    return SpendSummary(counted, every, dict(sorted(statuses.items())), checks)
+    return SpendSummary(counted, every, dict(sorted(statuses.items())), checks, probes)
 
 
 def _tokens(row: dict[str, Any]) -> int:
@@ -652,6 +656,7 @@ def format_spend(s: SpendSummary) -> str:
             line("counted items", s.counted, "item(s) done at the current config"),
             line("all attempts", s.attempts, f"attempt(s): {statuses}"),
             line("preflight", s.preflight, "check(s)"),
+            line("probe", s.probe, "scored attempt(s) with new probe calls"),
             line("total", s.total, "rows"),
         ]
     )
@@ -665,8 +670,10 @@ def report_record(
     spent: SpendSummary,
     rows: list[dict[str, Any]],
     sessions: list[dict[str, Any]],
+    diagnostics: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """report.json: what `bench report` printed, as data."""
+    """report.json: what `bench report` printed, as data. `diagnostics`: per-arm means of
+    the scorers' feedback and diagnostic scores (never the acceptance score)."""
 
     def arm(s: ArmSummary) -> dict[str, Any]:
         return {
@@ -707,8 +714,10 @@ def report_record(
             "all_attempts": asdict(spent.attempts),
             "attempt_statuses": spent.attempt_statuses,
             "preflight": asdict(spent.preflight),
+            "probe": asdict(spent.probe),
             "total": asdict(spent.total),
         },
+        "diagnostics_not_acceptance": diagnostics or {},
     }
 
 

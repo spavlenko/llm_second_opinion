@@ -151,6 +151,13 @@ class Tracker:
             run_id, metrics=[Metric(k, float(v), 0, 0) for k, v in metrics.items()]
         )
 
+    def log_metrics(self, run_id: str, metrics: dict[str, float]) -> None:
+        """Metrics added to an existing run (e.g. an item's scores from `bench score`),
+        replacing earlier values at step 0."""
+        self.client.log_batch(
+            run_id, metrics=[Metric(k, float(v), 0, 0) for k, v in metrics.items()]
+        )
+
     def close(self) -> None:
         for run_id in self._arm_runs.values():
             self.client.set_terminated(run_id)
