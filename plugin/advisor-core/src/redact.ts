@@ -233,7 +233,9 @@ export class RoleMap {
       .sort((a, b) => b.length - a.length);
     if (!names.length) return { text, replaced: 0 };
     const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
-    const pattern = new RegExp(`(?<![\\w/.])(?:${escaped.join("|")})(?![\\w/])`, "gi");
+    // Not inside a longer name or a path; after a `.` only as member access (`ctx.name`,
+    // `f().name`; `->` needs nothing special), not as a lone leading dot.
+    const pattern = new RegExp(`(?<![\\w/])(?<![^\\w)\\]]\\.)(?<!^\\.)(?:${escaped.join("|")})(?![\\w/])`, "gi");
     let replaced = 0;
     // Placeholders (or surrogates) already in the text are left alone.
     const surrogate = this.surrogateRegex();
