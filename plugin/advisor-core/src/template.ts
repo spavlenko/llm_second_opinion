@@ -6,6 +6,10 @@
 // whose content is a line holding only a placeholder that renders empty, or a line that is such
 // a heading followed by the empty placeholder ("Hypothesis: {{hypothesis}}"). One blank line
 // around the dropped section goes with it, so no gap is left behind.
+//
+// A conditional section is lines between `{{#name}}` and `{{/name}}`, each marker on a line of
+// its own: kept (without the markers) when `name` renders non-empty, dropped otherwise, with one
+// blank line next to it.
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 const ONLY_PLACEHOLDER = /^\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}\s*$/;
@@ -24,8 +28,35 @@ function isHeading(line: string): boolean {
 
 const blank = (line: string | undefined) => line !== undefined && line.trim() === "";
 
-export function renderTemplate(template: string, vars: Vars): string {
+const SECTION_OPEN = /^\s*\{\{#([A-Za-z_][A-Za-z0-9_]*)\}\}\s*$/;
+
+/** Conditional sections resolved: kept without their markers, or dropped. */
+function sections(template: string, vars: Vars): string[] {
   const lines = template.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = SECTION_OPEN.exec(lines[i]!);
+    if (!open) {
+      out.push(lines[i]!);
+      continue;
+    }
+    const name = open[1]!;
+    let end = i + 1;
+    while (end < lines.length && lines[end]!.trim() !== `{{/${name}}}`) end++;
+    if (value(vars, name).trim() !== "") {
+      out.push(...lines.slice(i + 1, end));
+    } else if (blank(lines[end + 1]) && (out.length === 0 || blank(out.at(-1)))) {
+      end++; // the blank line after it
+    } else if (blank(out.at(-1)) && (end + 1 >= lines.length || blank(lines[end + 1]))) {
+      out.pop(); // the blank line before it
+    }
+    i = end;
+  }
+  return out;
+}
+
+export function renderTemplate(template: string, vars: Vars): string {
+  const lines = sections(template, vars);
   const kept: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;

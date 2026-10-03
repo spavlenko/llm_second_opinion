@@ -3,9 +3,19 @@ import type { ModelEndpoint } from "./contracts.js";
 
 
 export const USER_AGENT = "llm-second-opinion-advisor/0.0.1 (+https://github.com/spavlenko/llm_second_opinion)";
+/** A prior or follow-up message of the conversation with the advisor. */
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface CompletionRequest {
   system: string;
   user: string;
+  /** Earlier exchanges, sent before `user` (`memory`). */
+  history?: ChatMessage[];
+  /** Messages after `user`: the advisor's request and the reply to it (`clarify`). */
+  continuation?: ChatMessage[];
   maxTokens: number | null;
   /** Sent as X-LSO-Request-Id, so the metering proxy's usage record joins the events. */
   requestId?: string;
@@ -97,7 +107,9 @@ export class AdvisorClient implements AdvisorClientLike {
       model: this.endpoint.model,
       messages: [
         { role: "system", content: req.system },
+        ...(req.history ?? []),
         { role: "user", content: req.user },
+        ...(req.continuation ?? []),
       ],
       stream: false,
     };

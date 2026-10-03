@@ -348,11 +348,11 @@ describe("advisor session", () => {
 
   describe("orient and before_done", () => {
     const read = (path: string): ToolObservation => ({ name: "read", args: { path }, result: "code", isError: false });
-    const grep: ToolObservation = { name: "bash", args: { command: "grep -rn parse_value src" }, result: "src/v.cpp:3", isError: false };
+    const grep: ToolObservation = { name: "bash", args: { command: "grep -n parse_value src/p.cpp" }, result: "3: parse_value", isError: false };
     const editObs: ToolObservation = { name: "edit", args: { path: "src/v.cpp", edits: [{ newText: "if (s.empty()) return {};" }] }, result: "ok", isError: false };
     const pass: ToolObservation = { name: "bash", args: { command: "/opt/lso/run-tests | tail" }, result: "100% tests passed, 0 tests failed out of 2", isError: false };
 
-    it("orient fires once after orient_after reads, with the executor's notes in the brief", async () => {
+    it("orient fires once after orient_after distinct files read, with the executor's notes in the brief", async () => {
       const { session, client, events } = setup({ level: "L3", interventions: ["orient"], orient_after: 3 }, ["Look at the empty case."]);
       session.turnStart(0);
       session.observe(read("src/v.cpp"));
@@ -370,9 +370,9 @@ describe("advisor session", () => {
       expect(await session.beforeEdit()).toBeNull();
       const ev = events();
       expectValid(ev);
-      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "orient", reason: "3 read actions", turn: 1 }]);
+      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "orient", reason: "3 files read", turn: 1 }]);
       const brief = client.requests[0]!.user;
-      expect(brief).toContain("- read src/v.cpp\n- ran `grep -rn parse_value src`\n- read src/v.h");
+      expect(brief).toContain("- read src/v.cpp\n- ran `grep -n parse_value src/p.cpp`\n- read src/v.h");
       expect(brief).toContain("Their notes so far:\nThe parser lives in src/v.cpp.\nparse_value returns early when the input is empty.");
       expect(brief).toContain(`Q: ${DEFAULT_QUESTIONS.orient}`);
     });
@@ -397,7 +397,7 @@ describe("advisor session", () => {
       expect(late.events().filter((e) => e.type === "trigger_fired")).toEqual([]);
     });
 
-    it("before_done fires once, when the executor stops after an edit, with the last test result", async () => {
+    it("before_done fires once, when the executor stops after an edit; skipped when the tests passed since", async () => {
       const { session, client, events } = setup({ level: "L3", interventions: ["before_done"] }, ["Looks right.", "x"]);
       session.turnStart(0);
       expect(await session.atTurnEnd(undefined, true)).toBeNull(); // no edit yet
@@ -407,15 +407,17 @@ describe("advisor session", () => {
       session.observe(pass);
       expect(await session.atTurnEnd()).toBeNull(); // not stopping
       session.turnStart(2);
-      expect((await session.atTurnEnd(undefined, true))?.text).toBe("Looks right. (4 left)");
+      expect(await session.atTurnEnd(undefined, true)).toBeNull(); // the tests passed after the edit
       session.turnStart(3);
+      session.observe(editObs);
+      expect((await session.atTurnEnd(undefined, true))?.text).toBe("Looks right. (4 left)");
+      session.turnStart(4);
       expect(await session.atTurnEnd(undefined, true)).toBeNull(); // once only
       const ev = events();
       expectValid(ev);
-      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "before_done", reason: "stopped after editing", turn: 2 }]);
-      const brief = client.requests[0]!.user;
-      expect(brief).toContain("The last test run after my change passed.");
-      expect(brief).not.toContain("E: "); // the failure before the fix is stale
+      expect(ev.filter((e) => e.type === "trigger_skipped")).toMatchObject([{ intervention: "before_done", reason: "tests_passed", turn: 2 }]);
+      expect(ev.filter((e) => e.type === "trigger_fired")).toMatchObject([{ intervention: "before_done", reason: "stopped after editing", turn: 3 }]);
+      expect(client.requests[0]!.user).toContain("I have not run the tests since my last change.");
     });
 
     it("before_done says so when the tests fail or were not run after the change", async () => {

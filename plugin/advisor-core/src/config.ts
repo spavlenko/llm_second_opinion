@@ -66,6 +66,10 @@ export function validateRunConfig(raw: unknown, where = "advisor.json"): RunConf
       need(int(a.max_brief_tokens, 1), "advisor.max_brief_tokens must be an integer >= 1");
       need(int(a.field_target_words, 1), "advisor.field_target_words must be an integer >= 1");
       need(int(a.orient_after, 1), "advisor.orient_after must be an integer >= 1");
+      need(int(a.reserve_for_end, 0), "advisor.reserve_for_end must be an integer >= 0");
+      for (const flag of ["clarify", "memory", "surrogates"]) {
+        need(typeof a[flag] === "boolean", `advisor.${flag} must be a boolean`);
+      }
       const r = a.rules;
       need(
         obj(r) &&

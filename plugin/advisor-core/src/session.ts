@@ -8,13 +8,14 @@ import {
   type BriefRequest,
   approxTokens,
   buildBrief,
+  errorCategory,
 } from "./brief.js";
-import { type AdvisorClientLike, AdvisorClientError } from "./client.js";
+import { type AdvisorClientLike, AdvisorClientError, type ChatMessage, type Completion } from "./client.js";
 import type { AdvisorRunConfig } from "./config.js";
 import type { Intervention, PromptSet } from "./contracts.js";
 import type { EventInput } from "./events.js";
-import { editsFiles, testRun, type ToolObservation } from "./observe.js";
-import { RoleMap } from "./redact.js";
+import { editsFiles, errorText, testRun, type ToolObservation } from "./observe.js";
+import { Redactor, RoleMap } from "./redact.js";
 import { renderTemplate } from "./template.js";
 import { type Decision, TriggerEngine } from "./triggers.js";
 
@@ -26,6 +27,8 @@ const RECENT = 12;
 /** The executor's notes kept for the orient brief: its last few texts, each capped. */
 const NOTES = 3;
 const NOTE_CHARS = 600;
+/** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
+export const CLARIFY_MAX_LINES = 40;
 
 /** The consult tool's arguments, as the executor wrote them. */
 export interface ConsultArgs {
@@ -52,11 +55,28 @@ export interface AdviceRecord {
   prompt_hash: string;
   system: string;
   brief: string;
+  /** Earlier exchanges re-sent with the brief (`memory`). */
+  history_turns: number;
+  /** `clarify`: what the advisor asked for and what was sent back. */
+  followup: { requested: string; sent: string } | null;
   advice: string | null;
   injected: string | null;
   error: string | null;
   /** Placeholder to real identifier, the whole session's map as of this consult. */
   role_map: Record<string, string>;
+}
+
+/** What the advisor may ask for with `clarify`: a file range, or the latest test output. */
+export type ClarifyRequest = { kind: "file"; path: string; start: number; end: number } | { kind: "test_output" };
+
+/** The advisor's reply read as a `clarify` request: exactly one line, `FILE <path>:<start>-<end>`
+ * or `TEST_OUTPUT` (backticks around it allowed). Anything else is an answer. */
+export function parseClarify(reply: string): ClarifyRequest | null {
+  const line = reply.trim().replace(/^`+|`+$/g, "").trim();
+  if (line.includes("\n")) return null;
+  if (/^TEST_OUTPUT$/.test(line)) return { kind: "test_output" };
+  const m = /^FILE\s+(\S+):(\d+)\s*-\s*(\d+)$/.exec(line);
+  return m ? { kind: "file", path: m[1]!, start: Number(m[2]), end: Number(m[3]) } : null;
 }
 
 export interface AdvisorSessionOptions {
@@ -71,23 +91,29 @@ export interface AdvisorSessionOptions {
 
 export class AdvisorSession {
   readonly engine: TriggerEngine;
-  readonly roles = new RoleMap();
+  readonly roles: RoleMap;
   readonly prompts: PromptSet;
   private task = "";
   private recent: ToolObservation[] = [];
   private lastFailure: ToolObservation | null = null;
+  private lastTestRun: ToolObservation | null = null;
   private failedTests: string[] = [];
   private lastEdit: BriefContext["lastEdit"] = null;
-  /** The latest run of the task's tests since the latest edit: null if none. */
-  private testSinceEdit: { failed: boolean } | null = null;
   private notes: string[] = [];
+  /** Earlier briefs and the advisor's answers to them, for `memory`. */
+  private history: { brief: string; answer: string }[] = [];
   private requests = 0;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
-    this.engine = new TriggerEngine(opts.config.advisor);
+    const { advisor, run } = opts.config;
+    this.engine = new TriggerEngine(advisor);
     this.prompts = opts.config.prompts;
-    if (opts.config.advisor.level !== "L3") this.roles.seedProject(opts.config.run.task);
+    this.roles = new RoleMap({
+      surrogates: advisor.surrogates && advisor.level !== "L3",
+      seed: `${run.experiment}/${run.arm}/${run.task}/${run.seed}`,
+    });
+    if (advisor.level !== "L3") this.roles.seedProject(run.task);
   }
 
   private get settings() {
@@ -112,12 +138,14 @@ export class AdvisorSession {
   }
 
   advisorSystem(): string {
-    const { level, max_answer_tokens, answer_target_words } = this.settings;
+    const { level, max_answer_tokens, answer_target_words, clarify } = this.settings;
     return renderTemplate(this.prompts.texts.advisor_system, {
       level,
       max_answer_tokens: max_answer_tokens ?? "unlimited",
       // null: no target, and a "...: {{answer_target_words}}" line is dropped.
       answer_target_words,
+      // The {{#clarify}} section: kept only when the arm allows a follow-up.
+      clarify: clarify ? "yes" : "",
     }).trim();
   }
 
@@ -139,6 +167,7 @@ export class AdvisorSession {
   /** The task text the briefs summarize (the issue, from the executor's first prompt). */
   setTask(text: string): void {
     this.task = text;
+    this.roles.noteText(text);
   }
 
   turnStart(turn: number): void {
@@ -148,19 +177,20 @@ export class AdvisorSession {
   /** The executor's own text in a turn (not its tool calls): its findings, for `orient`. */
   note(text: string): void {
     const t = text.trim();
+    this.roles.noteText(t);
     if (t) this.notes = [...this.notes, t.length > NOTE_CHARS ? `${t.slice(0, NOTE_CHARS)}…` : t].slice(-NOTES);
   }
 
   observe(obs: ToolObservation): void {
     this.engine.observe(obs);
+    this.roles.noteText(`${JSON.stringify(obs.args)}\n${obs.result}`);
     this.recent = [...this.recent, obs].slice(-RECENT);
     const run = testRun(obs);
     if (obs.isError || run?.failed) this.lastFailure = obs;
     if (run) {
       this.failedTests = run.failedTests;
-      this.testSinceEdit = { failed: run.failed };
+      this.lastTestRun = obs;
     }
-    if (editsFiles(obs)) this.testSinceEdit = null;
     const path = typeof obs.args.path === "string" ? obs.args.path : null;
     if (path && !obs.isError && (obs.name === "edit" || obs.name === "write")) {
       const edits = obs.args.edits as { newText?: string }[] | undefined;
@@ -171,7 +201,7 @@ export class AdvisorSession {
 
   private context(intervention: Intervention): BriefContext {
     // Before stopping, a test run that passed after the last edit makes older failures stale.
-    const stale = intervention === "before_done" && this.testSinceEdit?.failed === false;
+    const stale = intervention === "before_done" && this.engine.testSinceEdit?.failed === false;
     return {
       task: this.task,
       recent: this.recent,
@@ -182,10 +212,19 @@ export class AdvisorSession {
     };
   }
 
+  /** trigger_skipped for every harness trigger the engine passed over since the last call. */
+  private emitSkips(): void {
+    for (const s of this.engine.takeSkips()) {
+      this.opts.emit({ type: "trigger_skipped", intervention: s.intervention, reason: s.reason, turn: s.turn });
+    }
+  }
+
   /** Before the first model call: the plan review, if configured. */
   async atStart(signal?: AbortSignal): Promise<Advice | null> {
     this.renderPolicy();
-    return this.onDecision(this.engine.start(), {}, signal);
+    const decision = this.engine.start();
+    this.emitSkips();
+    return this.onDecision(decision, {}, signal);
   }
 
   /** At the end of a turn: a harness trigger, if one is due. `stopping`: the turn made no tool
@@ -193,6 +232,7 @@ export class AdvisorSession {
   async atTurnEnd(signal?: AbortSignal, stopping = false): Promise<Advice | null> {
     this.renderPolicy();
     const decision = this.engine.turnEnd(stopping);
+    this.emitSkips();
     const words = decision?.kind === "fire" && decision.fire.intervention === "before_done" ? { question: this.beforeDoneQuestion() } : {};
     return this.onDecision(decision, words, signal);
   }
@@ -200,7 +240,9 @@ export class AdvisorSession {
   /** The executor is about to make its first edit: orient, if it has not fired yet. */
   async beforeEdit(signal?: AbortSignal): Promise<Advice | null> {
     this.renderPolicy();
-    return this.onDecision(this.engine.beforeEdit(), {}, signal);
+    const decision = this.engine.beforeEdit();
+    this.emitSkips();
+    return this.onDecision(decision, {}, signal);
   }
 
   /** Is this call one that changes files (so `beforeEdit` applies)? */
@@ -208,13 +250,12 @@ export class AdvisorSession {
     return editsFiles({ name, args, result: "", isError: false });
   }
 
+  /** before_done's question. It is skipped when the tests passed after the last edit, so the
+   * tests either failed then or were not run. */
   private beforeDoneQuestion(): string {
-    const run = this.testSinceEdit;
-    const tests = !run
-      ? "I have not run the tests since my last change."
-      : run.failed
-        ? "The last test run after my change failed (output above)."
-        : "The last test run after my change passed.";
+    const tests = this.engine.testSinceEdit?.failed
+      ? "The last test run after my change failed (output above)."
+      : "I have not run the tests since my last change.";
     return `I think I am done. ${tests} Sanity-check my approach given that: is the fix in the right place, and what might I have missed?`;
   }
 
@@ -223,6 +264,7 @@ export class AdvisorSession {
    * `budget_exhausted` the first time the budget does) and uses up nothing. */
   async consultTool(args: ConsultArgs, signal?: AbortSignal): Promise<{ text: string; advice: Advice | null }> {
     this.renderPolicy();
+    this.roles.noteText([args.question, args.tried, args.hypothesis].filter(Boolean).join("\n"));
     const decision = this.engine.requestConsult(args);
     if (decision.kind === "refused") {
       this.opts.emit({ type: "consult_refused", reason: decision.rule, turn: this.engine.turn });
@@ -294,9 +336,60 @@ export class AdvisorSession {
     return brief;
   }
 
+  /** `clarify`: the item the advisor asked for, fetched and redacted at the arm's level. */
+  followupText(ask: ClarifyRequest): string {
+    const level = this.settings.level;
+    const verbatim = level === "L3";
+    const r = new Redactor(this.roles);
+    let body: string;
+    if (ask.kind === "file") {
+      body = this.fileExcerpt(ask, r);
+    } else {
+      const run = this.lastTestRun;
+      if (!run) body = "The tests have not been run yet.";
+      else if (level === "L0") body = testRun(run)?.failed ? errorCategory(run, this.failedTests.length) : "The tests pass.";
+      else if (level === "L1") body = r.prose(errorText(run.result, 8));
+      else {
+        const tail = run.result.split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-CLARIFY_MAX_LINES).join("\n");
+        body = verbatim ? tail : r.prose(tail);
+      }
+    }
+    const what = ask.kind === "file" ? "the file excerpt" : "the latest test output";
+    const text = `Here is ${what} you asked for:\n\n${body}\n\nNow answer the question in the brief.`;
+    return verbatim ? text : this.roles.sweep(text).text;
+  }
+
+  private fileExcerpt(ask: Extract<ClarifyRequest, { kind: "file" }>, r: Redactor): string {
+    const level = this.settings.level;
+    if (level === "L0" || level === "L1") return `Code is not shared at this level (${level}).`;
+    const path = level === "L3" ? ask.path : this.roles.restore(ask.path);
+    const unavailable = "That file is not available.";
+    if (path.startsWith("/") || path.split("/").includes("..")) return unavailable;
+    const content = this.opts.readFile?.(path) ?? null;
+    if (content === null) return unavailable;
+    const lines = content.split("\n");
+    const from = Math.max(1, Math.min(ask.start, ask.end));
+    const to = Math.min(lines.length, Math.max(ask.start, ask.end), from + CLARIFY_MAX_LINES - 1);
+    if (from > to) return `${unavailable} It has ${lines.length} lines.`;
+    const width = String(to).length;
+    const verbatim = level === "L3";
+    const numbered = lines
+      .slice(from - 1, to)
+      .map((l, i) => `${String(from + i).padStart(width)} | ${verbatim ? l : r.code(l)}`)
+      .join("\n");
+    return `${verbatim ? path : r.file(path)}:${from}-${to}\n${numbered}`;
+  }
+
   private async consult(intervention: Intervention, brief: Brief, signal?: AbortSignal): Promise<Advice | null> {
     const requestId = `r${++this.requests}`;
     const system = this.advisorSystem();
+    const history: ChatMessage[] = this.settings.memory
+      ? this.history.flatMap((h): ChatMessage[] => [
+          { role: "user", content: h.brief },
+          { role: "assistant", content: h.answer },
+        ])
+      : [];
+    const historyTurns = history.length / 2;
     const record: AdviceRecord = {
       request_id: requestId,
       intervention,
@@ -305,6 +398,8 @@ export class AdvisorSession {
       prompt_hash: this.prompts.hash,
       system,
       brief: brief.text,
+      history_turns: historyTurns,
+      followup: null,
       advice: null,
       injected: null,
       error: null,
@@ -317,14 +412,17 @@ export class AdvisorSession {
       type: "advisor_request",
       request_id: requestId,
       // An estimate (4 characters a token); advisor_response.prompt_tokens is the provider's count.
-      input_tokens: approxTokens(system) + brief.tokens,
+      input_tokens: approxTokens(system) + brief.tokens + history.reduce((n, m) => n + approxTokens(m.content), 0),
       brief_text: brief.text,
       prompt_hash: this.prompts.hash,
+      history_turns: historyTurns,
     });
-    try {
+    const call = async (continuation: ChatMessage[]): Promise<Completion> => {
       const done = await this.opts.client.complete({
         system,
         user: brief.text,
+        history,
+        continuation,
         maxTokens: this.settings.max_answer_tokens,
         requestId,
         signal,
@@ -340,6 +438,24 @@ export class AdvisorSession {
         finish_reason: done.finishReason,
         advice_text: done.text,
       });
+      return done;
+    };
+    try {
+      let done = await call([]);
+      // clarify: one follow-up at most, so a second request is taken as the answer.
+      const ask = this.settings.clarify ? parseClarify(done.text) : null;
+      if (ask) {
+        const requested = done.text.trim();
+        const sent = this.followupText(ask);
+        this.opts.emit({ type: "advisor_followup", request_id: requestId, requested, sent_text: sent, tokens: approxTokens(sent) });
+        record.followup = { requested, sent };
+        record.role_map = this.roles.toObject();
+        done = await call([
+          { role: "assistant", content: done.text },
+          { role: "user", content: sent },
+        ]);
+      }
+      this.history.push({ brief: brief.text, answer: done.text });
       const restored = this.roles.restore(done.text.trim());
       const code = limitCodeBlocks(restored, this.settings.rules.max_advice_code_lines);
       const advice = done.finishReason === "length" ? `${code.text}\n${TRUNCATED_MARKER}` : code.text;
