@@ -2,6 +2,11 @@
 
 Short dated observations; newest first. Smoke runs are not results.
 
+## 2026-10-04 — calibration
+
+- A4 rerun on the 16 quota-lost tasks via Kimi Code: 12/16, no infra errors. Calib totals (1 seed): A0 9/24 (38%), A4 18/24 (75%); 9 candidate signal tasks (A0 fail, A4 solve), 6 neither, 9 both.
+- Calibration, noise and smoke-round data sat in the session scratchpad (temporary) → copied to `runs/` (calib-floor, calib-noise, smoke-rounds, calib-notes). Run batches only into `runs/`.
+
 ## 2026-10-03 — scorers
 
 - Planted-leak test, misses before the fix (smoke-check / role_map_leaks / leaked_units): `ctx.parse_format_specs(` all 3; `format-inl.h` without its path 2 (role map); project `fmt`, `FmtLib`, `include/fmt/…` 2 (role map); a `clarify` follow-up all 3 (never scanned) → role-aware rule, follow-ups scanned; surrogate and clean briefs quiet before and after.

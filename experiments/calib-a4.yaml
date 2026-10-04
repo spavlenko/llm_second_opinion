@@ -1,0 +1,60 @@
+# Calibration: A4 on the 16 `dev` tasks whose calib-floor A4 run was lost to the Kimi API quota
+# (HTTP 429, scored as crash by the old code). Same settings as calib-floor; advisor on Kimi Code.
+#   bench run experiments/calib-a4.yaml && bench report experiments/calib-a4.yaml
+name: calib-a4
+tasks: ../tasks/manifests/mswe-mini-cpp-v2.yaml
+split: dev
+task_ids:
+  - simdjson__simdjson-559
+  - nlohmann__json-3543
+  - nlohmann__json-3463
+  - nlohmann__json-3446
+  - nlohmann__json-1555
+  - nlohmann__json-1138
+  - fmtlib__fmt-3248
+  - fmtlib__fmt-2310
+  - fmtlib__fmt-2158
+  - fmtlib__fmt-1407
+  - nlohmann__json-2332
+  - nlohmann__json-18
+  - fmtlib__fmt-3729
+  - fmtlib__fmt-2394
+  - fmtlib__fmt-2317
+  - fmtlib__fmt-2070
+seeds: 1
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 2, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+arms:
+  - {name: A4, agent: pi-advisor, executor: advisor}

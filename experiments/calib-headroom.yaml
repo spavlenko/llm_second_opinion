@@ -1,0 +1,55 @@
+# Calibration: A0 and A4 at 3 seeds on the 9 candidate `dev` tasks (A0 failed, A4 solved at one
+# seed in calib-floor + calib-a4), all on current code. Signal task: A0 <= 1/3 and A4 >= 2/3;
+# keep the set if >= 8 signal tasks (spec Decision log).
+#   bench run experiments/calib-headroom.yaml && bench report experiments/calib-headroom.yaml
+name: calib-headroom
+tasks: ../tasks/manifests/mswe-mini-cpp-v2.yaml
+split: dev
+task_ids:
+  - simdjson__simdjson-644
+  - nlohmann__json-3664
+  - nlohmann__json-3605
+  - nlohmann__json-3543
+  - nlohmann__json-3463
+  - nlohmann__json-1138
+  - fmtlib__fmt-3248
+  - fmtlib__fmt-2158
+  - fmtlib__fmt-1407
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+arms:
+  - {name: A0, agent: pi, executor: local}
+  - {name: A4, agent: pi-advisor, executor: advisor}
