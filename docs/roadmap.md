@@ -139,6 +139,25 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [ ] Pass the feedback scores to the prompt-search proposer (text, never the acceptance score)
 - [ ] Calibrated LLM judge of advice quality (~30 hand-labelled consults first)
 
+## Revised plan (2026-10-05) — before the pilot
+
+See spec, [Revision 2026-10-05](spec.md#revision-2026-10-05-phase-consults-gating-brief-writer).
+The pilot below waits for the go/no-go gate.
+
+- [ ] Offline uncertainty analysis of calibration runs: which local signals predict failure;
+      fix gating signals and thresholds
+- [ ] run-tests repeats "build failed" at the end of its output (all arms)
+- [ ] `L-best3`: three local attempts, local selection (build, tests, reproduction test)
+- [ ] Consult points `triage`, `plan` (critique of the executor's plan), `review` (candidate
+      diffs); steer-don't-solve advisor prompt; uncertainty gating; value-of-consult and leak budget
+- [ ] Gate: 7 signal tasks × 3 seeds, unredacted; go if ≥ 25% of the `L-best3`–A4 gap closed
+- [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
+      levels none / surrogates / abstract
+- [ ] If go: larger task pool (decision open), then `--final` on `test`
+- [ ] Outputs: paper, public repo (README, one-command repro, secrets audit), MLflow write-up,
+      LinkedIn post — all from the same figures
+- Postponed: advice playbook (ACE), decoy briefs, provider splitting, advisor-side retrieval
+
 ## Week 8 — pilot
 
 - [x] Pilot config `experiments/pilot.yaml`: 10 `dev` tasks (seeded stratified sample, gold

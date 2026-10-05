@@ -135,6 +135,42 @@ Slot texts are stored with line endings normalised to `\n` and trailing whitespa
   last one, too soon after it, or without `tried` and `hypothesis`; code in advice is cut to a
   few lines. Strictness is an arm setting, so strict and loose rules can be compared.
 
+### Revision 2026-10-05: phase consults, gating, brief writer
+
+Target case: code that cannot leave the local machine, so the alternative to this system is
+the local model alone, not the cloud model. Calibration showed why the reactive design is
+weak: the executor never consults on its own; on the 7 signal tasks A0 resolves 4 of 21 runs
+but solves 4 of 7 tasks in at least one seed (it finds fixes, it cannot pick them); most
+unsolved `build_failed` grades are mismatches with the interface the hidden tests expect; and
+the executor pipes run-tests through `tail`, which hides "build failed". The design changes:
+
+- **Strong local baseline (`L-best3`).** Three local attempts per item, one chosen locally
+  (build, existing tests, the executor's reproduction test). No advisor. run-tests repeats its
+  "build failed" notice at the end of its output, in every arm.
+- **Consult points by phase.** `triage` (issue + repo map: likely causes, where to look),
+  `plan` (critique of the executor's plan and the interfaces it touches), `stuck` (existing
+  trigger), `review` (redacted diffs of the candidates plus local test results: ranking and
+  concerns). Expected value, highest first: review, plan, triage, stuck.
+- **Steer, don't solve.** Advice gives causes, checks and test ideas the executor can verify
+  locally, never a patch; the local build and tests decide, not the advisor.
+- **Uncertainty gating.** A consult point fires only when local signals say the executor is
+  uncertain: candidates disagree, the build or tests fail, no reproduction test, public
+  interfaces touched, trajectory signals (edit churn, repeated errors, turns used). Signals and
+  thresholds are chosen from the calibration runs offline, before any gated arm runs.
+- **Value of a consult.** Consult when the estimated failure probability times the expected
+  gain exceeds λ × its exposure; each task has a leak budget (identifiers and bytes sent).
+- **Optimised brief writer** (PAPILLON + GEPA). Local retrieval picks the code a brief may
+  draw on (the only RAG in the design); the writer prompt is searched for resolve − λ × leaks.
+  The redaction level becomes a dial: none, surrogate names, abstract only.
+
+Order: offline uncertainty analysis → `L-best3` → phase consults unredacted, gated → **go/no-go**
+→ brief writer across redaction levels → larger task pool → `--final` on `test`. The gate runs
+the 7 signal tasks × 3 seeds: go if unredacted phase consults close at least 25% of the gap
+between `L-best3` and A4; otherwise the study is written up as a negative result.
+
+Postponed: a playbook distilled from advice (ACE), decoy briefs, splitting a task across
+providers, retrieval on the advisor side.
+
 ### The advisor plugin
 
 How the plugin (`plugin/`) carries out a policy. Turns are counted from 0 (the first model
@@ -1185,6 +1221,9 @@ llm_second_opinion/
 - [ ] Does the proposer get A4's successful trajectories on the same task, or only the
       candidate's own runs? Showing A4 helps reflection but moves the search toward
       imitating the advisor.
+- [ ] Task pool after the headroom check (7 signal tasks, rule needs 8): the gate uses the 7;
+      which pool (full Multi-SWE-bench C++, or the rest of `dev` screened at 3 seeds) before `test`?
+- [ ] λ for the value-of-consult rule and the brief writer's reward; leak budget per task.
 - [ ] `dev`/`test` ratio, given how many tasks survive arm64 validation (power analysis once the
       pilot gives a variance estimate).
 
@@ -1260,3 +1299,4 @@ llm_second_opinion/
 | 2026-10-03 | Help-flow diagnostics and pilot arms. Scorers (version 2): advice `uptake` per consult (acted / partial / ignored from file, command and text signals within 5 turns) and `uptake_rate`; `answer_overshoot` = answer words / `answer_target_words` − 1; `trigger_skipped` by reason; `clarify` follow-up tokens as exposure, follow-up texts scanned by the leak scorers. The leak detectors share one role-aware rule, calibrated by a planted-leak test that found misses (member access, a file by name, short or differently-cased project names, follow-ups). Pilot gains `H-consult-only` (with `reserve_for_end: 0`), `H-clarify`, `H-memory`, `H-surrogates`: 300 items. |
 | 2026-10-03 | Help flow implemented in the plugin. `orient` counts distinct files read (the read tool's path, file arguments of printing shell commands). `stuck`: progress (a test run that does not repeat the previous failure, a new error from a build or run) resets its counters; repeated errors and reverts count; never after a passing test run. `before_done` is skipped when the tests passed since the last edit. `trigger_skipped` (`tests_passed`, `cooldown`, `budget`, `reserved_for_end`); the next trigger may fire after a skip. `reserve_for_end` (default 1) holds consults for `before_done` from other triggers and the tool (`consult_refused`, `reserved_for_end`). `clarify`, `memory`, `surrogates` as specified under Options. Prompt slots gain conditional sections (`{{#name}}`…`{{/name}}`, checked at load) and `advisor_system` the `{{clarify}}` placeholder. Default prompts: the executor is given concrete moments to consult, without wording that makes it sound risky; the advisor gets the word limit first and last and at most 3 next steps. The sweep now replaces names after `.` and `->`. The default prompt hash and the advisor arm hash change, deliberately (re-pinned in `test_config.py`). |
 | 2026-10-03 | Tool calls the model server leaves as text (Qwen `<tool_call><function=…>`; 4 of 62 executor runs, each ending the run) get a nudge: a harness pi extension (`agents/pi/toolcall-nudge.ts`, every arm) appends a notice and continues, at most 3 per run, logged in `nudges.jsonl` and counted as `tool_call_nudges`. Chosen over repairing the response in the proxy, to keep model output untouched. The plugin does not treat such a turn as the executor stopping. |
+| 2026-10-05 | Design revised for the local-only case (see [Revision 2026-10-05](#revision-2026-10-05-phase-consults-gating-brief-writer)): a local best-of-3 baseline, consult points by phase (triage, plan, stuck, review), steer-don't-solve advice checked locally, uncertainty gating with thresholds fixed offline, value-of-consult with a leak budget, and an optimised brief writer with local retrieval. Go/no-go on the 7 signal tasks: unredacted phase consults must close ≥ 25% of the `L-best3`–A4 gap. Advice playbook, decoy briefs, provider splitting and advisor-side retrieval postponed. |

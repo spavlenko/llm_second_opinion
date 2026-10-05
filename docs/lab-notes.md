@@ -2,6 +2,12 @@
 
 Short dated observations; newest first. Smoke runs are not results.
 
+## 2026-10-05 — headroom
+
+- Headroom (9 candidates, 3 seeds, current code): 7 signal tasks (< 8) → rule says switch set. Dropped: json-1138 (A0 2/3), json-3664 (A4 0/3 after a 1-seed solve). A4 27/27 elsewhere; A0 turn_limit 2/27. One-seed screens mislead both ways.
+- On the 7 signal tasks A0 resolves 4/21 runs but 4/7 tasks in some seed: selection, not generation, is half the gap.
+- Unsolved `build_failed` grades (both arms) look like hidden-test interface mismatches (`benchmarkNoAnalysis`, `compares_unordered`), not compile slips; repro not yet run.
+
 ## 2026-10-04 — calibration
 
 - A4 rerun on the 16 quota-lost tasks via Kimi Code: 12/16, no infra errors. Calib totals (1 seed): A0 9/24 (38%), A4 18/24 (75%); 9 candidate signal tasks (A0 fail, A4 solve), 6 neither, 9 both.
