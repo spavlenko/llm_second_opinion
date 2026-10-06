@@ -1,0 +1,80 @@
+# Screening the 36 new `dev` tasks of mswe-full-cpp-v1 for signal (A0 <= 1/3, A4 >= 2/3).
+# A4 at 1 seed (stage 1); stage 2 raises seeds to 3 on tasks with A4 solved, A0 <= 1/3.
+#   bench run experiments/screen-full-a4.yaml && bench report experiments/screen-full-a4.yaml
+name: screen-full-a4
+tasks: ../tasks/manifests/mswe-full-cpp-v1.yaml
+split: dev
+task_ids:
+  - catchorg__Catch2-1614
+  - catchorg__Catch2-2187
+  - catchorg__Catch2-2394
+  - catchorg__Catch2-2849
+  - fmtlib__fmt-1361
+  - fmtlib__fmt-2292
+  - fmtlib__fmt-2940
+  - fmtlib__fmt-3537
+  - fmtlib__fmt-3569
+  - fmtlib__fmt-3713
+  - fmtlib__fmt-3727
+  - fmtlib__fmt-3734
+  - fmtlib__fmt-3819
+  - fmtlib__fmt-3912
+  - nlohmann__json-1221
+  - nlohmann__json-2019
+  - nlohmann__json-2225
+  - nlohmann__json-2297
+  - nlohmann__json-2352
+  - nlohmann__json-2576
+  - nlohmann__json-2989
+  - nlohmann__json-3073
+  - nlohmann__json-3514
+  - nlohmann__json-3564
+  - nlohmann__json-3590
+  - nlohmann__json-3601
+  - nlohmann__json-4525
+  - nlohmann__json-4537
+  - nlohmann__json-508
+  - nlohmann__json-708
+  - nlohmann__json-807
+  - simdjson__simdjson-1896
+  - simdjson__simdjson-2178
+  - simdjson__simdjson-543
+  - simdjson__simdjson-545
+  - simdjson__simdjson-949
+seeds: 1
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+arms:
+  - {name: A4, agent: pi-advisor, executor: advisor}
