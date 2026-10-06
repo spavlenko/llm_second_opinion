@@ -9,6 +9,7 @@ Short dated observations; newest first. Smoke runs are not results.
 - Pick one of 3 seeds (47 tasks): oracle 28, random 17, best local rule (least reasoning) 21, own tests then medoid 15. Local selection recovers 4 of 11 → a review consult that picks among local patches targets the rest.
 - Patch similarity across seeds: 0.67 when 3/3 resolve, 0.30 at 1/3, 0.41 at 0/3 (consistent wrong fixes).
 - The executor pipes `run-tests | tail`: exit code lost and the build-failed notice cut; only ctest's summary line survives.
+- A4 prompt tokens: mean 747k/run (94% cached), max 3.7M (simdjson-543, 62 calls × ~59k context): whole-header reads repeated 3-5× (51k-char `read` cap) stay in context and are resent each turn. Kimi's 5-h window held ~20-24 A4 runs.
 - Image tags are per instance, not per set: building mini IDs under another set would retag over images that v2 pins by ID.
 
 ## 2026-10-05 — headroom
