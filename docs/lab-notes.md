@@ -2,6 +2,11 @@
 
 Short dated observations; newest first. Smoke runs are not results.
 
+## 2026-10-06 — full C++ set
+
+- `full` C++: 78 new instances built and validated on arm64, 74 kept; dropped fmt-3863 (flaky format-test), fmt-3279 and fmt-3260 (gold fails chrono-test, as fmt-3271 in mini), simdjson-2150 (gold fails `simdjson_force_implementation_error`).
+- Image tags are per instance, not per set: building mini IDs under another set would retag over images that v2 pins by ID.
+
 ## 2026-10-05 — headroom
 
 - Headroom (9 candidates, 3 seeds, current code): 7 signal tasks (< 8) → rule says switch set. Dropped: json-1138 (A0 2/3), json-3664 (A4 0/3 after a 1-seed solve). A4 27/27 elsewhere; A0 turn_limit 2/27. One-seed screens mislead both ways.

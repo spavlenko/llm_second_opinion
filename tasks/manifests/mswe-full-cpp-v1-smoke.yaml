@@ -1,0 +1,358 @@
+# Smoke subset; written by `bench tasks freeze mswe-full-cpp --version mswe-full-cpp-v1`
+# (split seed 0, test fraction 0.5; splits kept from mswe-mini-cpp-v2). Do not edit by hand.
+version: mswe-full-cpp-v1-smoke
+source: ByteDance-Seed/Multi-SWE-bench@56ff018c04a38e27ada1e9d0a6d5839a51f88f0d (c++)
+tasks:
+- id: nlohmann__json-18
+  image: llm-second-opinion/task-nlohmann__json-18:1
+  image_id: sha256:f5a978e319295ab010502b2b1d8ae726e548b085e82d2aaa6c3804144fa07750
+  problem_statement: |-
+    Improper parsing of JSON string "\\"
+
+    Currently the parser assumes if a '\' is before a double quote, the double quote isn't the end of the string.
+
+    Note that there are more complicated cases like this (and their expansion) which need to be handled properly which probably will take more code to support properly: ("\\"", "\\") of arbitrary length. A reverse search which checks if the number of '\' preceding the quote is even or odd would do it: https://github.com/nlohmann/json/blob/master/src/json.cc#L2050
+
+    Performance in backslash-heavy strings may suffer a lot though. Might be better to do a pure forward scan of the string counting backslashes as you go (Lots of memory access, but it should all be prefetched + L1 cached by current x86, x64 CPUs).
+  test_patch: "diff --git a/test/json_unit.cc b/test/json_unit.cc\nindex f820ffa892..7856bdd18f 100644\n\
+    --- a/test/json_unit.cc\n+++ b/test/json_unit.cc\n@@ -1621,6 +1621,7 @@ TEST_CASE(\"Parser\")\n  \
+    \       // escape characters\n         CHECK_THROWS_AS(json::parse(\"\\\"\\\\\\\"\"), std::invalid_argument);\n\
+    \         CHECK_NOTHROW(json::parse(\"\\\"\\\\\\\"\\\"\"));\n+        CHECK_NOTHROW(json::parse(\"\
+    \\\"\\\\\\\\\\\"\"));\n \n         // quotes must be closed\n         CHECK_THROWS_AS(json::parse(\"\
+    \\\"\"), std::invalid_argument);\n"
+  gold_patch: "diff --git a/src/json.cc b/src/json.cc\nindex e548366a3d..5cec2d09a9 100644\n--- a/src/json.cc\n\
+    +++ b/src/json.cc\n@@ -2042,34 +2042,46 @@ Parses a string after opening quotes (\\p \") where read.\n\
+    \ */\n std::string json::parser::parseString()\n {\n-    // get position of closing quotes\n-    auto\
+    \ quotepos_ = buffer_.find_first_of(\"\\\"\", pos_);\n-\n-    // if the closing quotes are escaped\
+    \ (character before the quotes is a\n-    // backslash), we continue looking for the final quotes\n\
+    -    while (quotepos_ != std::string::npos and buffer_[quotepos_ - 1] == '\\\\')\n-    {\n-      \
+    \  quotepos_ = buffer_.find_first_of(\"\\\"\", quotepos_ + 1);\n-    }\n+    // remember the position\
+    \ where the first character of the string was\n+    const auto startPos = pos_;\n+    // true if and\
+    \ only if the amount of backslashes before the current\n+    // character is even\n+    bool evenAmountOfBackslashes\
+    \ = true;\n+\n+    // iterate with pos_ over the whole string\n+    for (;pos_ < buffer_.size(); pos_++)\
+    \ {\n+        char currentChar = buffer_[pos_];\n+\n+        // currentChar is a quote, so we might\
+    \ have found the end of the string\n+        if (currentChar == '\"') {\n+            // but only\
+    \ if the amount of backslashes before that quote is even\n+            if (evenAmountOfBackslashes)\
+    \ {\n+\n+                const auto stringLength = pos_ - startPos;\n+                // set pos_\
+    \ behind the trailing quote\n+                pos_++;\n+                // find next char to parse\n\
+    +                next();\n+\n+                // return string inside the quotes\n+              \
+    \  return buffer_.substr(startPos, stringLength);\n+            }\n+        }\n \n-    // check if\
+    \ closing quotes were found\n-    if (quotepos_ == std::string::npos)\n-    {\n-        error(\"expected\
+    \ '\\\"'\");\n+        // remember if we have an even amount of backslashes before the current character\n\
+    +        if (currentChar == '\\\\') {\n+            // jump between even/uneven for each backslash\
+    \ we encounter\n+            evenAmountOfBackslashes = !evenAmountOfBackslashes;\n+        } else\
+    \ {\n+            // zero backslashes are also an even number, so as soon as we encounter a non-backslash\n\
+    +            // the chain of backslashes breaks and we start again from zero\n+            evenAmountOfBackslashes\
+    \ = true;\n+        }\n     }\n \n-    // store the coordinates of the string for the later return\
+    \ value\n-    const auto stringBegin = pos_;\n-    const auto stringLength = quotepos_ - pos_;\n-\n\
+    -    // set buffer position to the position behind (+1) the closing quote\n-    pos_ = quotepos_ +\
+    \ 1;\n-\n-    // read next character\n-    next();\n-\n-    // return the string value\n-    return\
+    \ buffer_.substr(stringBegin, stringLength);\n+    // we iterated over the whole string without finding\
+    \ a unescaped quote\n+    // so the given string is malformed\n+    error(\"expected '\\\"'\");\n\
+    \ }\n \n /*!\n"
+  eval_command: /opt/lso/run-tests
+  tests:
+    parser: ctest
+    fail_to_pass:
+    - json_unit
+  repo: nlohmann/json
+  base_commit: 46474010307f209ddfb1454844f8b4432ffe6f11
+  base_date: '2015-01-06T22:05:32+01:00'
+  split: dev
+- id: catchorg__Catch2-1614
+  image: llm-second-opinion/task-catchorg__catch2-1614:1
+  image_id: sha256:a4e310eae5a11dbf841315901d6b54f960176b4c293e205179a1873108dc1389
+  problem_statement: "Allow custom precision in error reports for floating-point numbers\n\n**Description**\n\
+    As in [this SO Q&A](https://stackoverflow.com/q/55867570/201787), it would be nice to allow customization\
+    \ of the precision of floating-point values that fail. At present, the precision for float and double\
+    \ are hard-coded within Catch2 to 5 and 10, respectively:\n```cpp\nstd::string StringMaker<float>::convert(float\
+    \ value) {\n    return fpToString(value, 5) + 'f';\n}\nstd::string StringMaker<double>::convert(double\
+    \ value) {\n    return fpToString(value, 10);\n}\n```\nSometimes things will fail (even with `Approx()`),\
+    \ but the precision of the failure message doesn't show enough precision to be meaningful.\n```\n\
+    prog.cc:22: FAILED:\n  REQUIRE( TestType(0) == std::numeric_limits<TestType>::epsilon() )\nwith expansion:\n\
+    \  0.0f == 0.0f\n```\nThe proposal here is to add a `setPrecision()` function to allow the user to\
+    \ control this. I have prototyped this, which you can see running [live on Wandbox](https://wandbox.org/permlink/mZXPLEuET5ZeTg1t).\
+    \ Here's the test:\n```cpp\nTEMPLATE_TEST_CASE( \"Double, double, toil and trouble\", \"[double]\"\
+    , float, double ) \n{\n    const auto precision = GENERATE( -1, 0, 3, std::numeric_limits<TestType>::max_digits10\
+    \ );\n\n    if( precision >= 0 )\n    {\n        Catch::StringMaker<TestType>::setPrecision( precision\
+    \ );\n    }\n    \n    // Expected to fail to demonstrate the problem\n    REQUIRE( TestType(0) ==\
+    \ std::numeric_limits<TestType>::epsilon() ); \n}\n```\nThe output shows as expected for floats and\
+    \ doubles. For instance:\n```\nprog.cc:15: FAILED:\n  REQUIRE( TestType(0) == std::numeric_limits<TestType>::epsilon()\
+    \ )\nwith expansion:\n  0.0f == 0.000000119f\n```\nMaking a unit test for this is a little iffy since\
+    \ the actual string values are dependent on the usual floating-point fuzziness. I guess it could compare\
+    \ string length without looking too closely at the value."
+  test_patch: "diff --git a/projects/SelfTest/UsageTests/ToStringGeneral.tests.cpp b/projects/SelfTest/UsageTests/ToStringGeneral.tests.cpp\n\
+    index 09ac304517..69d6320d99 100644\n--- a/projects/SelfTest/UsageTests/ToStringGeneral.tests.cpp\n\
+    +++ b/projects/SelfTest/UsageTests/ToStringGeneral.tests.cpp\n@@ -128,6 +128,40 @@ TEST_CASE(\"String\
+    \ views are stringified like other strings\", \"[toString][approva\n \n #endif\n \n+TEST_CASE(\"Precision\
+    \ of floating point stringification can be set\", \"[toString][floatingPoint]\") {\n+    SECTION(\"\
+    Floats\") {\n+        using sm = Catch::StringMaker<float>;\n+        const auto oldPrecision = sm::precision;\n\
+    +\n+        const float testFloat = 1.12345678901234567899f;\n+        auto str1 = sm::convert(testFloat);\n\
+    +        sm::precision = 5;\n+        // \"1.\" prefix = 2 chars, f suffix is another char\n+    \
+    \    CHECK(str1.size() == 3 + 5);\n+\n+        sm::precision = 10;\n+        auto str2 = sm::convert(testFloat);\n\
+    +        REQUIRE(str2.size() == 3 + 10);\n+        sm::precision = oldPrecision;\n+    }\n+    SECTION(\"\
+    Double\") {\n+        using sm = Catch::StringMaker<double>;\n+        const auto oldPrecision = sm::precision;\n\
+    +\n+        const double testDouble = 1.123456789012345678901234567899;\n+        sm::precision =\
+    \ 5;\n+        auto str1 = sm::convert(testDouble);\n+        // \"1.\" prefix = 2 chars\n+      \
+    \  CHECK(str1.size() == 2 + 5);\n+\n+        sm::precision = 15;\n+        auto str2 = sm::convert(testDouble);\n\
+    +        REQUIRE(str2.size() == 2 + 15);\n+\n+        sm::precision = oldPrecision;\n+    }\n+}\n\
+    +\n namespace {\n \n struct WhatException : std::exception {\n"
+  gold_patch: "diff --git a/docs/tostring.md b/docs/tostring.md\nindex 77322dc6b6..549f8aed9f 100644\n\
+    --- a/docs/tostring.md\n+++ b/docs/tostring.md\n@@ -7,6 +7,8 @@\n [Catch::is_range specialisation](#catchis_range-specialisation)<br>\n\
+    \ [Exceptions](#exceptions)<br>\n [Enums](#enums)<br>\n+[Floating point precision](#floating-point-precision)<br>\n\
+    +\n \n Catch needs to be able to convert types you use in assertions and logging expressions into\
+    \ strings (for logging and reporting purposes).\n Most built-in or std types are supported out of\
+    \ the box but there are two ways that you can tell Catch how to convert your own types (or other,\
+    \ third-party types) into strings.\n@@ -104,6 +106,22 @@ TEST_CASE() {\n }\n ```\n \n+## Floating\
+    \ point precision\n+\n+Catch provides a built-in `StringMaker` specialization for both `float`\n+`double`.\
+    \ By default, it uses what we think is a reasonable precision,\n+but you can customize it by modifying\
+    \ the `precision` static variable\n+inside the `StringMaker` specialization, like so:\n+\n+```cpp\n\
+    +        Catch::StringMaker<float>::precision = 15;\n+        const float testFloat1 = 1.12345678901234567899f;\n\
+    +        const float testFloat2 = 1.12345678991234567899f;\n+        REQUIRE(testFloat1 == testFloat2);\n\
+    +```\n+\n+This assertion will fail and print out the `testFloat1` and `testFloat2`\n+to 15 decimal\
+    \ places.\n \n ---\n \ndiff --git a/include/internal/catch_tostring.cpp b/include/internal/catch_tostring.cpp\n\
+    index b857d3fbcd..f59676e77b 100644\n--- a/include/internal/catch_tostring.cpp\n+++ b/include/internal/catch_tostring.cpp\n\
+    @@ -234,11 +234,16 @@ std::string StringMaker<std::nullptr_t>::convert(std::nullptr_t) {\n     return\
+    \ \"nullptr\";\n }\n \n+int StringMaker<float>::precision = 5;\n+   \n std::string StringMaker<float>::convert(float\
+    \ value) {\n-    return fpToString(value, 5) + 'f';\n+    return fpToString(value, precision) + 'f';\n\
+    \ }\n+\n+int StringMaker<double>::precision = 10;\n+    \n std::string StringMaker<double>::convert(double\
+    \ value) {\n-    return fpToString(value, 10);\n+    return fpToString(value, precision);\n }\n \n\
+    \ std::string ratio_string<std::atto>::symbol() { return \"a\"; }\ndiff --git a/include/internal/catch_tostring.h\
+    \ b/include/internal/catch_tostring.h\nindex 52634a8c9a..cb248ea9ab 100644\n--- a/include/internal/catch_tostring.h\n\
+    +++ b/include/internal/catch_tostring.h\n@@ -261,10 +261,13 @@ namespace Catch {\n     template<>\n\
+    \     struct StringMaker<float> {\n         static std::string convert(float value);\n+        static\
+    \ int precision;\n     };\n+\n     template<>\n     struct StringMaker<double> {\n         static\
+    \ std::string convert(double value);\n+        static int precision;\n     };\n \n     template <typename\
+    \ T>\ndiff --git a/projects/SelfTest/Baselines/compact.sw.approved.txt b/projects/SelfTest/Baselines/compact.sw.approved.txt\n\
+    index 259954e4b8..8447e839fd 100644\n--- a/projects/SelfTest/Baselines/compact.sw.approved.txt\n+++\
+    \ b/projects/SelfTest/Baselines/compact.sw.approved.txt\n@@ -859,6 +859,10 @@ Condition.tests.cpp:<line\
+    \ number>: passed: cpc != 0 for: 0x<hex digits> != 0\n Condition.tests.cpp:<line number>: passed:\
+    \ returnsNull() == 0 for: {null string} == 0\n Condition.tests.cpp:<line number>: passed: returnsConstNull()\
+    \ == 0 for: {null string} == 0\n Condition.tests.cpp:<line number>: passed: 0 != p for: 0 != 0x<hex\
+    \ digits>\n+ToStringGeneral.tests.cpp:<line number>: passed: str1.size() == 3 + 5 for: 8 == 8\n+ToStringGeneral.tests.cpp:<line\
+    \ number>: passed: str2.size() == 3 + 10 for: 13 == 13\n+ToStringGeneral.tests.cpp:<line number>:\
+    \ passed: str1.size() == 2 + 5 for: 7 == 7\n+ToStringGeneral.tests.cpp:<line number>: passed: str2.size()\
+    \ == 2 + 15 for: 17 == 17\n Matchers.tests.cpp:<line number>: passed: \"foo\", Predicate<const char*>([]\
+    \ (const char* const&) { return true; }) for: \"foo\" matches undescribed predicate\n CmdLine.tests.cpp:<line\
+    \ number>: passed: result for: {?}\n CmdLine.tests.cpp:<line number>: passed: config.processName ==\
+    \ \"\" for: \"\" == \"\"\ndiff --git a/projects/SelfTest/Baselines/console.std.approved.txt b/projects/SelfTest/Baselines/console.std.approved.txt\n\
+    index 0a4de92369..aa991bd403 100644\n--- a/projects/SelfTest/Baselines/console.std.approved.txt\n\
+    +++ b/projects/SelfTest/Baselines/console.std.approved.txt\n@@ -1299,6 +1299,6 @@ due to unexpected\
+    \ exception with message:\n   Why would you throw a std::string?\n \n ===============================================================================\n\
+    -test cases:  266 |  199 passed |  63 failed |  4 failed as expected\n-assertions: 1449 | 1304 passed\
+    \ | 124 failed | 21 failed as expected\n+test cases:  267 |  200 passed |  63 failed |  4 failed as\
+    \ expected\n+assertions: 1453 | 1308 passed | 124 failed | 21 failed as expected\n \ndiff --git a/projects/SelfTest/Baselines/console.sw.approved.txt\
+    \ b/projects/SelfTest/Baselines/console.sw.approved.txt\nindex 2b998afc7e..e13a6c23d1 100644\n---\
+    \ a/projects/SelfTest/Baselines/console.sw.approved.txt\n+++ b/projects/SelfTest/Baselines/console.sw.approved.txt\n\
+    @@ -6192,6 +6192,40 @@ Condition.tests.cpp:<line number>: PASSED:\n with expansion:\n   0 != 0x<hex\
+    \ digits>\n \n+-------------------------------------------------------------------------------\n+Precision\
+    \ of floating point stringification can be set\n+  Floats\n+-------------------------------------------------------------------------------\n\
+    +ToStringGeneral.tests.cpp:<line number>\n+...............................................................................\n\
+    +\n+ToStringGeneral.tests.cpp:<line number>: PASSED:\n+  CHECK( str1.size() == 3 + 5 )\n+with expansion:\n\
+    +  8 == 8\n+\n+ToStringGeneral.tests.cpp:<line number>: PASSED:\n+  REQUIRE( str2.size() == 3 + 10\
+    \ )\n+with expansion:\n+  13 == 13\n+\n+-------------------------------------------------------------------------------\n\
+    +Precision of floating point stringification can be set\n+  Double\n+-------------------------------------------------------------------------------\n\
+    +ToStringGeneral.tests.cpp:<line number>\n+...............................................................................\n\
+    +\n+ToStringGeneral.tests.cpp:<line number>: PASSED:\n+  CHECK( str1.size() == 2 + 5 )\n+with expansion:\n\
+    +  7 == 7\n+\n+ToStringGeneral.tests.cpp:<line number>: PASSED:\n+  REQUIRE( str2.size() == 2 + 15\
+    \ )\n+with expansion:\n+  17 == 17\n+\n -------------------------------------------------------------------------------\n\
+    \ Predicate matcher can accept const char*\n -------------------------------------------------------------------------------\n\
+    @@ -11389,6 +11423,6 @@ Misc.tests.cpp:<line number>\n Misc.tests.cpp:<line number>: PASSED:\n \n\
+    \ ===============================================================================\n-test cases:  266\
+    \ |  183 passed |  79 failed |  4 failed as expected\n-assertions: 1466 | 1304 passed | 141 failed\
+    \ | 21 failed as expected\n+test cases:  267 |  184 passed |  79 failed |  4 failed as expected\n\
+    +assertions: 1470 | 1308 passed | 141 failed | 21 failed as expected\n \ndiff --git a/projects/SelfTest/Baselines/junit.sw.approved.txt\
+    \ b/projects/SelfTest/Baselines/junit.sw.approved.txt\nindex 7f4b43dbb1..a7b775336b 100644\n--- a/projects/SelfTest/Baselines/junit.sw.approved.txt\n\
+    +++ b/projects/SelfTest/Baselines/junit.sw.approved.txt\n@@ -1,7 +1,7 @@\n <?xml version=\"1.0\" encoding=\"\
+    UTF-8\"?>\n <testsuitesloose text artifact\n >\n-  <testsuite name=\"<exe-name>\" errors=\"17\" failures=\"\
+    125\" tests=\"1467\" hostname=\"tbd\" time=\"{duration}\" timestamp=\"{iso8601-timestamp}\">\n+  <testsuite\
+    \ name=\"<exe-name>\" errors=\"17\" failures=\"125\" tests=\"1471\" hostname=\"tbd\" time=\"{duration}\"\
+    \ timestamp=\"{iso8601-timestamp}\">\n     <properties>\n       <property name=\"filters\" value=\"\
+    ~[!nonportable]~[!benchmark]~[approvals]\"/>\n       <property name=\"random-seed\" value=\"1\"/>\n\
+    @@ -574,6 +574,8 @@ Message.tests.cpp:<line number>\n     <testcase classname=\"<exe-name>.global\"\
+    \ name=\"Parse test names and tags/empty quoted name\" time=\"{duration}\"/>\n     <testcase classname=\"\
+    <exe-name>.global\" name=\"Parse test names and tags/quoted string followed by tag exclusion\" time=\"\
+    {duration}\"/>\n     <testcase classname=\"<exe-name>.global\" name=\"Pointers can be compared to\
+    \ null\" time=\"{duration}\"/>\n+    <testcase classname=\"<exe-name>.global\" name=\"Precision of\
+    \ floating point stringification can be set/Floats\" time=\"{duration}\"/>\n+    <testcase classname=\"\
+    <exe-name>.global\" name=\"Precision of floating point stringification can be set/Double\" time=\"\
+    {duration}\"/>\n     <testcase classname=\"<exe-name>.global\" name=\"Predicate matcher can accept\
+    \ const char*\" time=\"{duration}\"/>\n     <testcase classname=\"<exe-name>.global\" name=\"Process\
+    \ can be configured on command line/empty args don't cause a crash\" time=\"{duration}\"/>\n     <testcase\
+    \ classname=\"<exe-name>.global\" name=\"Process can be configured on command line/default - no arguments\"\
+    \ time=\"{duration}\"/>\ndiff --git a/projects/SelfTest/Baselines/xml.sw.approved.txt b/projects/SelfTest/Baselines/xml.sw.approved.txt\n\
+    index fa078ac800..fcd6ff13f4 100644\n--- a/projects/SelfTest/Baselines/xml.sw.approved.txt\n+++ b/projects/SelfTest/Baselines/xml.sw.approved.txt\n\
+    @@ -7778,6 +7778,47 @@ Nor would this\n       </Expression>\n       <OverallResult success=\"true\"\
+    />\n     </TestCase>\n+    <TestCase name=\"Precision of floating point stringification can be set\"\
+    \ tags=\"[floatingPoint][toString]\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+      <Section name=\"Floats\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+        <Expression success=\"true\" type=\"CHECK\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+          <Original>\n+            str1.size() == 3 + 5\n+          </Original>\n+         \
+    \ <Expanded>\n+            8 == 8\n+          </Expanded>\n+        </Expression>\n+        <Expression\
+    \ success=\"true\" type=\"REQUIRE\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+          <Original>\n+            str2.size() == 3 + 10\n+          </Original>\n+        \
+    \  <Expanded>\n+            13 == 13\n+          </Expanded>\n+        </Expression>\n+        <OverallResults\
+    \ successes=\"2\" failures=\"0\" expectedFailures=\"0\"/>\n+      </Section>\n+      <Section name=\"\
+    Double\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\" >\n+        <Expression\
+    \ success=\"true\" type=\"CHECK\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+          <Original>\n+            str1.size() == 2 + 5\n+          </Original>\n+         \
+    \ <Expanded>\n+            7 == 7\n+          </Expanded>\n+        </Expression>\n+        <Expression\
+    \ success=\"true\" type=\"REQUIRE\" filename=\"projects/<exe-name>/UsageTests/ToStringGeneral.tests.cpp\"\
+    \ >\n+          <Original>\n+            str2.size() == 2 + 15\n+          </Original>\n+        \
+    \  <Expanded>\n+            17 == 17\n+          </Expanded>\n+        </Expression>\n+        <OverallResults\
+    \ successes=\"2\" failures=\"0\" expectedFailures=\"0\"/>\n+      </Section>\n+      <OverallResult\
+    \ success=\"true\"/>\n+    </TestCase>\n     <TestCase name=\"Predicate matcher can accept const char*\"\
+    \ tags=\"[compilation][matchers]\" filename=\"projects/<exe-name>/UsageTests/Matchers.tests.cpp\"\
+    \ >\n       <Expression success=\"true\" type=\"REQUIRE_THAT\" filename=\"projects/<exe-name>/UsageTests/Matchers.tests.cpp\"\
+    \ >\n         <Original>\n@@ -13728,7 +13769,7 @@ loose text artifact\n       </Section>\n       <OverallResult\
+    \ success=\"true\"/>\n     </TestCase>\n-    <OverallResults successes=\"1304\" failures=\"142\" expectedFailures=\"\
+    21\"/>\n+    <OverallResults successes=\"1308\" failures=\"142\" expectedFailures=\"21\"/>\n   </Group>\n\
+    -  <OverallResults successes=\"1304\" failures=\"141\" expectedFailures=\"21\"/>\n+  <OverallResults\
+    \ successes=\"1308\" failures=\"141\" expectedFailures=\"21\"/>\n </Catch>\n"
+  eval_command: /opt/lso/run-tests
+  tests:
+    parser: ctest-lower
+    fail_to_pass:
+    - approvaltests
+    - filteredsection-1
+    - filteredsection-2
+    - listreporters
+    - listtags
+    - listtestnamesonly
+    - listtests
+    - noassertions
+    - notest
+    - runtests
+  repo: catchorg/Catch2
+  base_commit: 9c741fe96073ed620ffc032afbed1f3c789d2b68
+  base_date: '2019-05-01T19:12:44+02:00'
+  split: dev
+- id: fmtlib__fmt-3912
+  image: llm-second-opinion/task-fmtlib__fmt-3912:1
+  image_id: sha256:2b7bfd0d2d1406def20e078a00ae235ea3f5ad61465a08cb24f87c3c73e23a67
+  problem_statement: |-
+    Add support for `std::chrono::year_month_day`
+
+    Since c++20 there is https://en.cppreference.com/w/cpp/chrono/year_month_day. Currently the only way to format this is to convert it to a `time_point` or writing a custom formatter. I think it would be quite useful to support this directly.
+
+    There exists an std implementation https://en.cppreference.com/w/cpp/chrono/year_month_day/formatter, but none in {fmt}.
+
+    There exists a lot of other calendar points like this, which arent supported either
+  test_patch: "diff --git a/test/chrono-test.cc b/test/chrono-test.cc\nindex d692e6c7b19a..f5c7f1bc4fcb\
+    \ 100644\n--- a/test/chrono-test.cc\n+++ b/test/chrono-test.cc\n@@ -749,20 +749,18 @@ TEST(chrono_test,\
+    \ unsigned_duration) {\n }\n \n TEST(chrono_test, weekday) {\n-  auto loc = get_locale(\"es_ES.UTF-8\"\
+    );\n-  std::locale::global(loc);\n+  std::locale::global(std::locale::classic());\n   auto sat = fmt::weekday(6);\n\
+    \ \n-  auto tm = std::tm();\n-  tm.tm_wday = static_cast<int>(sat.c_encoding());\n-\n   EXPECT_EQ(fmt::format(\"\
+    {}\", sat), \"Sat\");\n-  EXPECT_EQ(fmt::format(\"{:%a}\", tm), \"Sat\");\n+  EXPECT_EQ(fmt::format(\"\
+    {:%a}\", sat), \"Sat\");\n+  EXPECT_EQ(fmt::format(\"{:%A}\", sat), \"Saturday\");\n \n+  auto loc\
+    \ = get_locale(\"es_ES.UTF-8\");\n+  std::locale::global(loc);\n   if (loc != std::locale::classic())\
+    \ {\n     auto saturdays = std::vector<std::string>{\"sáb\", \"sá.\"};\n-    EXPECT_THAT(saturdays,\
+    \ Contains(fmt::format(loc, \"{:L}\", sat)));\n-    EXPECT_THAT(saturdays, Contains(fmt::format(loc,\
+    \ \"{:%a}\", tm)));\n+    EXPECT_THAT(saturdays, Contains(fmt::format(loc, \"{:%a}\", sat)));\n  \
+    \ }\n }\n \n@@ -1014,13 +1012,33 @@ TEST(chrono_test, out_of_range) {\n }\n \n TEST(chrono_test, year_month_day)\
+    \ {\n-  auto loc = get_locale(\"es_ES.UTF-8\");\n-  std::locale::global(loc);  \n+  std::locale::global(std::locale::classic());\n\
+    +\n   auto year = fmt::year(2024);\n   auto month = fmt::month(1);\n   auto day = fmt::day(1);\n+\
+    \  auto ymd = fmt::year_month_day(year, month, day);\n \n   EXPECT_EQ(fmt::format(\"{}\", year), \"\
+    2024\");\n+  EXPECT_EQ(fmt::format(\"{:%Y}\", year), \"2024\");\n+  EXPECT_EQ(fmt::format(\"{:%y}\"\
+    , year), \"24\");\n+\n   EXPECT_EQ(fmt::format(\"{}\", month), \"Jan\");\n+  EXPECT_EQ(fmt::format(\"\
+    {:%m}\", month), \"01\");\n+  EXPECT_EQ(fmt::format(\"{:%b}\", month), \"Jan\");\n+  EXPECT_EQ(fmt::format(\"\
+    {:%B}\", month), \"January\");\n+\n   EXPECT_EQ(fmt::format(\"{}\", day), \"01\");\n+  EXPECT_EQ(fmt::format(\"\
+    {:%d}\", day), \"01\");\n+\n+  EXPECT_EQ(fmt::format(\"{}\", ymd), \"2024-01-01\");\n+  EXPECT_EQ(fmt::format(\"\
+    {:%Y-%m-%d}\", ymd), \"2024-01-01\");\n+  EXPECT_EQ(fmt::format(\"{:%Y-%b-%d}\", ymd), \"2024-Jan-01\"\
+    );\n+  EXPECT_EQ(fmt::format(\"{:%Y-%B-%d}\", ymd), \"2024-January-01\");\n+\n+  auto loc = get_locale(\"\
+    es_ES.UTF-8\");\n+  std::locale::global(loc);\n+  if (loc != std::locale::classic()) {\n+    EXPECT_EQ(fmt::format(loc,\
+    \ \"{:%b}\", month), \"ene.\");\n+  }\n }\n"
+  gold_patch: "diff --git a/include/fmt/chrono.h b/include/fmt/chrono.h\nindex 65e6c7e03230..36b4740bc5e9\
+    \ 100644\n--- a/include/fmt/chrono.h\n+++ b/include/fmt/chrono.h\n@@ -2040,6 +2040,7 @@ using weekday\
+    \ = std::chrono::weekday;\n using day = std::chrono::day;\n using month = std::chrono::month;\n using\
+    \ year = std::chrono::year;\n+using year_month_day = std::chrono::year_month_day;\n #else\n // A fallback\
+    \ version of weekday.\n class weekday {\n@@ -2085,91 +2086,119 @@ class year {\n   constexpr explicit\
+    \ operator int() const noexcept { return value_; }\n };\n \n-class year_month_day {};\n+class year_month_day\
+    \ {\n+ private:\n+  fmt::year year_;\n+  fmt::month month_;\n+  fmt::day day_;\n+\n+ public:\n+  year_month_day()\
+    \ = default;\n+  constexpr year_month_day(const year& y, const month& m, const day& d) noexcept\n\
+    +      : year_(y), month_(m), day_(d) {}\n+  constexpr fmt::year year() const noexcept { return year_;\
+    \ }\n+  constexpr fmt::month month() const noexcept { return month_; }\n+  constexpr fmt::day day()\
+    \ const noexcept { return day_; }\n+};\n #endif\n \n-// A rudimentary weekday formatter.\n-template\
+    \ <typename Char> struct formatter<weekday, Char> {\n+template <typename Char>\n+struct formatter<weekday,\
+    \ Char> : formatter<std::tm, Char> {\n  private:\n-  bool localized = false;\n+  bool use_tm_formatter_{false};\n\
+    \ \n  public:\n   FMT_CONSTEXPR auto parse(basic_format_parse_context<Char>& ctx)\n       -> decltype(ctx.begin())\
+    \ {\n-    auto begin = ctx.begin(), end = ctx.end();\n-    if (begin != end && *begin == 'L') {\n\
+    -      ++begin;\n-      localized = true;\n-    }\n-    return begin;\n+    use_tm_formatter_ = ctx.begin()\
+    \ != nullptr;\n+    return formatter<std::tm, Char>::parse(ctx);\n   }\n \n   template <typename FormatContext>\n\
+    \   auto format(weekday wd, FormatContext& ctx) const -> decltype(ctx.out()) {\n     auto time = std::tm();\n\
+    \     time.tm_wday = static_cast<int>(wd.c_encoding());\n-    detail::get_locale loc(localized, ctx.locale());\n\
+    +    if (use_tm_formatter_) {\n+      return formatter<std::tm, Char>::format(time, ctx);\n+    }\n\
+    +    detail::get_locale loc(true, ctx.locale());\n     auto w = detail::tm_writer<decltype(ctx.out()),\
+    \ Char>(loc, ctx.out(), time);\n     w.on_abbr_weekday();\n     return w.out();\n   }\n };\n \n-template\
+    \ <typename Char> struct formatter<day, Char> {\n+template <typename Char>\n+struct formatter<day,\
+    \ Char> : formatter<std::tm, Char> {\n+ private:\n+  bool use_tm_formatter_{false};\n+\n+ public:\n\
+    \   FMT_CONSTEXPR auto parse(basic_format_parse_context<Char>& ctx)\n       -> decltype(ctx.begin())\
+    \ {\n-    return ctx.begin();\n+    use_tm_formatter_ = ctx.begin() != nullptr;\n+    return formatter<std::tm,\
+    \ Char>::parse(ctx);\n   }\n \n   template <typename FormatContext>\n   auto format(day d, FormatContext&\
+    \ ctx) const -> decltype(ctx.out()) {\n     auto time = std::tm();\n     time.tm_mday = static_cast<int>(static_cast<unsigned>(d));\n\
+    -    detail::get_locale loc(false, ctx.locale());\n+    if (use_tm_formatter_) {\n+      return formatter<std::tm,\
+    \ Char>::format(time, ctx);\n+    }\n+    detail::get_locale loc(true, ctx.locale());\n     auto w\
+    \ = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);\n     w.on_day_of_month(detail::numeric_system::standard);\n\
+    \     return w.out();\n   }\n };\n \n-template <typename Char> struct formatter<month, Char> {\n+template\
+    \ <typename Char>\n+struct formatter<month, Char> : formatter<std::tm, Char> {\n  private:\n-  bool\
+    \ localized = false;\n+  bool use_tm_formatter_{false};\n \n  public:\n   FMT_CONSTEXPR auto parse(basic_format_parse_context<Char>&\
+    \ ctx)\n       -> decltype(ctx.begin()) {\n-    auto begin = ctx.begin(), end = ctx.end();\n-    if\
+    \ (begin != end && *begin == 'L') {\n-      ++begin;\n-      localized = true;\n-    }\n-    return\
+    \ begin;\n+    use_tm_formatter_ = ctx.begin() != nullptr;\n+    return formatter<std::tm, Char>::parse(ctx);\n\
+    \   }\n \n   template <typename FormatContext>\n   auto format(month m, FormatContext& ctx) const\
+    \ -> decltype(ctx.out()) {\n     auto time = std::tm();\n-    // std::chrono::month has a range of\
+    \ 1-12, std::tm requires 0-11\n     time.tm_mon = static_cast<int>(static_cast<unsigned>(m)) - 1;\n\
+    -    detail::get_locale loc(localized, ctx.locale());\n+    if (use_tm_formatter_) {\n+      return\
+    \ formatter<std::tm, Char>::format(time, ctx);\n+    }\n+    detail::get_locale loc(true, ctx.locale());\n\
+    \     auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);\n     w.on_abbr_month();\n\
+    \     return w.out();\n   }\n };\n \n-template <typename Char> struct formatter<year, Char> {\n+template\
+    \ <typename Char>\n+struct formatter<year, Char> : formatter<std::tm, Char> {\n+ private:\n+  bool\
+    \ use_tm_formatter_{false};\n+\n+ public:\n   FMT_CONSTEXPR auto parse(basic_format_parse_context<Char>&\
+    \ ctx)\n       -> decltype(ctx.begin()) {\n-    return ctx.begin();\n+    use_tm_formatter_ = ctx.begin()\
+    \ != nullptr;\n+    return formatter<std::tm, Char>::parse(ctx);\n   }\n \n   template <typename FormatContext>\n\
+    \   auto format(year y, FormatContext& ctx) const -> decltype(ctx.out()) {\n     auto time = std::tm();\n\
+    -    // std::tm::tm_year is years since 1900\n     time.tm_year = static_cast<int>(y) - 1900;\n+ \
+    \   if (use_tm_formatter_) {\n+      return formatter<std::tm, Char>::format(time, ctx);\n+    }\n\
+    \     detail::get_locale loc(true, ctx.locale());\n     auto w = detail::tm_writer<decltype(ctx.out()),\
+    \ Char>(loc, ctx.out(), time);\n     w.on_year(detail::numeric_system::standard);\n@@ -2177,6 +2206,35\
+    \ @@ template <typename Char> struct formatter<year, Char> {\n   }\n };\n \n+template <typename Char>\n\
+    +struct formatter<year_month_day, Char> : formatter<std::tm, Char> {\n+ private:\n+  bool use_tm_formatter_{false};\n\
+    +\n+ public:\n+  FMT_CONSTEXPR auto parse(basic_format_parse_context<Char>& ctx)\n+      -> decltype(ctx.begin())\
+    \ {\n+    use_tm_formatter_ = ctx.begin() != nullptr;\n+    return formatter<std::tm, Char>::parse(ctx);\n\
+    +  }\n+\n+  template <typename FormatContext>\n+  auto format(year_month_day val, FormatContext& ctx)\
+    \ const\n+      -> decltype(ctx.out()) {\n+    auto time = std::tm();\n+    time.tm_year = static_cast<int>(val.year())\
+    \ - 1900;\n+    time.tm_mon = static_cast<int>(static_cast<unsigned>(val.month())) - 1;\n+    time.tm_mday\
+    \ = static_cast<int>(static_cast<unsigned>(val.day()));\n+    if (use_tm_formatter_) {\n+      return\
+    \ formatter<std::tm, Char>::format(time, ctx);\n+    }\n+    detail::get_locale loc(true, ctx.locale());\n\
+    +    auto w = detail::tm_writer<decltype(ctx.out()), Char>(loc, ctx.out(), time);\n+    w.on_iso_date();\n\
+    +    return w.out();\n+  }\n+};\n+\n template <typename Rep, typename Period, typename Char>\n struct\
+    \ formatter<std::chrono::duration<Rep, Period>, Char> {\n  private:\n"
+  eval_command: /opt/lso/run-tests
+  tests:
+    parser: ctest
+    fail_to_pass:
+    - chrono-test
+    pass_to_pass:
+    - args-test
+    - assert-test
+    - base-test
+    - color-test
+    - compile-fp-test
+    - compile-test
+    - enforce-checks-test
+    - format-impl-test
+    - format-test
+    - gtest-extra-test
+    - os-test
+    - ostream-test
+    - posix-mock-test
+    - printf-test
+    - ranges-test
+    - scan-test
+    - std-test
+    - unicode-test
+    - xchar-test
+  repo: fmtlib/fmt
+  base_commit: 3b5f3de3b57505c7f1a60ee40ef3448c623b1326
+  base_date: '2024-03-28T18:23:26-07:00'
+  split: dev

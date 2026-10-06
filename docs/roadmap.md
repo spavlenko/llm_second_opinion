@@ -27,7 +27,10 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] First manifest (`mswe-mini-cpp-v1`: 49 tasks, dev 24 / test 25); smoke task set (3 tasks)
 - [x] `mswe-mini-cpp-v2`: v1 with two rebuilt, revalidated images (the originals were deleted)
 - [x] `dev`/`test` split recorded in the manifest (fixed seed, stratified by repository)
-- [ ] Recipe for yhirose/cpp-httplib, then import `full`
+- [x] `mswe-full-cpp-v1`: `full` without cpp-httplib, 123 tasks (dev 60 / test 63); the 49 v2
+      tasks keep their split (`freeze --keep-splits`), only the 74 new ones are split
+- [ ] Recipe for yhirose/cpp-httplib (1 instance; low priority)
+- [ ] Screen the 36 new `dev` tasks in two stages (A0 3 seeds + A4 1 seed; then 2 more A4 seeds)
 
 ## Week 3 — A0 end to end on smoke tasks
 

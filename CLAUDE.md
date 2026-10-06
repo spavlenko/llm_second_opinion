@@ -36,6 +36,8 @@ cd harness                              # task pipeline; work files in runs/task
 .venv/bin/bench tasks validate mswe-mini-cpp --parallel 2    # resumable
 .venv/bin/bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v2 \
   --out ../tasks/manifests/mswe-mini-cpp-v2.yaml
+.venv/bin/bench tasks freeze mswe-full-cpp --version mswe-full-cpp-v1 \
+  --out ../tasks/manifests/mswe-full-cpp-v1.yaml --keep-splits ../tasks/manifests/mswe-mini-cpp-v2.yaml
 ```
 
 ```sh

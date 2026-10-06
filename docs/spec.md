@@ -1027,8 +1027,8 @@ logs) go in `runs/tasks/<name>/`; dataset downloads and git mirrors in `.cache/`
 notes, measurements, and problems found: [task-pipeline.md](task-pipeline.md).
 
 1. **Import** (`bench tasks import`). Multi-SWE-bench `mini` first (50 C++ instances: nlohmann/json
-   21, fmt 17, simdjson 8, Catch2 4); `full` is registered too and adds cpp-httplib, which has
-   no recipe yet. Each dataset is pinned to a Hugging Face commit (and checksum for `mini`).
+   21, fmt 17, simdjson 8, Catch2 4); then `full` (129: 78 more, one cpp-httplib, which has
+   no recipe yet) as `mswe-full-cpp-v1`, the earlier tasks keeping their split. Each dataset is pinned to a Hugging Face commit (and checksum for `mini`).
    The problem statement is the resolved issues' titles and bodies; the pull request's own
    text describes the fix and is left out. Upstream's fixed tests (fail, skip, or absent
    before; pass after) and pass-to-pass tests are kept for validation.
@@ -1222,7 +1222,8 @@ llm_second_opinion/
       candidate's own runs? Showing A4 helps reflection but moves the search toward
       imitating the advisor.
 - [ ] Task pool after the headroom check (7 signal tasks, rule needs 8): the gate uses the 7;
-      which pool (full Multi-SWE-bench C++, or the rest of `dev` screened at 3 seeds) before `test`?
+      which pool before `test`? → `mswe-full-cpp-v1` (2026-10-06); its new `dev` tasks still
+      to be screened.
 - [ ] λ for the value-of-consult rule and the brief writer's reward; leak budget per task.
 - [ ] `dev`/`test` ratio, given how many tasks survive arm64 validation (power analysis once the
       pilot gives a variance estimate).
@@ -1300,3 +1301,4 @@ llm_second_opinion/
 | 2026-10-03 | Help flow implemented in the plugin. `orient` counts distinct files read (the read tool's path, file arguments of printing shell commands). `stuck`: progress (a test run that does not repeat the previous failure, a new error from a build or run) resets its counters; repeated errors and reverts count; never after a passing test run. `before_done` is skipped when the tests passed since the last edit. `trigger_skipped` (`tests_passed`, `cooldown`, `budget`, `reserved_for_end`); the next trigger may fire after a skip. `reserve_for_end` (default 1) holds consults for `before_done` from other triggers and the tool (`consult_refused`, `reserved_for_end`). `clarify`, `memory`, `surrogates` as specified under Options. Prompt slots gain conditional sections (`{{#name}}`…`{{/name}}`, checked at load) and `advisor_system` the `{{clarify}}` placeholder. Default prompts: the executor is given concrete moments to consult, without wording that makes it sound risky; the advisor gets the word limit first and last and at most 3 next steps. The sweep now replaces names after `.` and `->`. The default prompt hash and the advisor arm hash change, deliberately (re-pinned in `test_config.py`). |
 | 2026-10-03 | Tool calls the model server leaves as text (Qwen `<tool_call><function=…>`; 4 of 62 executor runs, each ending the run) get a nudge: a harness pi extension (`agents/pi/toolcall-nudge.ts`, every arm) appends a notice and continues, at most 3 per run, logged in `nudges.jsonl` and counted as `tool_call_nudges`. Chosen over repairing the response in the proxy, to keep model output untouched. The plugin does not treat such a turn as the executor stopping. |
 | 2026-10-05 | Design revised for the local-only case (see [Revision 2026-10-05](#revision-2026-10-05-phase-consults-gating-brief-writer)): a local best-of-3 baseline, consult points by phase (triage, plan, stuck, review), steer-don't-solve advice checked locally, uncertainty gating with thresholds fixed offline, value-of-consult with a leak budget, and an optimised brief writer with local retrieval. Go/no-go on the 7 signal tasks: unredacted phase consults must close ≥ 25% of the `L-best3`–A4 gap. Advice playbook, decoy briefs, provider splitting and advisor-side retrieval postponed. |
+| 2026-10-06 | Task pool enlarged to `mswe-full-cpp-v1` (123 tasks, dev 60 / test 63). The 49 `mswe-mini-cpp-v2` tasks keep their split, so `test` stays unseen; only the 74 new tasks are split (same seeded per-repository rule). The 36 new `dev` tasks are screened for signal before the gate's pool is fixed. |

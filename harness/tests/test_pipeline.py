@@ -305,6 +305,27 @@ def test_freeze_lists_every_candidate(tmp_path):
     assert path.read_text().startswith("# header\n")
 
 
+def test_freeze_keeps_earlier_splits_and_splits_only_new_tasks():
+    ids = [f"r-{i}" for i in range(6)]
+    cset = CandidateSet(source="s", candidates=[candidate(id=i) for i in ids])
+    kept = {"status": "kept", "fail_to_pass": ["new"], "pass_to_pass": [], "test_s": 60.0}
+    earlier = {"r-0": "test", "r-1": "test", "r-2": "test"}
+    m = freeze(
+        cset,
+        dict.fromkeys(ids, BUILD),
+        dict.fromkeys(ids, kept),
+        version="v2",
+        max_build_s=1200,
+        max_test_s=600,
+        test_fraction=0.5,
+        seed=0,
+        keep_splits=earlier,
+    )
+    splits = {t.id: t.split for t in m.tasks}
+    assert {i: splits[i] for i in earlier} == earlier
+    assert sorted(splits[i] for i in ("r-3", "r-4", "r-5")) == ["dev", "test", "test"]
+
+
 def test_records_persist(tmp_path):
     Records(tmp_path / "r.json").put("a", {"x": 1})
     assert Records(tmp_path / "r.json").get("a") == {"x": 1}

@@ -724,6 +724,8 @@ def tasks_validate(
 @click.option("--seed", type=int, default=0, show_default=True)
 @click.option("--smoke", type=click.IntRange(min=0), default=3, show_default=True,
               help="Also write <out stem>-smoke.yaml with this many quick dev tasks.")  # fmt: skip
+@click.option("--keep-splits", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="Earlier manifest: its tasks keep their split; only new tasks are split.")  # fmt: skip
 @WORK_DIR
 def tasks_freeze(
     name: str,
@@ -734,6 +736,7 @@ def tasks_freeze(
     test_fraction: float,
     seed: int,
     smoke: int,
+    keep_splits: Path | None,
     work_dir: Path,
 ) -> None:
     """Write the frozen manifest: validated tasks with a dev/test split, and dropped ones."""
@@ -744,6 +747,8 @@ def tasks_freeze(
     cset, _ = _candidates(work_dir, name, ())
     builds = Records(work_dir / name / "builds.json").data
     validations = Records(work_dir / name / "validation.json").data
+    earlier = Manifest.from_yaml(keep_splits) if keep_splits else None
+    kept = {t.id: t.split for t in earlier.tasks} if earlier else None
     try:
         manifest = freeze(
             cset,
@@ -754,12 +759,15 @@ def tasks_freeze(
             max_test_s=max_test_minutes * 60,
             test_fraction=test_fraction,
             seed=seed,
+            keep_splits=kept,
         )
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     header = (
         f"# Frozen task set; written by `bench tasks freeze {name} --version {version}`\n"
-        f"# (split seed {seed}, test fraction {test_fraction}). Do not edit by hand.\n"
+        f"# (split seed {seed}, test fraction {test_fraction}"
+        + (f"; splits kept from {earlier.version}" if keep_splits else "")
+        + "). Do not edit by hand.\n"
     )
     manifest.to_yaml(out, header)
     splits = Counter(t.split for t in manifest.tasks)

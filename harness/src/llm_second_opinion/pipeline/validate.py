@@ -123,8 +123,10 @@ def freeze(
     max_test_s: float,
     test_fraction: float,
     seed: int,
+    keep_splits: dict[str, str] | None = None,
 ) -> Manifest:
-    """The frozen manifest: every candidate is either a task or listed as dropped, with why."""
+    """The frozen manifest: every candidate is either a task or listed as dropped, with why.
+    Tasks in `keep_splits` keep that split (an earlier version's); only the rest are split."""
     tasks, dropped = [], []
     for c in cset.candidates:
         b, v = builds.get(c.id), validations.get(c.id)
@@ -147,7 +149,8 @@ def freeze(
             tasks.append(_task(c, b, tests))
     if not tasks:
         raise ValueError("no candidate passed validation")
-    splits = split(tasks, test_fraction, seed)
+    keep_splits = keep_splits or {}
+    splits = keep_splits | split([t for t in tasks if t.id not in keep_splits], test_fraction, seed)
     tasks = [t.model_copy(update={"split": splits[t.id]}) for t in tasks]
     return Manifest(version=version, source=cset.source, tasks=tasks, dropped=dropped)
 
