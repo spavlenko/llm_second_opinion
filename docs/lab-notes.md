@@ -5,6 +5,10 @@ Short dated observations; newest first. Smoke runs are not results.
 ## 2026-10-06 — full C++ set
 
 - `full` C++: 78 new instances built and validated on arm64, 74 kept; dropped fmt-3863 (flaky format-test), fmt-3279 and fmt-3260 (gold fails chrono-test, as fmt-3271 in mini), simdjson-2150 (gold fails `simdjson_force_implementation_error`).
+- Uncertainty, 145 A0 runs (46 tasks; calib-floor left out, older layout): the executor's own test verdict misses failures, since the fail-to-pass tests are hidden: of 107 runs it calls fine, 59 fail. Best single signal is reasoning tokens (AUC 0.70, task-bootstrap CI 0.59-0.80); turns, patch size ~0.62.
+- Pick one of 3 seeds (47 tasks): oracle 28, random 17, best local rule (least reasoning) 21, own tests then medoid 15. Local selection recovers 4 of 11 → a review consult that picks among local patches targets the rest.
+- Patch similarity across seeds: 0.67 when 3/3 resolve, 0.30 at 1/3, 0.41 at 0/3 (consistent wrong fixes).
+- The executor pipes `run-tests | tail`: exit code lost and the build-failed notice cut; only ctest's summary line survives.
 - Image tags are per instance, not per set: building mini IDs under another set would retag over images that v2 pins by ID.
 
 ## 2026-10-05 — headroom

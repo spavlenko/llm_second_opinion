@@ -147,8 +147,9 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 See spec, [Revision 2026-10-05](spec.md#revision-2026-10-05-phase-consults-gating-brief-writer).
 The pilot below waits for the go/no-go gate.
 
-- [ ] Offline uncertainty analysis of calibration runs: which local signals predict failure;
-      fix gating signals and thresholds
+- [x] Offline uncertainty analysis, end-of-run signals (`scripts/uncertainty-signals.py`,
+      `scripts/seed-agreement.py`; 145 A0 runs, current code)
+- [ ] Gating signals and thresholds on run prefixes (what a gate sees mid-run)
 - [ ] run-tests repeats "build failed" at the end of its output (all arms)
 - [ ] `L-best3`: three local attempts, local selection (build, tests, reproduction test)
 - [ ] Consult points `triage`, `plan` (critique of the executor's plan), `review` (candidate
