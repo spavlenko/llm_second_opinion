@@ -30,7 +30,8 @@ Step 2 carries the most risk: arm64 build problems only show up during validatio
 - [x] `mswe-full-cpp-v1`: `full` without cpp-httplib, 123 tasks (dev 60 / test 63); the 49 v2
       tasks keep their split (`freeze --keep-splits`), only the 74 new ones are split
 - [ ] Recipe for yhirose/cpp-httplib (1 instance; low priority)
-- [ ] Screen the 36 new `dev` tasks in two stages (A0 3 seeds + A4 1 seed; then 2 more A4 seeds)
+- [x] Screen the 36 new `dev` tasks in two stages (A0 3 seeds + A4 1 seed; then 2 more A4 seeds):
+      18 new signal tasks, 25 in all (`runs/screen-full-a0`, `runs/screen-full-a4`)
 
 ## Week 3 — A0 end to end on smoke tasks
 

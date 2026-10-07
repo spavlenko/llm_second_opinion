@@ -2,6 +2,11 @@
 
 Short dated observations; newest first. Smoke runs are not results.
 
+## 2026-10-07 — screening
+
+- Screening, 36 new `dev` tasks: A0 40/108; 18 new signal tasks (25 in all). A4 seed 1 failed after a seed-0 solve in 2 of 15 tasks (fmt-1361 ended 2/3, fmt-3727 1/3) → one A4 seed would have mis-selected fmt-3727.
+- A4 0/1 where A0 also failed on 6 tasks (Catch2-1614, fmt-3819, json-2576, json-3514, simdjson-543, fmt-3912 at A0 1/3): no headroom there for any advisor.
+
 ## 2026-10-06 — full C++ set
 
 - `full` C++: 78 new instances built and validated on arm64, 74 kept; dropped fmt-3863 (flaky format-test), fmt-3279 and fmt-3260 (gold fails chrono-test, as fmt-3271 in mini), simdjson-2150 (gold fails `simdjson_force_implementation_error`).

@@ -1222,8 +1222,8 @@ llm_second_opinion/
       candidate's own runs? Showing A4 helps reflection but moves the search toward
       imitating the advisor.
 - [ ] Task pool after the headroom check (7 signal tasks, rule needs 8): the gate uses the 7;
-      which pool before `test`? → `mswe-full-cpp-v1` (2026-10-06); its new `dev` tasks still
-      to be screened.
+      which pool before `test`? → `mswe-full-cpp-v1` (2026-10-06); screened: 25 `dev` signal
+      tasks (2026-10-07). Open: does the gate keep the 7 or use all 25?
 - [ ] λ for the value-of-consult rule and the brief writer's reward; leak budget per task.
 - [ ] `dev`/`test` ratio, given how many tasks survive arm64 validation (power analysis once the
       pilot gives a variance estimate).
@@ -1302,3 +1302,4 @@ llm_second_opinion/
 | 2026-10-03 | Tool calls the model server leaves as text (Qwen `<tool_call><function=…>`; 4 of 62 executor runs, each ending the run) get a nudge: a harness pi extension (`agents/pi/toolcall-nudge.ts`, every arm) appends a notice and continues, at most 3 per run, logged in `nudges.jsonl` and counted as `tool_call_nudges`. Chosen over repairing the response in the proxy, to keep model output untouched. The plugin does not treat such a turn as the executor stopping. |
 | 2026-10-05 | Design revised for the local-only case (see [Revision 2026-10-05](#revision-2026-10-05-phase-consults-gating-brief-writer)): a local best-of-3 baseline, consult points by phase (triage, plan, stuck, review), steer-don't-solve advice checked locally, uncertainty gating with thresholds fixed offline, value-of-consult with a leak budget, and an optimised brief writer with local retrieval. Go/no-go on the 7 signal tasks: unredacted phase consults must close ≥ 25% of the `L-best3`–A4 gap. Advice playbook, decoy briefs, provider splitting and advisor-side retrieval postponed. |
 | 2026-10-06 | Task pool enlarged to `mswe-full-cpp-v1` (123 tasks, dev 60 / test 63). The 49 `mswe-mini-cpp-v2` tasks keep their split, so `test` stays unseen; only the 74 new tasks are split (same seeded per-repository rule). The 36 new `dev` tasks are screened for signal before the gate's pool is fixed. |
+| 2026-10-07 | Screening of the 36 new `dev` tasks done (`screen-full-a0`, `screen-full-a4`): 18 new signal tasks under the unchanged rule (A0 ≤ 1/3, A4 ≥ 2/3), 25 with the earlier 7. A4 seeds were run in stages: seed 0 on tasks with A0 ≤ 1/3, then more seeds only where the outcome was open (third seed skipped at A4 2/2); A4 skipped where A0 was 3/3. One seed for A4 was considered and rejected: seed 1 reversed a seed-0 solve in 2 of 15 tasks. |
