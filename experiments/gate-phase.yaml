@@ -1,0 +1,87 @@
+# Gate fallback, only if `review` alone does not close 25% of the L-best3–A4 gap: the phase
+# consults through existing triggers, unredacted (L3), advice as hints (no patches).
+#   plan   = triage: once before the first model call, from the issue (where to look, causes)
+#   orient = plan critique: after 3 distinct files read, before the first edit
+#   stuck  = the existing heuristic
+# Same 25 tasks, seeds 0-2: paired with gate-a0's A0 seeds 0-2.
+#   bench run experiments/gate-phase.yaml --parallel 4   (the server's cache fits ~4 agents)
+name: gate-phase
+tasks: ../tasks/manifests/mswe-full-cpp-v1.yaml
+split: dev
+task_ids:
+  - catchorg__Catch2-2187
+  - catchorg__Catch2-2394
+  - catchorg__Catch2-2849
+  - fmtlib__fmt-1361
+  - fmtlib__fmt-1407
+  - fmtlib__fmt-2158
+  - fmtlib__fmt-2292
+  - fmtlib__fmt-3248
+  - nlohmann__json-1221
+  - nlohmann__json-2019
+  - nlohmann__json-2225
+  - nlohmann__json-2297
+  - nlohmann__json-2352
+  - nlohmann__json-2989
+  - nlohmann__json-3463
+  - nlohmann__json-3543
+  - nlohmann__json-3564
+  - nlohmann__json-3590
+  - nlohmann__json-3601
+  - nlohmann__json-3605
+  - nlohmann__json-4525
+  - simdjson__simdjson-2178
+  - simdjson__simdjson-545
+  - simdjson__simdjson-644
+  - simdjson__simdjson-949
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+prompts:
+  hints-only: {base: default, advisor_system: ../prompts/hints-only/advisor_system.md}
+
+arms:
+  - name: H-phase
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: hints-only
+      interventions: [plan, orient, stuck]
+      max_consults: 3
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      reserve_for_end: 0   # no before_done

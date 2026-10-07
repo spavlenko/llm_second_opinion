@@ -162,11 +162,15 @@ The pilot below waits for the go/no-go gate.
       diffs); steer-don't-solve advisor prompt; uncertainty gating; value-of-consult and leak budget
       - [x] `review`, pick-only: `bench pick --review L3` (advisor-core `review.ts`, `prompts/review/`),
             gated on ≥ 2 distinct usable candidates
-      - [ ] `bench pick experiments/gate-a0.yaml --review L3` (≤ 75 consults; needs approval)
+      - [ ] `bench pick experiments/gate-a0.yaml --review L3` (≤ 75 consults; approved 2026-10-07,
+            started early on complete groups)
       - [ ] If review helps: its concerns to the executor for one revision run
       - [ ] `triage` (start consult + repo map), `plan` (orient's question as a plan critique)
       - [ ] Fold `abstractProse` into `buildBrief` at the next deliberate bundle change
 - [ ] Gate: 25 signal tasks × 3 seeds, unredacted; go if ≥ 25% of the `L-best3`–A4 gap closed
+      - [ ] On `review` alone first (no new local runs)
+      - [ ] Only if short: `experiments/gate-phase.yaml` (H-phase: `plan` + `orient` + `stuck`, L3,
+            hints-only; existing triggers, no bundle change; 75 runs)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
 - [ ] If go: larger task pool (decision open), then `--final` on `test`
