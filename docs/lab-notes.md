@@ -72,3 +72,4 @@ Short dated observations; newest first. Smoke runs are not results.
 - Executor runs tests as `run-tests | tail`, hiding the exit code; check `on_test_failure` fallback.
 - 2026-10-07: gate-a0 died of a full disk: in `json-3543` s0 the agent's repro looped printing one parse error; pi's bash output spill (`/tmp/pi-bash-*.log`) hit 109 GB in 18 min. Task containers now cap any file at 4 GiB (`--ulimit fsize`, SIGXFSZ to the writer); the 4 infra-failed items rerun on resume.
 - 2026-10-07: review smoke on calib-noise (L3, Kimi): `json-3664` 3 distinct patches, Kimi ranked the only resolving one first (4.2k in, 3.5k out, 98 s); `fmt-2394` 3 seeds, one patch → no consult.
+- 2026-10-07: `bench run` started with `nohup … &` ignores SIGINT (async jobs of a non-interactive shell inherit SIG_IGN), so no graceful stop; SIGTERM, then the resume regrades or reruns what was in flight. `--parallel` is not in the config hash.
