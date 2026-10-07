@@ -25,6 +25,7 @@ pnpm check:types && pnpm build && pnpm test
 docker build -t llm-second-opinion/toy:1 tasks/toy     # toy task image
 harness/.venv/bin/bench run experiments/toy.yaml --parallel 4   # full lifecycle, no model
 harness/.venv/bin/bench report experiments/toy.yaml --csv runs/toy.csv
+harness/.venv/bin/bench pick experiments/gate-a0.yaml --csv runs/gate-a0-best3.csv   # L-best3
 harness/.venv/bin/bench mock-server --recordings harness/tests/fixtures/pi-toy-add.jsonl --host 0.0.0.0 &
 harness/.venv/bin/bench run experiments/toy-pi.yaml --task toy-add   # pi end to end, mock model
 ```

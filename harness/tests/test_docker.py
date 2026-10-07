@@ -151,3 +151,13 @@ def test_agent_run_tests_repeats_a_build_failure_at_the_end(box, repo):
     built = box.exec("/opt/lso/run-tests").output
     assert "build failed" not in built and built.rstrip().endswith("out of 2")
     assert box.exec("/opt/lso/run-tests >/dev/null").exit_code == 8
+
+
+def test_local_check_never_applies_the_hidden_test_patch(box, toy):
+    from llm_second_opinion.picker import local_check
+
+    task = toy["toy-add"]
+    gold = local_check(box, task, task.gold_patch, timeout_s=30)
+    assert gold["applied"] and not gold["build_failed"] and not gold["timed_out"]
+    assert box.exec("test -e tests/test_add.sh", workdir=task.workdir).exit_code != 0
+    assert not local_check(box, task, "not a diff\n", timeout_s=30)["applied"]

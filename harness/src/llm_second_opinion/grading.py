@@ -109,6 +109,7 @@ def run_tests(
     timeout_s: float,
     parser: str | None = None,
     reset_test_files: bool = False,
+    test_patch: bool = True,
 ) -> Grade:
     """Apply `patches` (failure reason, diff) and then the test patch, and run `eval_command`.
 
@@ -116,10 +117,11 @@ def run_tests(
     first put back to the base commit, so an agent's edits to them do not stop the test patch
     from applying (`reset_commands`). Validation calls this with no patch (the test patch
     alone) and with the gold patch, without the reset, and passes `parser` to get per-test
-    outcomes before the task has test lists.
+    outcomes before the task has test lists. Without `test_patch`, only the repository's own
+    tests run, as on the agent's machine (the local picker).
     """
     steps = list(patches)
-    if task.test_patch:
+    if task.test_patch and test_patch:
         steps.append(("test_patch_failed", task.test_patch))
     log = []
     for i, (failure, content) in enumerate(steps):

@@ -41,6 +41,7 @@ from llm_second_opinion.metering import (
     summarize_usage,
 )
 from llm_second_opinion.metrics import extract, numeric
+from llm_second_opinion.picker import BASE_DIR, LOCAL_CHECK, local_check
 from llm_second_opinion.report import paired_comparisons, paired_metrics, summarize
 from llm_second_opinion.runtime import Container, Runtime
 from llm_second_opinion.source import git_state
@@ -510,6 +511,55 @@ class Runner:
         self.echo(f"regrading {len(rows)} done item(s), {self.parallel} at a time")
         with ThreadPoolExecutor(self.parallel) as pool:
             return list(pool.map(lambda r: self._regrade_row(r, tasks[r["task"]]), rows))
+
+    def done_rows(self, arm: str) -> list[dict[str, Any]]:
+        """Done ledger rows of `arm` under its current config hash, for tasks in the manifest."""
+        tasks = {t.id for t in self.manifest.tasks}
+        return [
+            r
+            for r in self.ledger.rows(self.exp.name)
+            if r["status"] == "done"
+            and r["arm"] == arm
+            and r["config_hash"] == self.hashes[arm]
+            and r["task"] in tasks
+            and r["attempt_dir"]
+        ]
+
+    def local_checks(self, arm: str) -> tuple[int, int]:
+        """The picker's local check (`picker.local_check`) of every done item of `arm`, and of
+        each of its tasks' base commit; kept on disk, so a rerun does only what is missing.
+        Returns (checked, failed)."""
+        tasks = {t.id: t for t in self.manifest.tasks}
+        rows = self.done_rows(arm)
+        jobs: list[tuple[Task, str, str, Path]] = []
+        for t in sorted({r["task"] for r in rows}):
+            path = self.dir / BASE_DIR / f"{t}.json"
+            if not path.exists():
+                jobs.append((tasks[t], task_image(tasks[t]), "", path))
+        for r in rows:
+            out = self.dir / r["attempt_dir"]
+            if not (out / LOCAL_CHECK).exists():
+                patch = (out / "patch.diff").read_text() if (out / "patch.diff").exists() else ""
+                image = r["image_id"] or task_image(tasks[r["task"]])
+                jobs.append((tasks[r["task"]], image, patch, out / LOCAL_CHECK))
+        self.echo(f"local checks: {len(jobs)} to run, {self.parallel} at a time")
+        timeout = self.exp.execution.grade_minutes * 60
+
+        def one(job: tuple[Task, str, str, Path]) -> bool:
+            task, image, patch, path = job
+            try:
+                with self._container(image, f"local-check {task.id}") as box:
+                    record = local_check(box, task, patch, timeout)
+            except Exception as e:  # noqa: BLE001 - one item must not stop the others
+                self.echo(f"{path}: local check failed: {type(e).__name__}: {e}")
+                return False
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record, indent=2))
+            return True
+
+        with ThreadPoolExecutor(self.parallel) as pool:
+            ok = list(pool.map(one, jobs))
+        return sum(ok), len(ok) - sum(ok)
 
     def _regrade_row(self, row: dict[str, Any], task: Task) -> Outcome:
         key = ItemKey(*(row[c] for c in ItemKey.__dataclass_fields__))

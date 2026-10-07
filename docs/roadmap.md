@@ -156,7 +156,8 @@ The pilot below waits for the go/no-go gate.
       in the pi bundle, images unchanged)
 - [ ] `L-best3`: three local attempts, local selection (build, tests, reproduction test)
       - [ ] A0 at 9 seeds on the 25 gate tasks (`experiments/gate-a0.yaml`, 225 runs)
-      - [ ] Local picker: build + existing tests per candidate patch; compare rules on gate-a0
+      - [x] Local picker `bench pick`: build + existing tests per candidate patch, primary rule fixed
+      - [ ] `bench pick experiments/gate-a0.yaml` once gate-a0 is done
 - [ ] Consult points `triage`, `plan` (critique of the executor's plan), `review` (candidate
       diffs); steer-don't-solve advisor prompt; uncertainty gating; value-of-consult and leak budget
 - [ ] Gate: 25 signal tasks × 3 seeds, unredacted; go if ≥ 25% of the `L-best3`–A4 gap closed

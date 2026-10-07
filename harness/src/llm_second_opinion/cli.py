@@ -1,5 +1,6 @@
 """The `bench` command line."""
 
+import csv
 import os
 import time
 from collections import Counter
@@ -14,6 +15,7 @@ from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
 from llm_second_opinion.metering import read_usage, spend
 from llm_second_opinion.mock_server import MockServer
+from llm_second_opinion.picker import RULES, compose
 from llm_second_opinion.report import (
     current_rows,
     format_pairs,
@@ -304,6 +306,48 @@ def regrade(
     )
     if counts["failed"]:
         raise click.ClickException(f"{counts['failed']} item(s) could not be regraded")
+
+
+@main.command()
+@EXPERIMENT
+@RUNS_DIR
+@click.option("--arm", default="A0", show_default=True, help="The arm whose attempts are pooled.")
+@click.option("--group", default=3, show_default=True, type=click.IntRange(min=2))
+@click.option("--parallel", type=click.IntRange(min=1), help="Override execution.parallel.")
+@click.option("--csv", "csv_path", type=click.Path(dir_okay=False, path_type=Path))
+def pick(
+    experiment: str, runs_dir: Path, arm: str, group: int, parallel: int | None, csv_path
+) -> None:
+    """Best-of-GROUP from an arm's attempts (`L-best3`): pick one of seeds group*s ..
+    group*s+group-1 locally and score the pick.
+
+    Runs the local check (the repository's own tests, no hidden test patch) on each done
+    attempt and on each task's base commit first; checks are kept, so a rerun only adds the
+    missing ones. No agent runs.
+    """
+    exp = _load(experiment)
+    if not (runs_dir / exp.name / "ledger.sqlite").exists():
+        raise click.ClickException(f"no ledger in {runs_dir / exp.name}; run the experiment first")
+    try:
+        runner = Runner(exp, runs_dir, parallel=parallel, echo=click.echo)
+        checked, failed = runner.local_checks(arm)
+        rows = compose(runner.dir, runner.done_rows(arm), group)
+    except (ConfigError, KeyError) as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"local checks run {checked}, failed {failed}; {len(rows)} group(s) of {group}")
+    if not rows:
+        return
+    click.echo(f"  {'oracle (any candidate resolves)':34} {sum(r['oracle'] for r in rows):>5}")
+    click.echo(f"  {'random (expected)':34} {sum(r['mean'] for r in rows):>7.1f}")
+    for name in RULES:
+        click.echo(f"  {name:34} {sum(r[name] for r in rows):>5}")
+    if csv_path:
+        with csv_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+    if failed:
+        raise click.ClickException(f"{failed} local check(s) failed; rerun to retry them")
 
 
 @main.command()

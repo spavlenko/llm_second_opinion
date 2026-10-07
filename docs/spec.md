@@ -169,7 +169,11 @@ the 25 `dev` signal tasks × 3 seeds (`experiments/gate-a0.yaml`; 7 until 2026-1
 unredacted phase consults close at least 25% of the gap between `L-best3` and A4; otherwise the
 study is written up as a negative result. `L-best3` is built from A0 runs: its item (task, s)
 picks one of A0 seeds 3s, 3s+1, 3s+2 with a local picker (build and existing tests of each
-patch in a fresh container; never the hidden tests), so A0 runs at 9 seeds.
+patch in a fresh container; never the hidden tests), so A0 runs at 9 seeds. The picker's
+primary rule, fixed before the gate's runs were seen: among patches that are non-empty and
+apply, prefer one that builds, then the fewest visible tests broken against the base commit,
+then the least reasoning, then the lowest seed (`bench pick`, `picker.py`); other rules are
+reported as diagnostics only.
 
 Postponed: a playbook distilled from advice (ACE), decoy briefs, splitting a task across
 providers, retrieval on the advisor side.
@@ -1308,3 +1312,4 @@ llm_second_opinion/
 | 2026-10-07 | Screening of the 36 new `dev` tasks done (`screen-full-a0`, `screen-full-a4`): 18 new signal tasks under the unchanged rule (A0 ≤ 1/3, A4 ≥ 2/3), 25 with the earlier 7. A4 seeds were run in stages: seed 0 on tasks with A0 ≤ 1/3, then more seeds only where the outcome was open (third seed skipped at A4 2/2); A4 skipped where A0 was 3/3. One seed for A4 was considered and rejected: seed 1 reversed a seed-0 solve in 2 of 15 tasks. |
 | 2026-10-07 | run-tests repeats a build failure after ctest's output, for the agent only: the pi bundle carries a wrapper (`agents/pi/run-tests`) that the adapter installs over the image's script (kept as `run-tests.image`) at run start. Task images and their pinned IDs are unchanged, and grading runs the image's script. The bundle image is in the config hash, so runs before and after do not mix. Earlier A0 and A4 runs had the old behaviour. |
 | 2026-10-07 | Gate on all 25 `dev` signal tasks × 3 seeds instead of 7 (21 items gave too noisy a go/no-go; advisor cost stays a few dollars). `L-best3` composed from A0 runs: A0 at 9 seeds, item (task, s) picks among seeds 3s..3s+2 with a local picker; reuses the runner as is. Earlier A0 runs are not reused: they predate the run-tests change (another bundle, another config hash). |
+| 2026-10-07 | `L-best3` picker (`bench pick`): local check per candidate = patch applied + the repository's own tests, without the test patch, in a fresh container; base commit checked once per task. Primary rule: builds, fewest broken visible tests, least reasoning, lowest seed, declared before gate-a0 results. Least reasoning alone and builds-then-random are reported, not used. |
