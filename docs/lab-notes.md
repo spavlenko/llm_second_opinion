@@ -7,6 +7,7 @@ Short dated observations; newest first. Smoke runs are not results.
 - Screening, 36 new `dev` tasks: A0 40/108; 18 new signal tasks (25 in all). A4 seed 1 failed after a seed-0 solve in 2 of 15 tasks (fmt-1361 ended 2/3, fmt-3727 1/3) → one A4 seed would have mis-selected fmt-3727.
 - A4 0/1 where A0 also failed on 6 tasks (Catch2-1614, fmt-3819, json-2576, json-3514, simdjson-543, fmt-3912 at A0 1/3): no headroom there for any advisor.
 
+- A4 runs on the 25 gate tasks that saw a broken build in run-tests: 4/62 (3 resolved): the run-tests fix hardly touches the ceiling.
 - Plugin e2e test failed once alone, right after a bundle rebuild (`consult` span had no child); passed 3 reruns. Still flaky.
 
 ## 2026-10-06 — full C++ set
