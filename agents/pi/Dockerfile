@@ -33,3 +33,4 @@ RUN test -n "$PI_VERSION" \
  && chmod +x /opt/lso-agent/bin/pi
 COPY limits.ts timeline.ts toolcall-nudge.ts /opt/lso-agent/extensions/
 COPY --from=advisor /out/lso-advisor.js /opt/lso-agent/extensions/
+COPY run-tests /opt/lso-agent/bin/run-tests

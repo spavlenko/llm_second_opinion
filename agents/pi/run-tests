@@ -1,0 +1,12 @@
+#!/bin/sh
+# Installed over the task image's /opt/lso/run-tests by adapters/pi.py, for the agent only
+# (grading runs the image's own script). Runs it unchanged and, when the build failed, says so
+# again after ctest's output: agents pipe run-tests into `tail`, which cuts the first notice.
+out=/tmp/run-tests.out
+{ /opt/lso/run-tests.image "$@"; echo $? >/tmp/run-tests.status; } 2>&1 | tee "$out"
+status=$(cat /tmp/run-tests.status)
+if grep -q '^run-tests: build failed' "$out"; then
+  echo "run-tests: build failed; tests of targets that did not build were not run" \
+    "(build output above, full log in /tmp/build.log)"
+fi
+exit "$status"

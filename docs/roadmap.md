@@ -152,7 +152,8 @@ The pilot below waits for the go/no-go gate.
       `scripts/seed-agreement.py`; 145 A0 runs, current code)
 - [ ] Gating signals and thresholds on run prefixes (what a gate sees mid-run)
 - [ ] Context cost, before `--final`: ranged/capped reads or dedup of repeated reads, applied to all arms (A4 resends ~750k prompt tokens/run); decision log entry
-- [ ] run-tests repeats "build failed" at the end of its output (all arms)
+- [x] run-tests repeats "build failed" at the end of its output (all arms; agent-side wrapper
+      in the pi bundle, images unchanged)
 - [ ] `L-best3`: three local attempts, local selection (build, tests, reproduction test)
 - [ ] Consult points `triage`, `plan` (critique of the executor's plan), `review` (candidate
       diffs); steer-don't-solve advisor prompt; uncertainty gating; value-of-consult and leak budget

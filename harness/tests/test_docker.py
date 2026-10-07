@@ -128,3 +128,26 @@ def test_run_refuses_without_a_tracking_server(repo, tmp_path):
     args = ["run", exp, "--runs-dir", str(tmp_path), "--mlflow", "http://127.0.0.1:9"]
     result = CliRunner().invoke(main, args)
     assert result.exit_code != 0 and "MLflow is not reachable" in result.output
+
+
+def test_agent_run_tests_repeats_a_build_failure_at_the_end(box, repo):
+    from llm_second_opinion.adapters.pi import INSTALL_RUN_TESTS, MOUNT
+
+    box.write(f"{MOUNT}/bin/run-tests", (repo / "agents/pi/run-tests").read_text())
+    box.exec(f"chmod +x {MOUNT}/bin/run-tests")
+    assert box.exec(INSTALL_RUN_TESTS).exit_code == 0  # no run-tests in the image: left alone
+    assert box.read("/opt/lso/run-tests") is None
+    image_script = (
+        "#!/bin/sh\n[ -n \"$FAIL\" ] && echo 'run-tests: build failed; last lines:'\n"
+        "seq 1 50\necho '50% tests passed, 1 tests failed out of 2'\nexit 8\n"
+    )
+    box.write("/opt/lso/run-tests", image_script)
+    box.exec("chmod +x /opt/lso/run-tests")
+    for _ in range(2):  # a second install keeps the image's script
+        assert box.exec(INSTALL_RUN_TESTS).exit_code == 0
+    assert box.read("/opt/lso/run-tests.image") == image_script
+    failed = box.exec("/opt/lso/run-tests | tail -n 2", env={"FAIL": "1"}).output
+    assert "tests failed out of 2" in failed and "run-tests: build failed" in failed
+    built = box.exec("/opt/lso/run-tests").output
+    assert "build failed" not in built and built.rstrip().endswith("out of 2")
+    assert box.exec("/opt/lso/run-tests >/dev/null").exit_code == 8

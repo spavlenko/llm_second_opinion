@@ -64,6 +64,12 @@ EXTENSIONS = (
     f"{MOUNT}/extensions/toolcall-nudge.ts",  # tool calls written as text: nudge, logged
 )
 ADVISOR_EXTENSION = f"{MOUNT}/extensions/lso-advisor.js"
+# Over the task image's run-tests, for the agent only: repeats a build failure after ctest's
+# output (agents/pi/run-tests). Images without one (toy tasks) are left alone.
+INSTALL_RUN_TESTS = (
+    "if [ -f /opt/lso/run-tests ] && [ ! -f /opt/lso/run-tests.image ]; then "
+    f"mv /opt/lso/run-tests /opt/lso/run-tests.image && cp {MOUNT}/bin/run-tests /opt/lso/run-tests; fi"
+)
 ADVISOR_CONFIG = "/run/advisor.json"
 PROVIDER = "lso"
 
@@ -173,6 +179,9 @@ class PiAdapter:
         start = time.monotonic()
         prompt = PROMPT.format(workdir=task.workdir, problem_statement=task.problem_statement)
         box.write(f"{RUN_DIR}/prompt.md", prompt)
+        installed = box.exec(INSTALL_RUN_TESTS)
+        if installed.exit_code != 0:
+            raise RuntimeError(f"installing run-tests failed: {installed.output.strip()}")
         box.write(f"{RUN_DIR}/agent/models.json", json.dumps(self.models_json(config.executor)))
         exit_file = f"{RUN_DIR}/exit.json"
         pi_env = {
