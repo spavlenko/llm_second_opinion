@@ -23,6 +23,7 @@ export { CODE_CUT_NOTE, limitCodeBlocks } from "./advice.js";
 export { RoleMap, Redactor, stripCodeBlocks, stripInlineCode, type Role, type RoleMapOptions } from "./redact.js";
 export {
   BRIEF_CUT_MARKER,
+  abstractProse,
   DEFAULT_QUESTIONS,
   cutBrief,
   errorCategory,
@@ -54,3 +55,15 @@ export {
   type AdvisorSessionOptions,
   type ConsultArgs,
 } from "./session.js";
+export {
+  DIFF_CUT,
+  MAX_BROKEN_NAMES,
+  buildReviewBrief,
+  cutDiff,
+  parseRanking,
+  redactDiff,
+  review,
+  type ReviewCandidate,
+  type ReviewRequest,
+  type ReviewResult,
+} from "./review.js";

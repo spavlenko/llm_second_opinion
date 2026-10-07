@@ -15,7 +15,7 @@ from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
 from llm_second_opinion.metering import read_usage, spend
 from llm_second_opinion.mock_server import MockServer
-from llm_second_opinion.picker import RULES, compose
+from llm_second_opinion.picker import RULES, compose, groups
 from llm_second_opinion.report import (
     current_rows,
     format_pairs,
@@ -33,6 +33,7 @@ from llm_second_opinion.report import (
     write_pairs_csv,
     write_report_json,
 )
+from llm_second_opinion.review import ADVISOR, Reviewer
 from llm_second_opinion.runner import Runner, task_image
 from llm_second_opinion.scorers import (
     DEFAULT_LAMBDA,
@@ -315,8 +316,27 @@ def regrade(
 @click.option("--group", default=3, show_default=True, type=click.IntRange(min=2))
 @click.option("--parallel", type=click.IntRange(min=1), help="Override execution.parallel.")
 @click.option("--csv", "csv_path", type=click.Path(dir_okay=False, path_type=Path))
+@click.option(
+    "--review",
+    "review_level",
+    type=click.Choice(["L2", "L3"]),
+    help="Also run the review consult (the `advisor` model ranks each group's candidates) at "
+    "this level. Spends advisor quota; records are kept, so a rerun asks only new groups.",
+)
+@click.option(
+    "--no-preflight",
+    is_flag=True,
+    help="Skip the advisor endpoint's usage preflight (mock server and tests only).",
+)
 def pick(
-    experiment: str, runs_dir: Path, arm: str, group: int, parallel: int | None, csv_path
+    experiment: str,
+    runs_dir: Path,
+    arm: str,
+    group: int,
+    parallel: int | None,
+    csv_path,
+    review_level: str | None,
+    no_preflight: bool,
 ) -> None:
     """Best-of-GROUP from an arm's attempts (`L-best3`): pick one of seeds group*s ..
     group*s+group-1 locally and score the pick.
@@ -331,16 +351,23 @@ def pick(
     try:
         runner = Runner(exp, runs_dir, parallel=parallel, echo=click.echo)
         checked, failed = runner.local_checks(arm)
-        rows = compose(runner.dir, runner.done_rows(arm), group)
-    except (ConfigError, KeyError) as e:
+        done = runner.done_rows(arm)
+        reviews = None
+        if review_level:
+            reviews = _reviews(exp, runner, done, group, review_level, not no_preflight)
+        rows = compose(runner.dir, done, group, reviews)
+    except (ConfigError, KeyError, ValueError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"local checks run {checked}, failed {failed}; {len(rows)} group(s) of {group}")
     if not rows:
         return
     click.echo(f"  {'oracle (any candidate resolves)':34} {sum(r['oracle'] for r in rows):>5}")
     click.echo(f"  {'random (expected)':34} {sum(r['mean'] for r in rows):>7.1f}")
-    for name in RULES:
+    for name in [*RULES, *(["review"] if reviews is not None else [])]:
         click.echo(f"  {name:34} {sum(r[name] for r in rows):>5}")
+    if reviews is not None:
+        asked = sum(r["review consulted"] for r in rows)
+        click.echo(f"  review consulted in {asked} of {len(rows)} group(s)")
     if csv_path:
         with csv_path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -348,6 +375,28 @@ def pick(
             writer.writerows(rows)
     if failed:
         raise click.ClickException(f"{failed} local check(s) failed; rerun to retry them")
+
+
+def _reviews(
+    exp: Experiment, runner: Runner, done: list, group: int, level: str, check: bool
+) -> dict[tuple[str, int], dict]:
+    """Review records for every complete group, asking the advisor for the missing ones."""
+    tasks = {t.id: t for t in runner.manifest.tasks}
+    reviewer = Reviewer(exp, runner.dir, level, probe_env(exp.models[ADVISOR], os.environ))
+    out = runner.dir / "preflight" / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-review"
+    reviewer.start(out if check else None)
+    records = {}
+    try:
+        for g in groups(runner.dir, done, group):
+            rec = reviewer.record(g, tasks[g.task])
+            if rec is not None:
+                records[(g.task, g.s)] = rec
+    finally:
+        reviewer.stop()
+    click.echo(f"review: {reviewer.calls} advisor call(s), the rest from records")
+    for e in reviewer.errors:
+        click.echo(f"  review error (rerun to retry): {e}", err=True)
+    return records
 
 
 @main.command()

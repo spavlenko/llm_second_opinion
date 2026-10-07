@@ -8,6 +8,7 @@ Short dated observations; newest first. Smoke runs are not results.
 - A4 0/1 where A0 also failed on 6 tasks (Catch2-1614, fmt-3819, json-2576, json-3514, simdjson-543, fmt-3912 at A0 1/3): no headroom there for any advisor.
 
 - A4 runs on the 25 gate tasks that saw a broken build in run-tests: 4/62 (3 resolved): the run-tests fix hardly touches the ceiling.
+- Any advisor-core change that reaches the bundled `lso-advisor.js` changes the pi bundle image and so A0's config hash too (A0 has no advisor): a refactor of brief.ts would have orphaned gate-a0's 225 runs for `bench pick`. Kept the bundle byte-identical; hash checked unchanged.
 - Plugin e2e test failed once alone, right after a bundle rebuild (`consult` span had no child); passed 3 reruns. Still flaky.
 
 ## 2026-10-06 — full C++ set

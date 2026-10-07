@@ -80,6 +80,9 @@ export function buildBrief(
   const r = new Redactor(roles);
   const verbatim = level === "L3";
   // Prose the executor or the issue wrote: code dropped below L2, redacted at L2.
+  // abstractProse below is the same; this copy stays inline so the pi bundle (part of every
+  // pi arm's config hash) is byte-identical to the one gate-a0 ran with. Fold at the next
+  // deliberate bundle change.
   const prose = (text: string | undefined): string => {
     if (!text) return "";
     if (verbatim) return text;
@@ -132,6 +135,24 @@ export function buildBrief(
   const cut = cutBrief(text, maxTokens);
   text = cut.text;
   return { text, tokens: approxTokens(text), identifiersRedacted: roles.count(text), truncated: cut.truncated, vars };
+}
+
+/** Prose the executor or the issue wrote, at `level`: verbatim at L3; at L2 code-like names
+ * redacted and code blocks redacted as code; below L2 code dropped, names redacted. */
+export function abstractProse(level: Level, text: string | undefined, r: Redactor): string {
+  if (!text) return "";
+  if (level === "L3") return text;
+  if (level === "L2") {
+    return text
+      .split(/(```[^\n]*\n[\s\S]*?(?:```|$))/)
+      .map((part, i) => {
+        if (i % 2 === 0) return r.prose(part);
+        const [fence, ...code] = part.split("\n");
+        return [fence, r.code(code.join("\n"))].join("\n");
+      })
+      .join("");
+  }
+  return r.prose(stripInlineCode(stripCodeBlocks(text)));
 }
 
 /** A brief over `maxTokens` (estimated), cut to fit: the longest section (blank-line separated

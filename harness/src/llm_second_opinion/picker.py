@@ -85,11 +85,22 @@ RULES = {
 }
 
 
-def compose(exp_dir: Path, rows: list[dict[str, Any]], group: int) -> list[dict[str, Any]]:
-    """One row per (task, s) over seeds group*s .. group*s+group-1 of `rows` (done ledger rows
-    of one arm and config hash): each rule's pick scored by its grade, the oracle (any
-    candidate resolves) and the mean (a random pick's expected score). Groups with a missing
-    seed or local check are left out."""
+@dataclass(frozen=True)
+class Group:
+    """One `L-best3` item: a task's seeds group*s .. group*s+group-1, with what the pickers may
+    see and, apart from it, the grades."""
+
+    task: str
+    s: int
+    visible: list[Visible]
+    patches: dict[int, str]  # by seed
+    resolved: dict[int, bool]  # by seed; never shown to a picker
+    base: dict[str, Any]
+
+
+def groups(exp_dir: Path, rows: list[dict[str, Any]], group: int) -> list[Group]:
+    """The complete groups of `rows` (done ledger rows of one arm and config hash). Groups with
+    a missing seed or local check, or a task without its base check, are left out."""
     by_task: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     for r in rows:
         by_task[r["task"]][r["seed"]] = r
@@ -104,23 +115,49 @@ def compose(exp_dir: Path, rows: list[dict[str, Any]], group: int) -> list[dict[
             dirs = [exp_dir / m["attempt_dir"] for m in members if m and m["attempt_dir"]]
             if len(dirs) < group or not all((d / LOCAL_CHECK).exists() for d in dirs):
                 continue
-            visible, resolved = [], {}
+            visible, patches, resolved = [], {}, {}
             for m, d in zip(members, dirs):
-                patch = (d / "patch.diff").read_text() if (d / "patch.diff").exists() else ""
+                seed = m["seed"]
+                patches[seed] = (
+                    (d / "patch.diff").read_text() if (d / "patch.diff").exists() else ""
+                )
                 check = json.loads((d / LOCAL_CHECK).read_text())
                 tokens = m["executor_reasoning_tokens"] or 0
-                visible.append(Visible(m["seed"], not patch.strip(), check, tokens))
-                resolved[m["seed"]] = bool(m["resolved"])
-            row: dict[str, Any] = {
-                "task": task,
-                "seed": s,
-                "candidates": "/".join(str(m["seed"]) for m in members),
-                "oracle": int(any(resolved.values())),
-                "mean": sum(resolved.values()) / group,
-            }
-            for name, rule in RULES.items():
-                picked = rule(visible, base)
-                row[name] = int(resolved[picked.seed])
-                row[f"{name} seed"] = picked.seed
-            out.append(row)
+                visible.append(Visible(seed, not patches[seed].strip(), check, tokens))
+                resolved[seed] = bool(m["resolved"])
+            out.append(Group(task, s, visible, patches, resolved, base))
+    return out
+
+
+def compose(
+    exp_dir: Path,
+    rows: list[dict[str, Any]],
+    group: int,
+    reviews: dict[tuple[str, int], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per complete group (`groups`): each rule's pick scored by its grade, the oracle
+    (any candidate resolves) and the mean (a random pick's expected score). With `reviews`
+    (by (task, s): a record with `pick_seed` and `consulted`), the review consult's pick too;
+    groups without a record are left out then."""
+    out = []
+    for g in groups(exp_dir, rows, group):
+        if reviews is not None and (g.task, g.s) not in reviews:
+            continue
+        row: dict[str, Any] = {
+            "task": g.task,
+            "seed": g.s,
+            "candidates": "/".join(str(v.seed) for v in g.visible),
+            "oracle": int(any(g.resolved.values())),
+            "mean": sum(g.resolved.values()) / group,
+        }
+        for name, rule in RULES.items():
+            picked = rule(g.visible, g.base)
+            row[name] = int(g.resolved[picked.seed])
+            row[f"{name} seed"] = picked.seed
+        if reviews is not None:
+            rec = reviews[(g.task, g.s)]
+            row["review"] = int(g.resolved[rec["pick_seed"]])
+            row["review seed"] = rec["pick_seed"]
+            row["review consulted"] = int(rec["consulted"])
+        out.append(row)
     return out

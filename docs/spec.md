@@ -175,6 +175,26 @@ apply, prefer one that builds, then the fewest visible tests broken against the 
 then the least reasoning, then the lowest seed (`bench pick`, `picker.py`); other rules are
 reported as diagnostics only.
 
+**`review` (built first: highest expected value, and testable on existing runs).** One advisor
+call per `L-best3` item, over its local candidates; it replaces the local picker's choice.
+
+- Candidates: the usable ones (non-empty, apply, not timed out). Gated: no consult when fewer
+  than 2 distinct usable patches remain (whitespace ignored); the local rule picks then.
+- Brief (`prompts/review/brief.md`): the issue, and per candidate, labelled A, B, C in a
+  shuffled order fixed by (task, s): its diff (each cut to `max_diff_tokens`, default 6000),
+  whether it builds, and the visible tests it breaks against the base commit (up to 10 names
+  and the count). L3 verbatim; L2 with paths and names as placeholders (the diff redacted as
+  code); L0/L1 are not supported (a diff is code). Built by advisor-core (`review.ts`), so
+  redaction is the plugin's.
+- Answer (`prompts/review/system.md`): concerns per candidate, then a last line
+  `RANKING: B > A > C`. The first label is the pick. An answer with no valid ranking, or an
+  advisor error, falls back to the local rule and is counted.
+- `bench pick --review L3` runs it on an experiment's groups through the metering proxy;
+  each group's record (`review/<task>-s<s>.json`: order, brief, answer, pick, usage) is kept,
+  so reruns spend nothing. Reported next to the local rules as `review`.
+- Pick-only: concerns go nowhere yet. If review helps, the next step gives the pick's concerns
+  to the executor for one revision run.
+
 Postponed: a playbook distilled from advice (ACE), decoy briefs, splitting a task across
 providers, retrieval on the advisor side.
 
@@ -1314,3 +1334,4 @@ llm_second_opinion/
 | 2026-10-07 | Gate on all 25 `dev` signal tasks × 3 seeds instead of 7 (21 items gave too noisy a go/no-go; advisor cost stays a few dollars). `L-best3` composed from A0 runs: A0 at 9 seeds, item (task, s) picks among seeds 3s..3s+2 with a local picker; reuses the runner as is. Earlier A0 runs are not reused: they predate the run-tests change (another bundle, another config hash). |
 | 2026-10-07 | `L-best3` picker (`bench pick`): local check per candidate = patch applied + the repository's own tests, without the test patch, in a fresh container; base commit checked once per task. Primary rule: builds, fewest broken visible tests, least reasoning, lowest seed, declared before gate-a0 results. Least reasoning alone and builds-then-random are reported, not used. |
 | 2026-10-07 | Gate ceiling: the existing A4 runs on the 25 tasks (62 runs; `calib-headroom`, `screen-full-a4`), not rerun. Only 4 saw a broken build in run-tests, where the new notice could matter (3 resolved anyway): at most ~1.6 points, toward a smaller gap. Bigger and opposite: the tasks were selected on these A4 runs succeeding, so the ceiling is high and the gap wide (conservative for the gate). A0 is run fresh (gate-a0), which removes its selection bias. `--final` gets fresh A4 runs. |
+| 2026-10-07 | `review` consult built first, pick-only, on `L-best3` groups: usable candidates only, gated on ≥ 2 distinct; shuffled labels; diffs plus local check facts; last line `RANKING:`; fallback to the local rule. Prompts in `prompts/review/` (own set: the default set's hash, and so advisor arms' config hashes, stay unchanged). Brief built in advisor-core for redaction; L2/L3 only. |
