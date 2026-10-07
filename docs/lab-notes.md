@@ -74,3 +74,4 @@ Short dated observations; newest first. Smoke runs are not results.
 - 2026-10-07: review smoke on calib-noise (L3, Kimi): `json-3664` 3 distinct patches, Kimi ranked the only resolving one first (4.2k in, 3.5k out, 98 s); `fmt-2394` 3 seeds, one patch → no consult.
 - 2026-10-07: `bench run` started with `nohup … &` ignores SIGINT (async jobs of a non-interactive shell inherit SIG_IGN), so no graceful stop; SIGTERM, then the resume regrades or reruns what was in flight. `--parallel` is not in the config hash.
 - 2026-10-07: executor server at 6 parallel pi agents: prompt-cache hit 94% → 19%, p50 call 1.3 s → 23 s, total throughput no higher than at 3; the cache holds ~3–4 agent contexts. Max prompt seen 119k (limit 165k). Back to 4.
+- 2026-10-07: the 4 GiB file cap fired: `json-3543` s4 looped again (pi exited 153, SIGXFSZ; graded as `crash`, its patch kept). That task loops in 2 of 5 seeds so far.
