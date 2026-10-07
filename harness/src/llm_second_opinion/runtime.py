@@ -15,6 +15,9 @@ import docker
 import docker.errors
 
 LABEL = "llm-second-opinion"
+# The largest file any process in a task container may write (RLIMIT_FSIZE): a runaway command
+# output log once filled the host disk (109 GB). The writer gets SIGXFSZ past it.
+MAX_FILE_BYTES = 4 * 2**30
 # `timeout` exits 124 in coreutils and 143 (SIGTERM) in BusyBox; 137 if it had to SIGKILL.
 _TIMEOUT_EXITS = {124, 137, 143}
 
@@ -106,6 +109,7 @@ class Runtime:
             init=True,
             nano_cpus=int(cpus * 1e9),
             mem_limit=int(memory_gb * 2**30),
+            ulimits=[docker.types.Ulimit(name="fsize", soft=MAX_FILE_BYTES, hard=MAX_FILE_BYTES)],
             labels={LABEL: name},
             extra_hosts={"host.docker.internal": "host-gateway"},
             volumes=mounts,
