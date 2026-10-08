@@ -172,6 +172,9 @@ The pilot below waits for the go/no-go gate.
       - [x] Only if short: `experiments/gate-phase.yaml` (H-phase: `plan` + `orient` + `stuck`, L3,
             hints-only; existing triggers, no bundle change; 75 runs): 25/75, equal to `L-best3`'s 25 (0% of the gap;
             A0 at one run: 19.7 expected). No-go
+      - [ ] `experiments/gate-evidence.yaml` (H-evidence: evidence brief, restore rule; 75 runs):
+            18 clean runs, 8 resolved (A0 6.8 expected); stopped by Kimi's weekly quota, ~51 to go
+- [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
 - [ ] If go: larger task pool (decision open), then `--final` on `test`
