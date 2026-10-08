@@ -187,8 +187,9 @@ The pilot below waits for the go/no-go gate.
       - [ ] H-case-tests on all 5 tasks; A0 + same guidance line as control
       - [x] Uptake measure per consult (`bench uptake`): iterations 1–3, right 16/20, right and
             fully followed 8/16
-      - [ ] Iteration 4: H-case-uptake (`experiment_report`, evidence read-back, acceptance
-            check, recall is not evidence); smoke on simdjson-644, then all 5 tasks
+      - [x] Iteration 4: H-case-uptake (`experiment_report`, evidence read-back, acceptance
+            check, recall is not evidence): 4/10; right and followed 18/23 (H-case 6/9)
+      - [ ] json-3564: why `test-element_access2` fails after a fix that follows right advice
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
