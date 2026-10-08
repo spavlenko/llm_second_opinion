@@ -34,7 +34,7 @@ because three local runs cost no cloud tokens and expose no code.
 | `review`: Kimi ranks the 3 local patches | issue + candidate diffs + local checks | 28 / 74 | 7% |
 | Perfect picker (oracle, upper bound for any `review`) | — | 38 / 74 | 30% |
 | `H-phase`: one run, up to 3 hint consults (plan, orient, stuck) | issue + recent command names + agent notes | 25 / 75 | 0% (90% CI −26% .. 21%) |
-| `H-evidence`: same, richer brief (partial) | + command outputs, executor reasoning, edits | 8 / 18 | not yet |
+| `H-evidence`: same, richer brief | + command outputs, executor reasoning, edits | 19 / 60 | −12% (90% CI −46% .. 11%) |
 
 - **Picking is capped low.** Even a perfect pick among three local patches closes only 30%.
   The losing patches mostly fail to build against the hidden tests, which call an API the fix
@@ -49,9 +49,11 @@ because three local runs cost no cloud tokens and expose no code.
   `json-3601` it still steered toward editing the examples until the advisor prompt said to
   restore the behaviour the issue shows, after which all three seeds went for the library
   fix (the upstream one).
-- **`H-evidence`, partial:** 8 of 18 clean runs on 14 tasks, vs 6.8 expected for A0 and 6.0
-  for `H-phase` on the same tasks (per-task rates). Too few runs to call; the run stopped when
-  Kimi's weekly plan quota ran out.
+- **But better diagnoses did not resolve more.** `H-evidence` resolves 19 of 60 paired groups
+  (25 tasks), against `L-best3`'s 23, `H-phase`'s 20 and 16.4 expected for one A0 run: −12%
+  of the gap (90% CI −46% .. 11%), 7% of the A0–A4 gap. The first 18 runs (8 resolved) were
+  noise. 15 runs are missing (Kimi's plan quota ran out twice), but even if all of them
+  resolved the arm could not reach the 25% bar (36 of 74). Gate: no-go again.
 
 ## Cost and exposure
 
@@ -59,7 +61,7 @@ because three local runs cost no cloud tokens and expose no code.
 | --- | --- | --- |
 | `review` on gate-a0 | 70 | 471k / 156k |
 | gate-phase | 195 | 172k / 126k |
-| gate-evidence (so far) | 54 | 124k / 47k |
+| gate-evidence | 154 | 348k / 173k (~$3.4 at API prices) |
 
 All three are at L3 (unredacted): the gate measures whether help works at all before paying
 for redaction. Every brief is stored with its run.
@@ -75,7 +77,7 @@ for redaction. Every brief is stored with its run.
 
 ## Next
 
-1. Finish `H-evidence` (about 51 runs, ~130 consults) when the quota allows, then compute its
-   gap closed with the task bootstrap.
-2. If it is close to the gate: interface hints and an advisor-written acceptance test.
-3. If it passes: redaction levels, then `--final` on `test`.
+1. Find where the help is lost: does Qwen act on correct advice (uptake per consult, advice
+   quality judged against the upstream fix)? If the advice is right and ignored, the lever is
+   the executor's side (how advice is injected, plan-following), not the brief.
+2. Only then spend more advisor tokens: interface hints, an advisor-written acceptance test.
