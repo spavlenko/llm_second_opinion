@@ -31,6 +31,10 @@ export interface BriefContext {
   lastEdit: { path: string; text: string } | null;
   /** The executor's own words from its latest turns (its findings), for `orient`. */
   notes?: string[];
+  /** The executor's latest reasoning (thinking) text, for `{{reasoning}}`. */
+  thinking?: string;
+  /** The executor's latest edits, oldest first, for `{{edits}}`. */
+  edits?: { path: string; text: string }[];
 }
 
 export interface Brief {
@@ -59,6 +63,15 @@ export const DEFAULT_QUESTIONS: Record<Intervention, string> = {
 export const BRIEF_CUT_MARKER = "[cut: the brief was over its size limit]";
 
 const EXCERPT_RADIUS = 3;
+/** `{{evidence}}`: the last tool calls with their results, each cut to its head and tail. */
+const EVIDENCE_ACTIONS = 6;
+const EVIDENCE_HEAD = 30;
+const EVIDENCE_TAIL = 10;
+const EVIDENCE_CHARS = 2400;
+/** `{{reasoning}}`: the tail of the executor's latest thinking. */
+const REASONING_CHARS = 2000;
+/** `{{edits}}`: each edit's new text, capped. */
+const EDIT_CHARS = 1500;
 const MAX_EXCERPTS = 3;
 const RECENT_ACTIONS = 6;
 
@@ -123,6 +136,21 @@ export function buildBrief(
       return verbatim ? raw : r.prose(raw);
     },
     code: () => (level === "L2" || verbatim ? excerpts(failure, ctx.lastEdit, readFile, verbatim, r) : ""),
+    // What the executor saw, thought and changed: at L2 and L3 only (they are code).
+    evidence: () => (level === "L2" || verbatim ? evidence(ctx.recent, verbatim, r) : ""),
+    reasoning: () => {
+      const t = (ctx.thinking ?? "").trim();
+      return t ? prose(t.length > REASONING_CHARS ? `…${t.slice(-REASONING_CHARS)}` : t) : "";
+    },
+    edits: () =>
+      level === "L2" || verbatim
+        ? (ctx.edits ?? [])
+            .map((e) => {
+              const text = e.text.length > EDIT_CHARS ? `${e.text.slice(0, EDIT_CHARS)}\n[…]` : e.text;
+              return `${verbatim ? e.path : r.file(e.path)}:\n\`\`\`\n${verbatim ? text : r.code(text)}\n\`\`\``;
+            })
+            .join("\n\n")
+        : "",
   };
   const vars: Vars = {};
   for (const name of placeholders(template)) {
@@ -203,6 +231,27 @@ export function errorCategory(failure: ToolObservation, failingTests: number): s
 }
 
 /** The last tool calls in words. Below L2 commands are not shown, only what they did. */
+/** The last tool calls with their results: a call's head line, then its result cut to its
+ * first and last lines and to EVIDENCE_CHARS. Redacted below L3. */
+export function evidence(recent: ToolObservation[], verbatim: boolean, r: Redactor): string {
+  return recent
+    .slice(-EVIDENCE_ACTIONS)
+    .map((obs) => {
+      const call = obs.name === "bash" ? `$ ${String(obs.args.command ?? "")}` : `${obs.name} ${JSON.stringify(obs.args).slice(0, 300)}`;
+      const lines = obs.result.replace(/\n+$/, "").split("\n");
+      let out =
+        lines.length > EVIDENCE_HEAD + EVIDENCE_TAIL
+          ? [...lines.slice(0, EVIDENCE_HEAD), `[… ${lines.length - EVIDENCE_HEAD - EVIDENCE_TAIL} lines …]`, ...lines.slice(-EVIDENCE_TAIL)].join("\n")
+          : lines.join("\n");
+      if (out.length > EVIDENCE_CHARS) out = `${out.slice(0, EVIDENCE_CHARS)}\n[…]`;
+      // Below L3 as prose, like `{{error}}`: output is mostly words, and redacting it as code
+      // would turn every word into a placeholder.
+      const head = verbatim ? call.slice(0, 400) : r.prose(call.slice(0, 400));
+      return `${head}${obs.isError ? "  (failed)" : ""}\n\`\`\`\n${verbatim ? out : r.prose(out)}\n\`\`\``;
+    })
+    .join("\n\n");
+}
+
 export function describeActions(level: Level, recent: ToolObservation[], r: Redactor): string {
   const lines = recent.slice(-RECENT_ACTIONS).map((obs) => {
     const status = obs.isError ? " (failed)" : "";

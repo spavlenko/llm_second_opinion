@@ -19,7 +19,19 @@ from pydantic import Field
 from llm_second_opinion.contracts import PromptSet, PromptSlot, PromptTexts, Strict
 
 # The placeholders each slot may use. Changing a list changes what the plugin must render.
-_BRIEF = ("task_summary", "tried", "error", "hypothesis", "question", "code", "level", "trigger")
+_BRIEF = (
+    "task_summary",
+    "tried",
+    "error",
+    "hypothesis",
+    "question",
+    "code",
+    "level",
+    "trigger",
+    "evidence",
+    "reasoning",
+    "edits",
+)
 PLACEHOLDERS: dict[PromptSlot, tuple[str, ...]] = {
     PromptSlot.EXECUTOR_GUIDANCE: ("max_consults", "field_target_words"),
     PromptSlot.CONSULT_TOOL: ("max_consults", "field_target_words"),

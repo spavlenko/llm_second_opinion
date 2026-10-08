@@ -1,0 +1,90 @@
+# Gate, iteration 2: H-phase with the `evidence` brief. gate-phase's briefs carried the
+# issue and command names only (no outputs, no reasoning, no edits; 2026-10-08 lab note), and
+# Kimi guessed. Here the brief adds the latest command outputs, the executor's latest
+# reasoning and its edits, and the advisor is asked to name any public interface the fix
+# needs. Same triggers, tasks and seeds 0-2 as gate-phase: paired with gate-a0 and gate-phase.
+#   bench run experiments/gate-evidence.yaml --parallel 3
+name: gate-evidence
+tasks: ../tasks/manifests/mswe-full-cpp-v1.yaml
+split: dev
+task_ids:
+  - catchorg__Catch2-2187
+  - catchorg__Catch2-2394
+  - catchorg__Catch2-2849
+  - fmtlib__fmt-1361
+  - fmtlib__fmt-1407
+  - fmtlib__fmt-2158
+  - fmtlib__fmt-2292
+  - fmtlib__fmt-3248
+  - nlohmann__json-1221
+  - nlohmann__json-2019
+  - nlohmann__json-2225
+  - nlohmann__json-2297
+  - nlohmann__json-2352
+  - nlohmann__json-2989
+  - nlohmann__json-3463
+  - nlohmann__json-3543
+  - nlohmann__json-3564
+  - nlohmann__json-3590
+  - nlohmann__json-3601
+  - nlohmann__json-3605
+  - nlohmann__json-4525
+  - simdjson__simdjson-2178
+  - simdjson__simdjson-545
+  - simdjson__simdjson-644
+  - simdjson__simdjson-949
+seeds: 3
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+prompts:
+  evidence:
+    base: default
+    brief: ../prompts/evidence/brief.md
+    advisor_system: ../prompts/evidence/advisor_system.md
+
+arms:
+  - name: H-evidence
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: evidence
+      max_brief_tokens: 12000   # outputs, reasoning, edits: ~4-8k
+      interventions: [plan, orient, stuck]
+      max_consults: 3
+      orient_after: 3   # distinct files read
+      cooldown_turns: 2
+      stuck: {repeat_calls: 3, same_error: 3, no_diff_turns: 8}
+      reserve_for_end: 0   # no before_done

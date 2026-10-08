@@ -144,3 +144,34 @@ describe("brief levels", () => {
     expect(buildBrief("L3", "{{code}}", req, edited, new RoleMap()).text).toBe("src/a.cpp (last edit)\nint fix_me = 1;");
   });
 });
+
+describe("evidence, reasoning, edits", () => {
+  const T = "EV {{evidence}}\nRS {{reasoning}}\nED {{edits}}";
+  const long = Array.from({ length: 100 }, (_, i) => `out_${i}`).join("\n");
+  const rich: BriefContext = {
+    ...ctx,
+    recent: [...ctx.recent, { name: "bash", args: { command: "cat src/serializer.hpp" }, result: long, isError: false }],
+    thinking: "JsonArray skips dump_float, so the NaN reaches the stream.",
+    edits: [{ path: "src/serializer.hpp", text: "void dump_float(double x);" }],
+  };
+  const make = (level: "L1" | "L2" | "L3") => buildBrief(level, T, stuck, rich, new RoleMap(), read).text;
+
+  it("L3: tool results cut to head and tail, the latest thinking and edits verbatim", () => {
+    const b = make("L3");
+    expect(b).toContain("$ cat src/serializer.hpp\n```\nout_0\n");
+    expect(b).toContain("[… 60 lines …]\nout_90");
+    expect(b).toContain("$ grep -n dump_float src/serializer.hpp  (failed)");
+    expect(b).toContain("RS JsonArray skips dump_float");
+    expect(b).toContain("src/serializer.hpp:\n```\nvoid dump_float(double x);\n```");
+  });
+
+  it("redacts at L2 and drops evidence and edits below it", () => {
+    const l2 = make("L2");
+    for (const id of ["dump_float", "serializer.hpp", "JsonArray"]) expect(l2).not.toContain(id);
+    expect(l2).toContain("[… 60 lines …]");
+    const l1 = make("L1");
+    expect(l1).toMatch(/^EV $/m);
+    expect(l1).toMatch(/^ED$/m);
+    expect(l1).not.toContain("```");
+  });
+});

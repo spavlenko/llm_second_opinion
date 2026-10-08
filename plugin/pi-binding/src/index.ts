@@ -102,8 +102,11 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
     const message = event.message as { stopReason?: string; content?: unknown };
     const stop = message.stopReason;
     if (ctx.signal?.aborted || stop === "aborted" || stop === "error") return;
-    const content = Array.isArray(message.content) ? (message.content as { type?: string; text?: string }[]) : [];
-    session.note(content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"));
+    const content = Array.isArray(message.content) ? (message.content as { type?: string; text?: string; thinking?: string }[]) : [];
+    session.note(
+      content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"),
+      content.map((c) => (c.type === "thinking" ? (c.thinking ?? "") : "")).join("\n"),
+    );
     // A tool call written as text is not the executor stopping: the harness's nudge extension
     // sends it back, so before_done must not fire on it.
     const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");

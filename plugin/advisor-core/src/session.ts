@@ -27,6 +27,8 @@ const RECENT = 12;
 /** The executor's notes kept for the orient brief: its last few texts, each capped. */
 const NOTES = 3;
 const NOTE_CHARS = 600;
+/** Edits kept for `{{edits}}`. */
+const EDITS = 4;
 /** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
 export const CLARIFY_MAX_LINES = 40;
 
@@ -100,6 +102,8 @@ export class AdvisorSession {
   private failedTests: string[] = [];
   private lastEdit: BriefContext["lastEdit"] = null;
   private notes: string[] = [];
+  private thinking = "";
+  private edits: { path: string; text: string }[] = [];
   /** Earlier briefs and the advisor's answers to them, for `memory`. */
   private history: { brief: string; answer: string }[] = [];
   private requests = 0;
@@ -175,7 +179,11 @@ export class AdvisorSession {
   }
 
   /** The executor's own text in a turn (not its tool calls): its findings, for `orient`. */
-  note(text: string): void {
+  note(text: string, thinking = ""): void {
+    if (thinking.trim()) {
+      this.thinking = thinking.trim();
+      this.roles.noteText(this.thinking);
+    }
     const t = text.trim();
     this.roles.noteText(t);
     if (t) this.notes = [...this.notes, t.length > NOTE_CHARS ? `${t.slice(0, NOTE_CHARS)}…` : t].slice(-NOTES);
@@ -196,6 +204,7 @@ export class AdvisorSession {
       const edits = obs.args.edits as { newText?: string }[] | undefined;
       const text = obs.name === "write" ? String(obs.args.content ?? "") : (edits ?? []).map((e) => e.newText ?? "").join("\n");
       this.lastEdit = { path, text };
+      this.edits = [...this.edits, { path, text }].slice(-EDITS);
     }
   }
 
@@ -209,6 +218,8 @@ export class AdvisorSession {
       failedTests: stale ? [] : this.failedTests,
       lastEdit: this.lastEdit,
       notes: this.notes,
+      thinking: this.thinking,
+      edits: this.edits,
     };
   }
 
