@@ -377,6 +377,9 @@ def pick(
         raise click.ClickException(f"{failed} local check(s) failed; rerun to retry them")
 
 
+REVIEW_PARALLEL = 4  # advisor calls at once; each takes ~1-2 min
+
+
 def _reviews(
     exp: Experiment, runner: Runner, done: list, group: int, level: str, check: bool
 ) -> dict[tuple[str, int], dict]:
@@ -387,10 +390,13 @@ def _reviews(
     reviewer.start(out if check else None)
     records = {}
     try:
-        for g in groups(runner.dir, done, group):
-            rec = reviewer.record(g, tasks[g.task])
-            if rec is not None:
-                records[(g.task, g.s)] = rec
+        from concurrent.futures import ThreadPoolExecutor
+
+        gs = list(groups(runner.dir, done, group))
+        with ThreadPoolExecutor(REVIEW_PARALLEL) as pool:
+            for g, rec in zip(gs, pool.map(lambda g: reviewer.record(g, tasks[g.task]), gs)):
+                if rec is not None:
+                    records[(g.task, g.s)] = rec
     finally:
         reviewer.stop()
     click.echo(f"review: {reviewer.calls} advisor call(s), the rest from records")

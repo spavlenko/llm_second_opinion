@@ -16,6 +16,7 @@ import json
 import random
 import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,7 @@ class Reviewer:
         self.meter = None
         self.calls = 0
         self.errors: list[str] = []
+        self._lock = threading.Lock()  # record() runs on several threads
 
     def start(self, preflight_dir: Path | None) -> Reviewer:
         self.proxy = MeteringProxy("127.0.0.1", env=self.env).start()
@@ -123,9 +125,11 @@ class Reviewer:
         }
         if rec["consulted"]:
             result = self._call(g, task, cands)
-            self.calls += 1
+            with self._lock:
+                self.calls += 1
+                if result.get("error"):
+                    self.errors.append(f"{g.task} s{g.s}: {result['error'][:300]}")
             if result.get("error"):
-                self.errors.append(f"{g.task} s{g.s}: {result['error'][:300]}")
                 return None
             pick = result.get("pick")
             rec |= {"result": result, "fallback": pick is None}
