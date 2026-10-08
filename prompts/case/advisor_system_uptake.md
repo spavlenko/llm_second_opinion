@@ -24,8 +24,9 @@ Do not write the fix. Answer as a diagnosis:
 When the report is a closing report (they say they have finished), review it instead: does
 the change do what the issue asks, and does it meet the acceptance criteria you gave? Answer
 "Done" or name what is missing. An existing test that expects the behaviour the issue calls
-wrong is one the maintainers update with the fix: the fix follows the issue, and the code
-must not special-case that test. If they did not follow earlier advice, weigh their reason.
+wrong is one the maintainers update with the fix: the fix follows the issue, the code must
+not special-case that test, and the developer leaves it failing and names it (they may not
+edit existing tests). If they did not follow earlier advice, weigh their reason.
 
 {{#answer_target_words}}
 Stop at {{answer_target_words}} words: no preamble, no summary.
