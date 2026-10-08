@@ -503,6 +503,10 @@ export interface AdvisorSettings {
    */
   memory: boolean;
   /**
+   * The executor's file edits are refused until it has filed a report with the consult tool (while consults are left), so it investigates before it changes code.
+   */
+  report_gate: boolean;
+  /**
    * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
    */
   surrogates: boolean;

@@ -14,7 +14,7 @@ import { type AdvisorClientLike, AdvisorClientError, type ChatMessage, type Comp
 import type { AdvisorRunConfig } from "./config.js";
 import type { Intervention, PromptSet } from "./contracts.js";
 import type { EventInput } from "./events.js";
-import { editsFiles, errorText, testRun, type ToolObservation } from "./observe.js";
+import { buildOrTestFailure, editsFiles, errorText, testRun, type ToolObservation } from "./observe.js";
 import { Redactor, RoleMap } from "./redact.js";
 import { renderTemplate } from "./template.js";
 import { type Decision, TriggerEngine } from "./triggers.js";
@@ -29,6 +29,10 @@ const NOTES = 3;
 const NOTE_CHARS = 600;
 /** Edits kept for `{{edits}}`. */
 const EDITS = 4;
+/** The tool result of an edit refused by `report_gate`. */
+export const REPORT_GATE =
+  `This edit was not applied: before your first change, file your investigation report with the \`${CONSULT_TOOL}\` ` +
+  "tool (what you reproduced, the symptoms, where you think the cause is and why). Then re-issue the edit if it still fits.";
 /** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
 export const CLARIFY_MAX_LINES = 40;
 
@@ -107,6 +111,8 @@ export class AdvisorSession {
   /** Earlier briefs and the advisor's answers to them, for `memory`. */
   private history: { brief: string; answer: string }[] = [];
   private requests = 0;
+  /** Consult tool calls that reached the advisor: the executor's reports. */
+  private reports = 0;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
@@ -194,7 +200,7 @@ export class AdvisorSession {
     this.roles.noteText(`${JSON.stringify(obs.args)}\n${obs.result}`);
     this.recent = [...this.recent, obs].slice(-RECENT);
     const run = testRun(obs);
-    if (obs.isError || run?.failed) this.lastFailure = obs;
+    if (buildOrTestFailure(obs)) this.lastFailure = obs;
     if (run) {
       this.failedTests = run.failedTests;
       this.lastTestRun = obs;
@@ -256,6 +262,13 @@ export class AdvisorSession {
     return this.onDecision(decision, {}, signal);
   }
 
+  /** `report_gate`: the reason to refuse an edit, while the executor has filed no report and
+   * a consult is left for one; null when the edit may go ahead. */
+  reportGate(): string | null {
+    if (!this.settings.report_gate || this.reports > 0 || this.engine.consultsLeft <= this.engine.reserved) return null;
+    return REPORT_GATE;
+  }
+
   /** Is this call one that changes files (so `beforeEdit` applies)? */
   isEdit(name: string, args: Record<string, unknown>): boolean {
     return editsFiles({ name, args, result: "", isError: false });
@@ -287,6 +300,7 @@ export class AdvisorSession {
       return { text: `No advisor consults left (${decision.limit} used). Continue on your own.`, advice: null };
     }
     this.opts.emit({ type: "consult_requested", reason: args.question ?? "", turn: this.engine.turn });
+    this.reports++;
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },

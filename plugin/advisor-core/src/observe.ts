@@ -24,10 +24,21 @@ export interface TestRun {
   buildFailed: boolean;
 }
 
+// Words that may come before the command itself: `timeout 600`, `bash`, `env A=b`, `time`.
+const COMMAND_PREFIX = /^(?:(?:timeout\s+(?:-\S+\s+)*\S+|bash|sh|time|env|nice|stdbuf\s+\S+|[A-Za-z_]\w*=\S*)\s+)*/;
+
+/** Does the shell command run the test script (as a command, not as an argument to `cat`,
+ * `sed` or `grep`)? */
+export function runsTests(command: string): boolean {
+  return command
+    .split(/&&|\|\||[;|\n(){}]/)
+    .some((segment) => segment.trim().replace(COMMAND_PREFIX, "").split(/\s+/)[0] === TEST_COMMAND);
+}
+
 /** A bash call that ran the task's tests, and whether it failed. A run piped through `tail`
  * exits 0, so failure is also read from the ctest summary and run-tests' build message. */
 export function testRun(obs: ToolObservation): TestRun | null {
-  if (obs.name !== "bash" || !String(obs.args.command ?? "").includes(TEST_COMMAND)) return null;
+  if (obs.name !== "bash" || !runsTests(String(obs.args.command ?? ""))) return null;
   const out = obs.result;
   const buildFailed = out.includes("run-tests: build failed");
   const failedTests = failingTests(out);
@@ -50,6 +61,14 @@ export function failingTests(output: string): string[] {
   return [...names];
 }
 
+/** A failure worth showing as the latest build or test output: a failed test run, or a failed
+ * shell command that was not just looking (a compile, a repro binary). A grep that matches
+ * nothing or a missing file is not one. */
+export function buildOrTestFailure(obs: ToolObservation): boolean {
+  if (testRun(obs)?.failed) return true;
+  return obs.name === "bash" && obs.isError && !readsCode(obs);
+}
+
 /** Did the call change files? edit and write do; bash only by the in-place heuristic. */
 export function editsFiles(obs: ToolObservation): boolean {
   if (obs.isError) return false;
@@ -68,7 +87,7 @@ export function readsCode(obs: Pick<ToolObservation, "name" | "args">): boolean 
   if (READ_TOOLS.has(obs.name)) return true;
   if (obs.name !== "bash") return false;
   const command = String(obs.args.command ?? "");
-  if (command.includes(TEST_COMMAND) || BASH_EDIT.test(command)) return false;
+  if (runsTests(command) || BASH_EDIT.test(command)) return false;
   const words = command.replace(/^\s*(cd\s+\S+\s*(&&|;)\s*)+/, "").trim().split(/\s+/);
   if (words[0] === "git") return GIT_READ.has(words.find((w, i) => i > 0 && !w.startsWith("-")) ?? "");
   return READ_COMMANDS.has(words[0] ?? "");
@@ -99,7 +118,7 @@ export function filesRead(obs: Pick<ToolObservation, "name" | "args">): string[]
   if (obs.name === "read") return typeof obs.args.path === "string" ? [norm(obs.args.path)] : [];
   if (obs.name !== "bash") return [];
   const command = String(obs.args.command ?? "");
-  if (command.includes(TEST_COMMAND) || BASH_EDIT.test(command)) return [];
+  if (runsTests(command) || BASH_EDIT.test(command)) return [];
   const out = new Set<string>();
   for (const segment of command.split(/&&|\|\||[;|\n]/)) {
     const words = shellWords(segment);

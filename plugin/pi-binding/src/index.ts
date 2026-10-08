@@ -11,6 +11,8 @@
 //   `continue: true` so the model sees it in its next request even if the turn would have ended
 //   the run. A turn whose assistant message has no tool calls is the executor stopping, which is
 //   when before_done fires (and its continuation gives the executor one more turn).
+// - report_gate: while the executor has filed no report with the consult tool, `tool_call`
+//   blocks its edits, and the block reason asks for the report.
 // - orient, if it has not fired by the executor's first edit, fires in `tool_call` for that
 //   edit: the edit is blocked, and the block reason (the tool result) carries the advice and asks
 //   the executor to re-issue the edit if it still fits.
@@ -92,6 +94,8 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     if (event.toolName === CONSULT_TOOL || event.parentToolCallId) return;
     if (!session.isEdit(event.toolName, event.input as Record<string, unknown>)) return;
+    const gate = session.reportGate();
+    if (gate) return { block: true, reason: gate };
     const advice = await guarded("tool_call", () => session.beforeEdit(ctx.signal));
     if (!advice) return;
     session.applied(advice);

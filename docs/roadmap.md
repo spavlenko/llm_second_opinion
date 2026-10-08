@@ -175,6 +175,11 @@ The pilot below waits for the go/no-go gate.
       - [x] `experiments/gate-evidence.yaml` (H-evidence: evidence brief, restore rule; 75 runs):
             61 done, 19/60 paired vs `L-best3` 23 (−12% of the gap). No-go; 14 runs not run (quota)
       - [ ] Where the help is lost: advice uptake and advice correctness vs the upstream fix
+- [ ] Optimization loop on 5 dev logic tasks × 2 seeds (`experiments/loop-case.yaml`), one change
+      per iteration, then confirm on the held-out dev tasks
+      - [x] Case protocol: `report_gate`, `case` prompt set (report, no code in the brief),
+            failure slot holds only real build/test output
+      - [ ] Iteration 1: H-case
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract

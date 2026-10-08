@@ -150,6 +150,11 @@ class AdvisorSettings(Strict):
         default=False,
         description="The advisor sees this run's earlier briefs and its own answers.",
     )
+    report_gate: bool = Field(
+        default=False,
+        description="The executor's file edits are refused until it has filed a report with "
+        "the consult tool (while consults are left), so it investigates before it changes code.",
+    )
     surrogates: bool = Field(
         default=False,
         description="Below L3, redacted names become plausible fake names instead of "
@@ -168,6 +173,8 @@ class AdvisorSettings(Strict):
     def _periodic_needs_interval(self) -> AdvisorSettings:
         if Intervention.PERIODIC in self.interventions and self.periodic_every is None:
             raise ValueError("the periodic intervention needs periodic_every")
+        if self.report_gate and Intervention.CONSULT not in self.interventions:
+            raise ValueError("report_gate needs the consult intervention (the report is a consult)")
         return self
 
 

@@ -84,6 +84,11 @@
           "description": "The advisor sees this run's earlier briefs and its own answers.",
           "type": "boolean"
         },
+        "report_gate": {
+          "default": false,
+          "description": "The executor's file edits are refused until it has filed a report with the consult tool (while consults are left), so it investigates before it changes code.",
+          "type": "boolean"
+        },
         "surrogates": {
           "default": false,
           "description": "Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.",
@@ -128,6 +133,7 @@
         "reserve_for_end",
         "clarify",
         "memory",
+        "report_gate",
         "surrogates",
         "rules",
         "cooldown_turns",

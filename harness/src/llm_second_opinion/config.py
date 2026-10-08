@@ -30,6 +30,8 @@ ADVISOR_MODEL = "advisor"  # key in `models` that advisor arms consult
 DEFAULT_PROMPTS = Path(__file__).resolve().parents[3] / "prompts/default"  # set `default`
 _ENV_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 _ROUTING = {"base_url", "headers", "header_env"}  # how a model is reached, not which model
+# Advisor settings added after arms had run: at these values they leave the hash as it was.
+_LATER_ADVISOR_DEFAULTS = {"report_gate": False}
 _DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$")
 
 
@@ -222,11 +224,15 @@ class Experiment(Strict):
         `fingerprint`: what the adapter runs that the config does not name, such as its
         fixed task prompt and the agent bundle's image ID (`AgentAdapter.fingerprint`). Unset
         optional fields of limits and models are left out, so a new optional field keeps
-        existing hashes. The task image is not in it: it is part of the item's ledger key.
+        existing hashes; so are advisor settings added later, while at their default
+        (`_LATER_ADVISOR_DEFAULTS`). The task image is not in it: it is part of the item's ledger key.
         """
         arm_payload = arm.model_dump(mode="json", exclude={"name", "agent"})
         if arm.advisor:
             arm_payload["advisor"]["prompts"] = self.prompt_set(arm.advisor.prompts).hash
+            for key, default in _LATER_ADVISOR_DEFAULTS.items():
+                if arm_payload["advisor"].get(key) == default:
+                    del arm_payload["advisor"][key]
 
         def model(key: str) -> dict:
             return self.models[key].model_dump(mode="json", exclude=_ROUTING, exclude_none=True)

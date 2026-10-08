@@ -367,6 +367,10 @@ flag is needed. The task text for briefs is the issue inside the adapter's promp
   `brief_text` is the new brief only (earlier ones were logged when first sent). A failed
   consult adds nothing; a `clarify` exchange is kept as its brief and final answer.
 - `surrogates`: fake names instead of placeholders below L3 (see Abstraction levels).
+- `report_gate`: while consults are left (beyond `reserve_for_end`), the executor's file
+  edits are refused (pi's `tool_call` block) until it has used the consult tool once, with a
+  reason telling it to file its investigation report first. Needs the `consult`
+  intervention. Meant for the `case` prompt set: investigate, report, then fix.
 
 **What is logged.** Once at session start, before any trigger, `policy_rendered` records the
 help-policy text the executor sees: the prompt hash, the rendered `executor_guidance` exactly as
@@ -1346,3 +1350,4 @@ llm_second_opinion/
 | 2026-10-08 | Iterate on the advisor's input rather than stop at no-go (dev tasks only). gate-phase's harness-trigger briefs carried the issue and command names, never their output, the executor's thinking or its edits, so Kimi guessed. New brief placeholders `{{evidence}}`, `{{reasoning}}`, `{{edits}}` (a pi bundle change: new config hashes for every pi arm; A0's behaviour unchanged) and the `evidence` prompt set, whose advisor prompt also asks for any public interface the fix needs and to restore the behaviour the issue shows rather than change callers. Arm `H-evidence` (`experiments/gate-evidence.yaml`), `max_brief_tokens` 12000. |
 | 2026-10-08 | A failed advisor call fails the attempt (retried); HTTP 401/403 from the advisor also stops the batch. Kimi's weekly plan quota cut gate-evidence at 11:32 and pi went on without advice, so 4 runs were silently A0 (marked failed by hand). |
 | 2026-10-08 | Gate no-go again: `H-evidence` resolves 19 of 60 paired groups vs `L-best3`'s 23 (−12% of the gap, CI −46% .. 11%); the 14 runs left cannot reach 25%, so they are not run. Next: measure whether the executor acts on correct advice before changing the brief again. |
+| 2026-10-09 | Case protocol for the optimization loop (dev tuning set: 5 logic tasks × 2 seeds; the other dev tasks held out). The executor investigates, classifies the symptom and files a report through the consult tool before its first edit (`report_gate`, new setting); the `case` prompt set's brief carries only that report, the issue and the latest build or test output (no code, outputs, reasoning or edits); the advisor answers with 2–3 candidate causes, an experiment and prediction for each, and acceptance criteria; the executor reads back which it tests first. Fixes: "latest build or test output" is now a failed test run or a failed non-read shell command (a grep with no match, or `cat` of the test script, no longer count), and only running `/opt/lso/run-tests` is a test run. Both change the pi bundle (new hashes for pi arms). Advisor settings added later leave the config hash unchanged at their default (`report_gate: false`), so earlier runs still match their recorded hashes in reports. |

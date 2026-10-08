@@ -6,7 +6,7 @@ import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } fr
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession, type ConsultArgs, TRUNCATED_MARKER } from "../src/session.js";
+import { type AdviceRecord, AdvisorSession, type ConsultArgs, REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
 import { CODE_CUT_NOTE } from "../src/advice.js";
 import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
 import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
@@ -157,6 +157,17 @@ describe("advisor session", () => {
     expect(briefs[1].role_map).toEqual({});
     expect(briefs[1].role_map_size).toBe(2);
     expect(records[1]!.role_map).toEqual({ "<function_1>": "parse_value", "<variable_1>": "dump_options" });
+  });
+
+  it("report_gate: edits are refused until the executor files a report, and not when no consult is left for one", async () => {
+    const { session } = setup({ interventions: ["consult", "stuck"], report_gate: true, max_consults: 2, reserve_for_end: 0 });
+    expect(session.reportGate()).toBe(REPORT_GATE);
+    await session.consultTool({ question: "Is the cause in parse_value?", tried: "reproduced", hypothesis: "empty input" });
+    expect(session.reportGate()).toBeNull();
+    const off = setup({ interventions: ["consult"], report_gate: false });
+    expect(off.session.reportGate()).toBeNull();
+    const kept = setup({ interventions: ["consult", "before_done"], report_gate: true, max_consults: 1, reserve_for_end: 1 });
+    expect(kept.session.reportGate()).toBeNull(); // the only consult is kept for before_done
   });
 
   it("policy_rendered comes once, first, with a null tool when consult is off", async () => {

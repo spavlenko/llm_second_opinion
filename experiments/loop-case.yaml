@@ -1,0 +1,73 @@
+# Optimization loop, iteration 1: the case protocol (docs/spec.md). Qwen investigates,
+# classifies the symptom and files a report with the consult tool before its first edit
+# (`report_gate`); the brief carries only that report and the real build/test output, no code.
+# Kimi answers with candidate causes, experiments and predictions; Qwen returns with what it
+# observed. Tuning set: 5 dev logic tasks with A0 1-2/9 (gate-a0); other dev tasks held out.
+#   bench run experiments/loop-case.yaml --parallel 3
+name: loop-case
+tasks: ../tasks/manifests/mswe-full-cpp-v1.yaml
+split: dev
+task_ids:
+  - fmtlib__fmt-3248
+  - nlohmann__json-2019
+  - nlohmann__json-2225
+  - nlohmann__json-3564
+  - simdjson__simdjson-644
+seeds: 2
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 3, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6   # Qwen's thinking-mode setting; the server is not deterministic anyway
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+  advisor:
+    base_url: "${ADVISOR_URL:-http://advisor.unset.invalid/v1}"
+    model: k3   # Kimi Code plan (api.kimi.ai/coding/v1); flagship K3
+    reasoning_effort: high
+    api_key_env: ADVISOR_API_KEY
+
+agents:
+  pi:
+    adapter: pi
+    version: "0.99.1"
+    options:
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+  pi-advisor:  # Kimi rejects the `developer` role pi uses for reasoning models
+    adapter: pi
+    version: "0.99.1"
+    options: {compat: {supportsDeveloperRole: false}}
+
+prompts:
+  case:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system.md
+    advice_injection: ../prompts/case/advice_injection.md
+
+arms:
+  - name: H-case
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case
+      interventions: [consult]   # the executor files and reopens the case itself
+      report_gate: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300

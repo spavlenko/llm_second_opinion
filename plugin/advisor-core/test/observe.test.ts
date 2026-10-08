@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOrTestFailure,
+  runsTests,
   callSignature,
   editsFiles,
   errorLocations,
@@ -34,6 +36,22 @@ describe("observations", () => {
     expect(testRun(bash("/opt/lso/run-tests", "100% tests passed, 0 tests failed out of 3"))?.failed).toBe(false);
     const out = "run-tests: build failed; last lines of /tmp/build.log:\nfoo.cpp:3:1: error: x";
     expect(testRun(bash("/opt/lso/run-tests", out))).toMatchObject({ failed: true, buildFailed: true });
+  });
+
+  it("only running the test script is a test run, not reading it", () => {
+    for (const c of ["/opt/lso/run-tests", "cd /testbed && timeout 900 /opt/lso/run-tests 2>&1 | tail -40", "bash /opt/lso/run-tests", "(/opt/lso/run-tests)"])
+      expect(runsTests(c), c).toBe(true);
+    for (const c of ["cat /opt/lso/run-tests", "sed -n 1,40p /opt/lso/run-tests", "grep build /opt/lso/run-tests; ls"]) expect(runsTests(c), c).toBe(false);
+    const script = "# comment\necho \"run-tests: build failed; last lines of /tmp/build.log:\"";
+    expect(testRun(bash("cat /opt/lso/run-tests", script))).toBeNull();
+  });
+
+  it("the latest build or test failure: test runs and failed builds, not greps that match nothing", () => {
+    expect(buildOrTestFailure(bash("/opt/lso/run-tests | tail", CTEST_FAIL))).toBe(true);
+    expect(buildOrTestFailure(bash("g++ -std=c++17 /tmp/t.cpp -o /tmp/t", "t.cpp:4:1: error: x", true))).toBe(true);
+    expect(buildOrTestFailure(bash("grep -n foo src/a.hpp", "", true))).toBe(false);
+    expect(buildOrTestFailure({ name: "read", args: { path: "x.hpp" }, result: "ENOENT", isError: true })).toBe(false);
+    expect(buildOrTestFailure(bash("cat /opt/lso/run-tests", "run-tests: build failed"))).toBe(false);
   });
 
   it("other commands are not test runs", () => {

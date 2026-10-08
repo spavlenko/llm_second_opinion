@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from llm_second_opinion.contracts import (
     EVENT_ADAPTER,
     AdvisorRequest,
+    AdvisorSettings,
     AgentResult,
     parse_events,
     render_schemas,
@@ -100,3 +101,9 @@ def test_result_rejects_unknown_exit_reason():
                 "duration_s": 1.0,
             }
         )
+
+
+def test_report_gate_needs_the_consult_tool():
+    AdvisorSettings(level="L3", interventions=["consult"], report_gate=True)
+    with pytest.raises(ValidationError, match="report_gate"):
+        AdvisorSettings(level="L3", interventions=["stuck"], report_gate=True)
