@@ -49,6 +49,7 @@ from llm_second_opinion.scorers import (
 )
 from llm_second_opinion.tasks import Manifest
 from llm_second_opinion.tracking import DEFAULT_URI, Tracker, TrackingError, check_server
+from llm_second_opinion.uptake import Judge, judge_experiment
 
 REPO = Path(__file__).resolve().parents[3]
 REPO_SCHEMAS = REPO / "schemas"
@@ -505,8 +506,11 @@ def score(
         click.echo(f"probe: {prober.calls} new call(s), the rest from the cache")
 
 
-def _prober(exp: Experiment, key: str, exp_dir: Path, ledger: Ledger, preflight: bool) -> Prober:
-    """The probe's proxy, after a usage preflight of its endpoint (recorded in the ledger's
+def _prober(
+    exp: Experiment, key: str, exp_dir: Path, ledger: Ledger, preflight: bool,
+    cls: type[Prober] = Prober, cache: str = "probe-cache",
+) -> Prober:  # fmt: skip
+    """The probe's (or a `Prober` subclass's) proxy, after a usage preflight of its endpoint (recorded in the ledger's
     preflight table, so it counts in the total spend)."""
     if key not in exp.models:
         raise ConfigError(f"--probe {key!r} is not in models: {', '.join(exp.models)}")
@@ -528,9 +532,7 @@ def _prober(exp: Experiment, key: str, exp_dir: Path, ledger: Ledger, preflight:
             cost_usd=cost,
         )
 
-    prober = Prober(
-        exp, key, exp_dir / "probe-cache", probe_env(endpoint, os.environ), record=record
-    )
+    prober = cls(exp, key, exp_dir / cache, probe_env(endpoint, os.environ), record=record)
     if not preflight:
         click.echo("probe preflight skipped (--no-preflight: mock server and tests only)")
         return prober.start(None)
@@ -562,6 +564,49 @@ def _prober(exp: Experiment, key: str, exp_dir: Path, ledger: Ledger, preflight:
             )
     click.echo(f"probe preflight passed: {key}")
     return prober
+
+
+@main.command()
+@EXPERIMENT
+@RUNS_DIR
+@click.option("--arm", help="Judge only this arm.")
+@click.option("--task", help="Judge only this task id.")
+@click.option(
+    "--judge",
+    "judge_key",
+    metavar="MODEL_KEY",
+    default=ADVISOR,
+    show_default=True,
+    help="The judge model, a key in `models`; answers are cached in uptake-cache/.",
+)
+@click.option(
+    "--no-preflight",
+    is_flag=True,
+    help="Skip the judge's usage preflight (mock server and tests only).",
+)
+def uptake(
+    experiment: str, runs_dir: Path, arm: str | None, task: str | None, judge_key: str,
+    no_preflight: bool,
+) -> None:  # fmt: skip
+    """Judge each consult of the stored runs: was the advice right (against the maintainers'
+    fix), and did the final patch follow it? One judge call per attempt, through the metering
+    proxy; writes RUNS_DIR/<experiment>/uptake.jsonl."""
+    exp = _load(experiment)
+    exp_dir = runs_dir / exp.name
+    if not (exp_dir / "ledger.sqlite").exists():
+        raise click.ClickException(f"no ledger in {exp_dir}; run the experiment first")
+    ledger = Ledger(exp_dir / "ledger.sqlite")
+    try:
+        judge = _prober(exp, judge_key, exp_dir, ledger, not no_preflight, Judge, "uptake-cache")
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
+    try:
+        judge_experiment(exp, runs_dir, judge, arm=arm, task=task, echo=click.echo)  # type: ignore[arg-type]
+    except (ConfigError, KeyError) as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        judge.stop()
+    click.echo(f"judge: {judge.calls} new call(s), the rest from the cache")
 
 
 @main.command()

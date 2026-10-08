@@ -511,6 +511,10 @@ export interface AdvisorSettings {
    */
   closing_report: boolean;
   /**
+   * After the executor's first report, its file edits are refused until it has run an experiment (a command that is not a read) and reported the result with the consult tool, at most 3 times, while a consult is left beyond the closing report's.
+   */
+  experiment_report: boolean;
+  /**
    * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
    */
   surrogates: boolean;

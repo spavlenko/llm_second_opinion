@@ -31,7 +31,11 @@ DEFAULT_PROMPTS = Path(__file__).resolve().parents[3] / "prompts/default"  # set
 _ENV_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
 _ROUTING = {"base_url", "headers", "header_env"}  # how a model is reached, not which model
 # Advisor settings added after arms had run: at these values they leave the hash as it was.
-_LATER_ADVISOR_DEFAULTS = {"report_gate": False, "closing_report": False}
+_LATER_ADVISOR_DEFAULTS = {
+    "report_gate": False,
+    "closing_report": False,
+    "experiment_report": False,
+}
 _DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$")
 
 

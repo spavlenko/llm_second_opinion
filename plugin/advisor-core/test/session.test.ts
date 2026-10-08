@@ -7,7 +7,7 @@ import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
 import { type AdviceRecord, AdvisorSession, type ConsultArgs, CLOSING_REPORT,
-  REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
+  EXPERIMENT_GATE_MAX, EXPERIMENT_REPORT, EXPERIMENT_RUN, REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
 import { CODE_CUT_NOTE } from "../src/advice.js";
 import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
 import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
@@ -186,6 +186,29 @@ describe("advisor session", () => {
     const off = setup({ interventions: ["consult"], max_consults: 3 });
     off.session.observe(edit);
     expect(off.session.closingReport(true)).toBeNull();
+  });
+
+  it("experiment_report: after the first report, edits wait for an experiment and its report", async () => {
+    const report = { question: "Is the cause in parse_value?", tried: "reproduced", hypothesis: "empty input" };
+    const run: ToolObservation = { name: "bash", args: { command: "./repro" }, result: "got 1, expected 2", isError: false };
+    const read: ToolObservation = { name: "bash", args: { command: "cat src/v.cpp" }, result: "...", isError: false };
+    const { session } = setup({ interventions: ["consult"], report_gate: true, experiment_report: true, max_consults: 3, reserve_for_end: 0 });
+    expect(session.reportGate()).toBe(REPORT_GATE);
+    await session.consultTool(report);
+    session.observe(read);
+    expect(session.reportGate()).toBe(EXPERIMENT_RUN); // a read is not an experiment
+    session.observe(run);
+    expect(session.reportGate()).toBe(EXPERIMENT_REPORT);
+    for (let t = 1; t <= 3; t++) session.turnStart(t);
+    await session.consultTool({ ...report, tried: "ran ./repro: got 1, the advisor predicted 1" });
+    expect(session.reportGate()).toBeNull();
+    const capped = setup({ interventions: ["consult"], experiment_report: true, max_consults: 3, reserve_for_end: 0 });
+    await capped.session.consultTool(report);
+    const blocks = [1, 2, 3, 4, 5].map(() => capped.session.reportGate());
+    expect(blocks.filter(Boolean)).toHaveLength(EXPERIMENT_GATE_MAX);
+    const spare = setup({ interventions: ["consult"], experiment_report: true, closing_report: true, max_consults: 2, reserve_for_end: 0 });
+    await spare.session.consultTool(report);
+    expect(spare.session.reportGate()).toBeNull(); // the last consult is the closing report's
   });
 
   it("policy_rendered comes once, first, with a null tool when consult is off", async () => {

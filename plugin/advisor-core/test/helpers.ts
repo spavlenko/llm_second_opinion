@@ -32,6 +32,7 @@ export function settings(overrides: Partial<AdvisorSettings> = {}): AdvisorSetti
     memory: false,
     report_gate: false,
     closing_report: false,
+    experiment_report: false,
     surrogates: false,
     rules: LOOSE,
     cooldown_turns: 0,

@@ -375,6 +375,12 @@ flag is needed. The task text for briefs is the issue inside the adapter's promp
   edits made since its last consult and a consult left, it is sent back once with a message
   asking for a closing report through the consult tool: what it changed, test results, any
   existing test that contradicts the issue, advice it did not follow. Needs `consult`.
+- `experiment_report`: after the first report, file edits are refused until the executor has
+  run a command that is not a read or an edit (its experiment) and reported the result
+  through the consult tool; at most 3 refusals, and only while a consult is left beyond the
+  closing report's. Needs `consult`. Meant for the `case-uptake` prompt set, whose advisor
+  also gives an acceptance check (a short snippet) and whose executor may set advice aside
+  only by citing a command's output.
 
 **What is logged.** Once at session start, before any trigger, `policy_rendered` records the
 help-policy text the executor sees: the prompt hash, the rendered `executor_guidance` exactly as
@@ -511,6 +517,12 @@ the same numbers as metrics against `A0` (`paired_items`, `paired_diff` and its 
 library is used.
 
 ### Scorers
+
+`bench uptake` (`uptake.py`) judges each consult of the counted attempts, offline: was the
+advice right (pointing to the maintainers' fix: same place, same behaviour) and did the final
+patch follow it, each yes / partly / no / na. One call per attempt to a judge model (default
+the advisor's endpoint, usage role `probe`, cached), rows in `runs/<experiment>/uptake.jsonl`.
+A diagnostic like the probe, not acceptance: the judge sees the gold patch.
 
 `bench score` (`scorers.py`) computes rewards, dependence and exposure from the stored attempt
 directories, without running agents, for the counted attempt of every done item at its arm's
@@ -1356,3 +1368,4 @@ llm_second_opinion/
 | 2026-10-08 | Gate no-go again: `H-evidence` resolves 19 of 60 paired groups vs `L-best3`'s 23 (−12% of the gap, CI −46% .. 11%); the 14 runs left cannot reach 25%, so they are not run. Next: measure whether the executor acts on correct advice before changing the brief again. |
 | 2026-10-09 | Case protocol for the optimization loop (dev tuning set: 5 logic tasks × 2 seeds; the other dev tasks held out). The executor investigates, classifies the symptom and files a report through the consult tool before its first edit (`report_gate`, new setting); the `case` prompt set's brief carries only that report, the issue and the latest build or test output (no code, outputs, reasoning or edits); the advisor answers with 2–3 candidate causes, an experiment and prediction for each, and acceptance criteria; the executor reads back which it tests first. Fixes: "latest build or test output" is now a failed test run or a failed non-read shell command (a grep with no match, or `cat` of the test script, no longer count), and only running `/opt/lso/run-tests` is a test run. Both change the pi bundle (new hashes for pi arms). Advisor settings added later leave the config hash unchanged at their default (`report_gate: false`), so earlier runs still match their recorded hashes in reports. |
 | 2026-10-09 | Loop iteration 1 (H-case): one report per run, filed before the first edit, and no return: in 6 runs no second consult. The failures came after the report and never reached Kimi: on fmt-3248 Qwen made the upstream fix, then special-cased floats to keep a visible test the maintainers changed; on simdjson-644 it overrode Kimi's (correct) advice from its own recall. Iteration 2 adds `closing_report` (new setting; at its default it stays out of the config hash) and the `case-close` prompt set, whose advisor reviews the closing report against its acceptance criteria and says that tests encoding the behaviour the issue calls wrong are updated with the fix. The pi nudge extension also sends back a turn with neither a tool call nor text (json-2225: 44k tokens of thinking, then an empty stop at turn 3); the advisor binding does not take such a turn as stopping. Both are bundle changes. |
+| 2026-10-09 | Loop iterations 2–4. Iteration 2 (closing report) 0/2 on fmt-3248: Kimi said 3 times to drop the special case for a visible test that encodes the bug; Qwen refused ("do not change existing tests"). Iteration 3 (`case-tests`: the executor guidance says such a test is left failing and reported) 2/2. Uptake is now measured (`bench uptake`): over iterations 1–3 Kimi was right in 16 of 20 consults and the final patch fully followed 8 of those 16. Iteration 4 (`H-case-uptake`) stacks the uptake levers, each with its own switch for later ablation: `experiment_report` (new setting, out of the hash at its default), a read-back that needs a command's output to set advice aside, an advisor-written acceptance check (advice code limit 15 lines), and "recall is not evidence". |

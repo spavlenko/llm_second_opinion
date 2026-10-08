@@ -14,7 +14,7 @@ import { type AdvisorClientLike, AdvisorClientError, type ChatMessage, type Comp
 import type { AdvisorRunConfig } from "./config.js";
 import type { Intervention, PromptSet } from "./contracts.js";
 import type { EventInput } from "./events.js";
-import { buildOrTestFailure, editsFiles, errorText, testRun, type ToolObservation } from "./observe.js";
+import { buildOrTestFailure, editsFiles, errorText, readsCode, testRun, type ToolObservation } from "./observe.js";
 import { Redactor, RoleMap } from "./redact.js";
 import { renderTemplate } from "./template.js";
 import { type Decision, TriggerEngine } from "./triggers.js";
@@ -33,6 +33,19 @@ const EDITS = 4;
 export const REPORT_GATE =
   `This edit was not applied: before your first change, file your investigation report with the \`${CONSULT_TOOL}\` ` +
   "tool (what you reproduced, the symptoms, where you think the cause is and why). Then re-issue the edit if it still fits.";
+/** Edits refused by `experiment_report` after the first report: before running anything. */
+export const EXPERIMENT_RUN =
+  "This edit was not applied: first run the experiment you chose from the advice (the tests, or a small program) " +
+  `and compare what it shows with the advisor's prediction. Then report the result with the \`${CONSULT_TOOL}\` tool ` +
+  "before you change code.";
+/** ... and after running something, until the result is reported. */
+export const EXPERIMENT_REPORT =
+  `This edit was not applied: report what your experiment showed with the \`${CONSULT_TOOL}\` tool first. In ` +
+  "`tried`: the experiment, its output, and the advisor's prediction for it; in `hypothesis`: the cause you now " +
+  "think it is. Then re-issue the edit if it still fits.";
+/** `experiment_report` refuses at most this many edits, so a consult the rules refuse cannot
+ * block the executor for good. */
+export const EXPERIMENT_GATE_MAX = 3;
 /** The message that sends the executor back, by `closing_report`, when it stops after editing. */
 export const CLOSING_REPORT =
   `Before you finish, file your closing report with the \`${CONSULT_TOOL}\` tool. In \`tried\`: what you changed and ` +
@@ -121,6 +134,9 @@ export class AdvisorSession {
   /** A file edit since the last report (`closing_report`). */
   private editedSinceReport = false;
   private closingAsked = false;
+  /** A command run since the last report, not a read or an edit (`experiment_report`). */
+  private ranSinceReport = false;
+  private experimentBlocks = 0;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
@@ -209,6 +225,7 @@ export class AdvisorSession {
     this.recent = [...this.recent, obs].slice(-RECENT);
     const run = testRun(obs);
     if (buildOrTestFailure(obs)) this.lastFailure = obs;
+    if (obs.name === "bash" && !readsCode(obs) && !editsFiles(obs)) this.ranSinceReport = true;
     if (run) {
       this.failedTests = run.failedTests;
       this.lastTestRun = obs;
@@ -271,11 +288,18 @@ export class AdvisorSession {
     return this.onDecision(decision, {}, signal);
   }
 
-  /** `report_gate`: the reason to refuse an edit, while the executor has filed no report and
-   * a consult is left for one; null when the edit may go ahead. */
+  /** The reason to refuse an edit, or null when it may go ahead. `report_gate`: while the
+   * executor has filed no report and a consult is left for one. `experiment_report`: after the
+   * first report, until the executor has run an experiment and reported its result (while a
+   * consult is left beyond the closing report's), at most EXPERIMENT_GATE_MAX times. */
   reportGate(): string | null {
-    if (!this.settings.report_gate || this.reports > 0 || this.engine.consultsLeft <= this.engine.reserved) return null;
-    return REPORT_GATE;
+    const left = this.engine.consultsLeft - this.engine.reserved;
+    if (this.settings.report_gate && this.reports === 0 && left > 0) return REPORT_GATE;
+    const spare = left - (this.settings.closing_report ? 1 : 0);
+    if (!this.settings.experiment_report || this.reports !== 1 || spare <= 0) return null;
+    if (this.experimentBlocks >= EXPERIMENT_GATE_MAX) return null;
+    this.experimentBlocks++;
+    return this.ranSinceReport ? EXPERIMENT_REPORT : EXPERIMENT_RUN;
   }
 
   /** `closing_report`: the message that sends the executor back to file a closing report,
@@ -320,6 +344,7 @@ export class AdvisorSession {
     this.opts.emit({ type: "consult_requested", reason: args.question ?? "", turn: this.engine.turn });
     this.reports++;
     this.editedSinceReport = false;
+    this.ranSinceReport = false;
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },

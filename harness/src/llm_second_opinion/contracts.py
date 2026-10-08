@@ -160,6 +160,12 @@ class AdvisorSettings(Strict):
         description="When the executor stops with file edits made since its last consult, it is "
         "sent back once to file a closing report with the consult tool (while consults are left).",
     )
+    experiment_report: bool = Field(
+        default=False,
+        description="After the executor's first report, its file edits are refused until it has "
+        "run an experiment (a command that is not a read) and reported the result with the "
+        "consult tool, at most 3 times, while a consult is left beyond the closing report's.",
+    )
     surrogates: bool = Field(
         default=False,
         description="Below L3, redacted names become plausible fake names instead of "
@@ -180,10 +186,9 @@ class AdvisorSettings(Strict):
             raise ValueError("the periodic intervention needs periodic_every")
         if self.report_gate and Intervention.CONSULT not in self.interventions:
             raise ValueError("report_gate needs the consult intervention (the report is a consult)")
-        if self.closing_report and Intervention.CONSULT not in self.interventions:
-            raise ValueError(
-                "closing_report needs the consult intervention (the report is a consult)"
-            )
+        for name in ("closing_report", "experiment_report"):
+            if getattr(self, name) and Intervention.CONSULT not in self.interventions:
+                raise ValueError(f"{name} needs the consult intervention (the report is a consult)")
         return self
 
 

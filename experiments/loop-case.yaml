@@ -70,6 +70,13 @@ prompts:
     brief: ../prompts/case/brief.md
     advisor_system: ../prompts/case/advisor_system_close.md
     advice_injection: ../prompts/case/advice_injection.md
+  case-uptake:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance_uptake.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system_uptake.md
+    advice_injection: ../prompts/case/advice_injection_uptake.md
 
 arms:
   - name: H-case
@@ -121,3 +128,24 @@ arms:
       reserve_for_end: 0
       field_target_words: 150
       answer_target_words: 300
+  # Iteration 4, uptake: Qwen ignored correct advice (simdjson-644 from recall) and never came
+  # back (0 follow-ups). Four changes at once, each with its own switch for ablation later:
+  # experiment_report (run the top experiment, report it, then edit); read-back that names
+  # the contradicting output to set advice aside; Kimi writes an acceptance check (code
+  # lines raised to 15 for it); recall is not evidence.
+  - name: H-case-uptake
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-uptake
+      interventions: [consult]
+      report_gate: true
+      experiment_report: true
+      closing_report: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+      rules: {max_advice_code_lines: 15}

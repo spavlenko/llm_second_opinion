@@ -1046,6 +1046,16 @@ class Prober:
         self.proxy: MeteringProxy | None = None
         self.calls = 0
 
+    # What a subclass asks instead (uptake.Judge): the prompts, how the answer is read, the
+    # cache version and each attempt's usage file. The usage role stays `probe`.
+    VERSION: Any = PROBE_VERSION
+    SYSTEM = PROBE_SYSTEM
+    PROMPT = PROBE_PROMPT
+    USAGE = "probe-usage.jsonl"
+
+    def parse(self, answer: str) -> Any:
+        return parse_guesses(answer)
+
     def start(self, preflight_dir: Path | None) -> Prober:
         self.proxy = MeteringProxy(self.host, env=self.env).start()
         if preflight_dir is not None:
@@ -1058,21 +1068,21 @@ class Prober:
             self.proxy = None
 
     def cache_key(self, text: str) -> str:
-        payload = json.dumps([PROBE_VERSION, self.endpoint.model, text])
+        payload = json.dumps([self.VERSION, self.endpoint.model, text])
         return hashlib.sha256(payload.encode()).hexdigest()[:24]
 
     @contextmanager
-    def attempt(self, out_dir: Path) -> Iterator[Callable[[str], dict[str, list[str]]]]:
-        """`ask(text)` for one attempt; its calls are metered into `probe-usage.jsonl`."""
+    def attempt(self, out_dir: Path) -> Iterator[Callable[[str], Any]]:
+        """`ask(text)` for one attempt; its calls are metered into `USAGE` (`probe-usage.jsonl`)."""
         meter: ItemMeter | None = None
-        usage = out_dir / "probe-usage.jsonl"
+        usage = out_dir / self.USAGE
         before = len(read_usage(usage))
 
-        def ask(text: str) -> dict[str, list[str]]:
+        def ask(text: str) -> Any:
             nonlocal meter
             path = self.cache_dir / f"{self.cache_key(text)}.json"
             if path.exists():
-                return parse_guesses(_json(path).get("answer", ""))
+                return self.parse(_json(path).get("answer", ""))
             if self.proxy is None:
                 raise MeteringError("the probe's proxy is not running")
             if meter is None:
@@ -1081,7 +1091,7 @@ class Prober:
             self.calls += 1
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({"model": self.endpoint.model, "answer": answer}))
-            return parse_guesses(answer)
+            return self.parse(answer)
 
         try:
             yield ask
@@ -1112,8 +1122,8 @@ class Prober:
         body: dict[str, Any] = {
             "model": e.model,
             "messages": [
-                {"role": "system", "content": PROBE_SYSTEM},
-                {"role": "user", "content": PROBE_PROMPT.replace("{text}", text)},
+                {"role": "system", "content": self.SYSTEM},
+                {"role": "user", "content": self.PROMPT.replace("{text}", text)},
             ],
         }
         sampling = {"temperature": e.temperature, "top_p": e.top_p, "seed": e.sampling_seed,

@@ -94,6 +94,11 @@
           "description": "When the executor stops with file edits made since its last consult, it is sent back once to file a closing report with the consult tool (while consults are left).",
           "type": "boolean"
         },
+        "experiment_report": {
+          "default": false,
+          "description": "After the executor's first report, its file edits are refused until it has run an experiment (a command that is not a read) and reported the result with the consult tool, at most 3 times, while a consult is left beyond the closing report's.",
+          "type": "boolean"
+        },
         "surrogates": {
           "default": false,
           "description": "Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.",
@@ -140,6 +145,7 @@
         "memory",
         "report_gate",
         "closing_report",
+        "experiment_report",
         "surrogates",
         "rules",
         "cooldown_turns",
