@@ -179,9 +179,15 @@ The pilot below waits for the go/no-go gate.
       per iteration, then confirm on the held-out dev tasks
       - [x] Case protocol: `report_gate`, `case` prompt set (report, no code in the brief),
             failure slot holds only real build/test output
-      - [x] Iteration 1: H-case (one report per run, never reopened)
+      - [x] Iteration 1: H-case (one report per run, never reopened): 4/10
       - [x] Empty-turn nudge (all arms)
-      - [ ] Iteration 2: H-case-close (closing report reviewed by Kimi)
+      - [x] Iteration 2: H-case-close (closing report reviewed by Kimi): fmt-3248 0/2
+      - [x] Iteration 3: H-case-tests (guidance: leave a test that encodes the bug failing):
+            fmt-3248 2/2
+      - [ ] H-case-tests on all 5 tasks; A0 + same guidance line as control
+      - [ ] Uptake measure per consult (advice right vs upstream fix; followed in final patch)
+      - [ ] Test-before-reject: run the advisor's top experiment before overriding it; consult
+            again with its result
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
