@@ -169,8 +169,9 @@ The pilot below waits for the go/no-go gate.
       - [ ] Fold `abstractProse` into `buildBrief` at the next deliberate bundle change
 - [ ] Gate: 25 signal tasks × 3 seeds, unredacted; go if ≥ 25% of the `L-best3`–A4 gap closed
       - [x] On `review` alone first (no new local runs): 7% of the gap, short (a perfect pick: 30%)
-      - [ ] Only if short: `experiments/gate-phase.yaml` (H-phase: `plan` + `orient` + `stuck`, L3,
-            hints-only; existing triggers, no bundle change; 75 runs)
+      - [x] Only if short: `experiments/gate-phase.yaml` (H-phase: `plan` + `orient` + `stuck`, L3,
+            hints-only; existing triggers, no bundle change; 75 runs): 25/75, equal to `L-best3`'s 25 (0% of the gap;
+            A0 at one run: 19.7 expected). No-go
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
 - [ ] If go: larger task pool (decision open), then `--final` on `test`
