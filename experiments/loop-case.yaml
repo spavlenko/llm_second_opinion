@@ -63,6 +63,13 @@ prompts:
     brief: ../prompts/case/brief.md
     advisor_system: ../prompts/case/advisor_system_close.md
     advice_injection: ../prompts/case/advice_injection.md
+  case-tests:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance_tests.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system_close.md
+    advice_injection: ../prompts/case/advice_injection.md
 
 arms:
   - name: H-case
@@ -88,6 +95,24 @@ arms:
     advisor:
       level: L3
       prompts: case-close
+      interventions: [consult]
+      report_gate: true
+      closing_report: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+  # Iteration 3: on fmt-3248 the closing report surfaced a visible test that encodes the
+  # bug, and Kimi said 3 of 3 times to leave it failing; Qwen kept special-casing it ("tests
+  # may not be modified"). The guidance now says so itself. Confound: A0 lacks this line, so
+  # a gain needs an A0 + same-line control (hypothesis 9).
+  - name: H-case-tests
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-tests
       interventions: [consult]
       report_gate: true
       closing_report: true
