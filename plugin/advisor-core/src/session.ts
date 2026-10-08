@@ -33,6 +33,11 @@ const EDITS = 4;
 export const REPORT_GATE =
   `This edit was not applied: before your first change, file your investigation report with the \`${CONSULT_TOOL}\` ` +
   "tool (what you reproduced, the symptoms, where you think the cause is and why). Then re-issue the edit if it still fits.";
+/** The message that sends the executor back, by `closing_report`, when it stops after editing. */
+export const CLOSING_REPORT =
+  `Before you finish, file your closing report with the \`${CONSULT_TOOL}\` tool. In \`tried\`: what you changed and ` +
+  "why, the latest test results, any existing test whose expectation contradicts the issue (and what you did about it), " +
+  "and any advice you did not follow, and why. In `hypothesis`: why you think the fix is complete. Then act on the answer.";
 /** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
 export const CLARIFY_MAX_LINES = 40;
 
@@ -113,6 +118,9 @@ export class AdvisorSession {
   private requests = 0;
   /** Consult tool calls that reached the advisor: the executor's reports. */
   private reports = 0;
+  /** A file edit since the last report (`closing_report`). */
+  private editedSinceReport = false;
+  private closingAsked = false;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
@@ -211,6 +219,7 @@ export class AdvisorSession {
       const text = obs.name === "write" ? String(obs.args.content ?? "") : (edits ?? []).map((e) => e.newText ?? "").join("\n");
       this.lastEdit = { path, text };
       this.edits = [...this.edits, { path, text }].slice(-EDITS);
+      this.editedSinceReport = true;
     }
   }
 
@@ -269,6 +278,15 @@ export class AdvisorSession {
     return REPORT_GATE;
   }
 
+  /** `closing_report`: the message that sends the executor back to file a closing report,
+   * once, when it stops with edits it has not reported and a consult left; null otherwise. */
+  closingReport(stopping: boolean): string | null {
+    if (!this.settings.closing_report || !stopping || this.closingAsked) return null;
+    if (!this.editedSinceReport || this.engine.consultsLeft <= 0) return null;
+    this.closingAsked = true;
+    return CLOSING_REPORT;
+  }
+
   /** Is this call one that changes files (so `beforeEdit` applies)? */
   isEdit(name: string, args: Record<string, unknown>): boolean {
     return editsFiles({ name, args, result: "", isError: false });
@@ -301,6 +319,7 @@ export class AdvisorSession {
     }
     this.opts.emit({ type: "consult_requested", reason: args.question ?? "", turn: this.engine.turn });
     this.reports++;
+    this.editedSinceReport = false;
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },

@@ -6,7 +6,8 @@ import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } fr
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession, type ConsultArgs, REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
+import { type AdviceRecord, AdvisorSession, type ConsultArgs, CLOSING_REPORT,
+  REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
 import { CODE_CUT_NOTE } from "../src/advice.js";
 import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
 import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
@@ -168,6 +169,23 @@ describe("advisor session", () => {
     expect(off.session.reportGate()).toBeNull();
     const kept = setup({ interventions: ["consult", "before_done"], report_gate: true, max_consults: 1, reserve_for_end: 1 });
     expect(kept.session.reportGate()).toBeNull(); // the only consult is kept for before_done
+  });
+
+  it("closing_report: one send-back when the executor stops with unreported edits", async () => {
+    const edit: ToolObservation = { name: "edit", args: { path: "src/v.cpp", edits: [{ newText: "return {};" }] }, result: "ok", isError: false };
+    const { session } = setup({ interventions: ["consult"], closing_report: true, max_consults: 3, reserve_for_end: 0 });
+    expect(session.closingReport(true)).toBeNull(); // nothing edited
+    session.observe(edit);
+    expect(session.closingReport(false)).toBeNull(); // not stopping
+    expect(session.closingReport(true)).toBe(CLOSING_REPORT);
+    expect(session.closingReport(true)).toBeNull(); // once
+    const reported = setup({ interventions: ["consult"], closing_report: true, max_consults: 3, reserve_for_end: 0 });
+    reported.session.observe(edit);
+    await reported.session.consultTool({ question: "Is the fix complete?", tried: "changed v.cpp", hypothesis: "empty input" });
+    expect(reported.session.closingReport(true)).toBeNull(); // reported since the edit
+    const off = setup({ interventions: ["consult"], max_consults: 3 });
+    off.session.observe(edit);
+    expect(off.session.closingReport(true)).toBeNull();
   });
 
   it("policy_rendered comes once, first, with a null tool when consult is off", async () => {

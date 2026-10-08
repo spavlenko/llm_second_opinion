@@ -179,7 +179,9 @@ The pilot below waits for the go/no-go gate.
       per iteration, then confirm on the held-out dev tasks
       - [x] Case protocol: `report_gate`, `case` prompt set (report, no code in the brief),
             failure slot holds only real build/test output
-      - [ ] Iteration 1: H-case
+      - [x] Iteration 1: H-case (one report per run, never reopened)
+      - [x] Empty-turn nudge (all arms)
+      - [ ] Iteration 2: H-case-close (closing report reviewed by Kimi)
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract

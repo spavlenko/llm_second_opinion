@@ -507,6 +507,10 @@ export interface AdvisorSettings {
    */
   report_gate: boolean;
   /**
+   * When the executor stops with file edits made since its last consult, it is sent back once to file a closing report with the consult tool (while consults are left).
+   */
+  closing_report: boolean;
+  /**
    * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
    */
   surrogates: boolean;

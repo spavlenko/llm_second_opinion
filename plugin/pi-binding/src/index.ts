@@ -13,6 +13,8 @@
 //   when before_done fires (and its continuation gives the executor one more turn).
 // - report_gate: while the executor has filed no report with the consult tool, `tool_call`
 //   blocks its edits, and the block reason asks for the report.
+// - closing_report: when the executor stops with edits it has not reported, it is sent back
+//   once (a custom message, `continue: true`) to file a closing report with the consult tool.
 // - orient, if it has not fired by the executor's first edit, fires in `tool_call` for that
 //   edit: the edit is blocked, and the block reason (the tool result) carries the advice and asks
 //   the executor to re-issue the edit if it still fits.
@@ -111,14 +113,19 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
       content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"),
       content.map((c) => (c.type === "thinking" ? (c.thinking ?? "") : "")).join("\n"),
     );
-    // A tool call written as text is not the executor stopping: the harness's nudge extension
-    // sends it back, so before_done must not fire on it.
+    // A tool call written as text, or a turn with no text at all, is not the executor stopping:
+    // the harness's nudge extension sends it back, so before_done must not fire on it.
     const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
     const stopping =
       stop !== "toolUse" &&
       !content.some((c) => c.type === "toolCall") &&
       !event.toolResults?.length &&
-      !TEXT_TOOL_CALL.test(text);
+      !TEXT_TOOL_CALL.test(text) &&
+      text.trim() !== "";
+    const closing = session.closingReport(stopping);
+    if (closing) {
+      return { entries: [{ type: "custom_message", customType: ADVICE_MESSAGE, content: closing, display: true }], continue: true };
+    }
     const advice = await guarded("turn_end", () => session.atTurnEnd(ctx.signal, stopping));
     if (!advice) return;
     session.applied(advice);

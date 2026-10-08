@@ -89,6 +89,11 @@
           "description": "The executor's file edits are refused until it has filed a report with the consult tool (while consults are left), so it investigates before it changes code.",
           "type": "boolean"
         },
+        "closing_report": {
+          "default": false,
+          "description": "When the executor stops with file edits made since its last consult, it is sent back once to file a closing report with the consult tool (while consults are left).",
+          "type": "boolean"
+        },
         "surrogates": {
           "default": false,
           "description": "Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.",
@@ -134,6 +139,7 @@
         "clarify",
         "memory",
         "report_gate",
+        "closing_report",
         "surrogates",
         "rules",
         "cooldown_turns",

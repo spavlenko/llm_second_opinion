@@ -1,4 +1,4 @@
-# Optimization loop, iteration 1: the case protocol (docs/spec.md). Qwen investigates,
+# Optimization loop. Iteration 1 (H-case): the case protocol (docs/spec.md). Qwen investigates,
 # classifies the symptom and files a report with the consult tool before its first edit
 # (`report_gate`); the brief carries only that report and the real build/test output, no code.
 # Kimi answers with candidate causes, experiments and predictions; Qwen returns with what it
@@ -56,6 +56,13 @@ prompts:
     brief: ../prompts/case/brief.md
     advisor_system: ../prompts/case/advisor_system.md
     advice_injection: ../prompts/case/advice_injection.md
+  case-close:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system_close.md
+    advice_injection: ../prompts/case/advice_injection.md
 
 arms:
   - name: H-case
@@ -66,6 +73,24 @@ arms:
       prompts: case
       interventions: [consult]   # the executor files and reopens the case itself
       report_gate: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+  # Iteration 2: in iteration 1 Qwen filed one report and never came back; what went wrong
+  # after it (a visible test the maintainers changed, advice it overrode) never reached Kimi.
+  # A closing report when it stops after editing; Kimi reviews it against its criteria.
+  #   bench run experiments/loop-case.yaml --arm H-case-close --parallel 3
+  - name: H-case-close
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-close
+      interventions: [consult]
+      report_gate: true
+      closing_report: true
       memory: true
       max_consults: 4
       reserve_for_end: 0
