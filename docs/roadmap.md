@@ -155,20 +155,20 @@ The pilot below waits for the go/no-go gate.
 - [x] run-tests repeats "build failed" at the end of its output (all arms; agent-side wrapper
       in the pi bundle, images unchanged)
 - [ ] `L-best3`: three local attempts, local selection (build, tests, reproduction test)
-      - [ ] A0 at 9 seeds on the 25 gate tasks (`experiments/gate-a0.yaml`, 225 runs)
+      - [x] A0 at 9 seeds on the 25 gate tasks (`experiments/gate-a0.yaml`, 225 runs; 59 resolved)
       - [x] Local picker `bench pick`: build + existing tests per candidate patch, primary rule fixed
-      - [ ] `bench pick experiments/gate-a0.yaml` once gate-a0 is done
+      - [x] `bench pick experiments/gate-a0.yaml` once gate-a0 is done (74 groups: local 25, oracle 38)
 - [ ] Consult points `triage`, `plan` (critique of the executor's plan), `review` (candidate
       diffs); steer-don't-solve advisor prompt; uncertainty gating; value-of-consult and leak budget
       - [x] `review`, pick-only: `bench pick --review L3` (advisor-core `review.ts`, `prompts/review/`),
             gated on ≥ 2 distinct usable candidates
-      - [ ] `bench pick experiments/gate-a0.yaml --review L3` (≤ 75 consults; approved 2026-10-07,
-            started early on complete groups)
+      - [x] `bench pick experiments/gate-a0.yaml --review L3` (≤ 75 consults; approved 2026-10-07,
+            started early on complete groups): review 28 vs local 25; 1 group times out (fmt-3248 s1)
       - [ ] If review helps: its concerns to the executor for one revision run
       - [ ] `triage` (start consult + repo map), `plan` (orient's question as a plan critique)
       - [ ] Fold `abstractProse` into `buildBrief` at the next deliberate bundle change
 - [ ] Gate: 25 signal tasks × 3 seeds, unredacted; go if ≥ 25% of the `L-best3`–A4 gap closed
-      - [ ] On `review` alone first (no new local runs)
+      - [x] On `review` alone first (no new local runs): 7% of the gap, short (a perfect pick: 30%)
       - [ ] Only if short: `experiments/gate-phase.yaml` (H-phase: `plan` + `orient` + `stuck`, L3,
             hints-only; existing triggers, no bundle change; 75 runs)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
