@@ -90,6 +90,21 @@ class PhaseError(RuntimeError):
     """Grading or tracking failed after the agent's result was saved: retried on its own."""
 
 
+class AdvisorRefused(AgentInfraError):
+    """The advisor endpoint refused a call (HTTP 401/403: key or quota). Not retried, and the
+    batch starts no more items: every further consult would fail the same way."""
+
+
+ADVISOR_REFUSED = (401, 403)
+
+
+def advisor_failures(usage: Path) -> list[int]:
+    """The HTTP status of each advisor call that got no 2xx answer (0: no answer)."""
+    return [
+        r.status for r in read_usage(usage) if r.role == "advisor" and not 200 <= r.status < 300
+    ]
+
+
 class Runner:
     """Runs an experiment's work items; `Runner(exp, Path("runs")).run()` is the whole batch.
 
@@ -124,6 +139,7 @@ class Runner:
         self.adapters = {arm.name: _adapter_for(exp, arm) for arm in exp.arms}
         self.preflight = preflight
         self.proxy_host = proxy_host or default_proxy_host()
+        self.halted: str | None = None  # why the batch starts no more items
         self.proxy: MeteringProxy | None = None  # while a batch with model calls runs
         self._hashes: dict[str, str] | None = None
 
@@ -201,6 +217,8 @@ class Runner:
             pool = ThreadPoolExecutor(self.parallel)
             try:
                 outcomes = list(pool.map(lambda i: self._run_item(i, env), todo))
+                if self.halted:
+                    self.echo(f"stopped early, {self.halted}; rerun to resume")
             finally:
                 # On Ctrl-C, items in flight finish and are recorded; queued ones are dropped
                 # and run on the next resume.
@@ -324,6 +342,9 @@ class Runner:
         resumed = self.ledger.resumable(item.key)
         attempt = (resumed["attempt"], Path(resumed["dir"])) if resumed else None
         while True:
+            if self.halted:
+                self.echo(f"{item.key}: not started ({self.halted})")
+                return Outcome(item.key, "skipped")
             if attempt is None:
                 self.ledger.start(item.key)
                 attempt = self.ledger.new_attempt(item.key, self.dir)
@@ -343,7 +364,9 @@ class Runner:
                 )
                 if not isinstance(e, PhaseError):
                     attempt = None  # the agent runs again, in a new attempt directory
-                if failures <= retries:
+                if isinstance(e, AdvisorRefused):
+                    self.halted = f"advisor refused: {e}"
+                if failures <= retries and not isinstance(e, AdvisorRefused):
                     self.echo(f"{item.key}: attempt {k} failed ({e}); retrying")
                     continue
                 self.ledger.finish(item.key, "failed", error=error, attempt_dir=str(rel))
@@ -408,6 +431,15 @@ class Runner:
                 fields = spend(meter.usage_path, self._prices(item.arm))
                 self.ledger.update_attempt(item.key, k, **fields)
             self._write_item_json(out, {"agent_started": started, "agent_ended": time.time()})
+        # A run with a failed consult is not the arm's treatment (the agent goes on without
+        # the advice): the attempt fails and is retried, unless the advisor refused outright.
+        failed = advisor_failures(meter.usage_path) if meter and item.arm.advisor else []
+        if failed:
+            (out / "agent-result.json").write_text(result.model_dump_json(indent=2))
+            message = f"{len(failed)} advisor call(s) failed: HTTP {sorted(set(failed))}"
+            if set(failed) & set(ADVISOR_REFUSED):
+                raise AdvisorRefused(message, result)
+            raise AgentInfraError(message, result)
         (out / "patch.diff").write_text(result.diff)
         (out / "result.json").write_text(result.model_dump_json(indent=2))
         self.ledger.update_attempt(

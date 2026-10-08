@@ -1,5 +1,6 @@
 """The metering proxy against a scripted upstream; see test_pi_docker.py for pi through it."""
 
+import contextlib
 import json
 import socket
 import sqlite3
@@ -773,3 +774,51 @@ def test_rewrite_keeps_model_settings_but_not_routing(proxy, upstream, tmp_path)
     assert routed.executor.reasoning_effort == "high" and routed.executor.headers == {}
     assert routed.advisor_model.base_url.endswith(f"/items/{meter.id}/advisor/v1")
     assert routed.run == config.run
+
+
+class ConsultingAgent(ModelAgent):
+    """One executor call, then one advisor call; carries on whatever the advisor answers."""
+
+    def run(self, box, task, config, limits, env):
+        result = super().run(box, task, config, limits, env)
+        parts = urlsplit(config.advisor_model.base_url)
+        base = urlunsplit(parts._replace(netloc=f"127.0.0.1:{parts.port}"))
+        with contextlib.suppress(urllib.error.HTTPError):
+            post(f"{base}/chat/completions", {"model": config.advisor_model.model})
+        return result
+
+
+def advised_experiment(repo, upstream, **overrides):
+    exp = metered_experiment(repo, upstream, **overrides)
+    models = exp.models | {"advisor": exp.models["local"].model_copy(update={"model": "adv"})}
+    arm = exp.arms[0].model_dump() | {"advisor": {"level": "L3"}}
+    return Experiment.model_validate(
+        exp.model_dump() | {"models": models, "arms": [arm]} | overrides
+    )
+
+
+@pytest.mark.parametrize(("status", "attempts"), [(503, 2), (403, 1)])
+def test_a_failed_consult_fails_the_attempt_and_a_refusal_stops_the_batch(
+    repo, tmp_path, upstream, monkeypatch, status, attempts
+):
+    agent = ConsultingAgent()
+    monkeypatch.setitem(ADAPTERS, "model-agent", lambda spec: agent)
+    monkeypatch.setenv("LSO_TEST_KEY", SECRET)
+    monkeypatch.setenv("LSO_TEST_HEADER", "header-secret")
+    for _ in range(attempts):
+        upstream.reply_json({"choices": [], "usage": USAGE})
+        upstream.reply_json({"error": {"message": "weekly limit"}}, status=status)
+    exp = advised_experiment(
+        repo, upstream, seeds=3 - attempts, execution={"retries": 1, "parallel": 1}
+    )
+    runner = Runner(exp, tmp_path, runtime=FakeRuntime(), echo=lambda _: None,
+                    preflight=False, proxy_host="127.0.0.1")  # fmt: skip
+    outcomes = runner.run()
+    rows = runner.ledger.attempts("m")
+    assert all(r["status"] == "failed" and r["agent_ended"] is None for r in rows)
+    assert f"advisor call(s) failed: HTTP [{status}]" in rows[0]["error"]
+    assert not any(tmp_path.glob("m/A/*/seed-0/*/attempt-*/result.json"))
+    if status == 403:  # not retried, and seed 1 never starts
+        assert [o.status for o in outcomes] == ["failed", "skipped"] and len(rows) == 1
+    else:  # retried once, in a new attempt directory
+        assert [o.status for o in outcomes] == ["failed"] and len(rows) == 2

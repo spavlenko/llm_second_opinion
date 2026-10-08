@@ -1025,7 +1025,9 @@ partial batch covers every arm and task evenly. One Mac serves one local model, 
 `parallel` only when the model servers take concurrent requests (e.g. the cloud-only A4 arm,
 or a local server with batching); container caps also have to fit the VM. An infrastructure
 error (Docker, git, I/O, the model endpoint failing) is retried `retries` times and then
-recorded as `failed` without stopping the batch. On Ctrl-C, items in flight finish and queued ones are left for the next
+recorded as `failed` without stopping the batch. A failed advisor call (no 2xx answer) is one
+too, though pi carries on without the advice: the run is not the arm's treatment. An advisor
+refusal (HTTP 401/403: key or quota) is not retried and the batch starts no more items. On Ctrl-C, items in flight finish and queued ones are left for the next
 run. An interrupted item restarts from step 3; there are no mid-run checkpoints.
 
 Timeouts use `timeout` inside the container. It exits 124 (coreutils) or 143 (BusyBox), so a
@@ -1342,3 +1344,4 @@ llm_second_opinion/
 | 2026-10-08 | `review` alone fails the gate: on 74 `L-best3` groups it resolves 28 vs the local rule's 25, against A4's 68.7 (92.8% on these tasks): 7% of the gap. Even a perfect pick (oracle 38) would close 30%, so picking among A0 attempts has little room; the losers mostly fail to build against hidden tests that call the fix's new API, which a diff review cannot see. Next: the `H-phase` fallback, pending approval of its advisor spend. |
 | 2026-10-08 | Gate: no-go. `H-phase` (one local run with up to 3 L3 hint consults) resolves 25 of 75, the same as `L-best3` (three local runs and the local picker) on the 74 paired groups: 0% of the gap to A4 (task bootstrap 90% CI −26% .. 21%). Against a single A0 run (19.7 expected from 9 seeds) it is +5.3, 11% of the A0–A4 gap. `review` closes 7%; a perfect picker 30%. |
 | 2026-10-08 | Iterate on the advisor's input rather than stop at no-go (dev tasks only). gate-phase's harness-trigger briefs carried the issue and command names, never their output, the executor's thinking or its edits, so Kimi guessed. New brief placeholders `{{evidence}}`, `{{reasoning}}`, `{{edits}}` (a pi bundle change: new config hashes for every pi arm; A0's behaviour unchanged) and the `evidence` prompt set, whose advisor prompt also asks for any public interface the fix needs and to restore the behaviour the issue shows rather than change callers. Arm `H-evidence` (`experiments/gate-evidence.yaml`), `max_brief_tokens` 12000. |
+| 2026-10-08 | A failed advisor call fails the attempt (retried); HTTP 401/403 from the advisor also stops the batch. Kimi's weekly plan quota cut gate-evidence at 11:32 and pi went on without advice, so 4 runs were silently A0 (marked failed by hand). |
