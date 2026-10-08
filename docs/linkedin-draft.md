@@ -24,8 +24,12 @@ What I found so far:
    advice turned into real diagnoses: it caught a signed/unsigned bug, and pointed to the same
    fix the maintainers made upstream.
 
-4. Early runs with the evidence brief look better (8 of 18 vs ~7 expected), but it is too
-   early to call. The run stopped when the weekly quota on my Kimi plan ran out.
+4. And yet: better diagnoses did not mean more fixes. With the evidence brief the agent
+   resolved 19 of 60, against 23 for three free local attempts. The early runs that looked
+   better (8 of 18) were noise.
+
+So the bottleneck is not only what the advisor sees. Next I'm measuring whether the local
+agent actually acts on advice that is right.
 
 Lessons so far:
 - Check what your advisor sees before tuning what it says.
@@ -34,6 +38,6 @@ Lessons so far:
   back into the plain one.
 
 The harness (Python + MLflow, with a TypeScript pi extension for the advisor) will be
-open-source. More when the evidence run finishes.
+open-source. More soon.
 
 #LLM #AIAgents #SoftwareEngineering #Privacy #MLflow
