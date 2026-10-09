@@ -1,0 +1,53 @@
+# Which consults matter (docs/roadmap.md), by replay: each H-case-back run of loop-case is
+# replayed to one consult (pi re-executes the logged model replies, so the workspace and
+# session are as they were), then Qwen goes on live with that consult answered by Kimi's logged
+# advice or by a neutral reply ("could not be reached"); later consults get the neutral reply
+# in both branches. advice - neutral = what that consult was worth. No Kimi calls.
+#   bench run experiments/replay-loop.yaml --parallel 2
+name: replay-loop
+tasks: ../tasks/manifests/mswe-full-cpp-v1.yaml
+split: dev
+task_ids:
+  - fmtlib__fmt-3248
+  - nlohmann__json-2019
+  - nlohmann__json-2225
+  - nlohmann__json-3564
+  - simdjson__simdjson-644
+seeds: 2   # seed s replays the source run of seed s
+limits: {wall_minutes: 40, max_turns: 80}
+execution: {parallel: 2, cpus: 4, memory_gb: 6, grade_minutes: 20}
+
+models:
+  local:
+    base_url: "${LOCAL_MODEL_URL}"
+    model: qwen3.8-27b
+    reasoning_effort: medium
+    temperature: 0.6
+    top_p: 0.95
+    api_key_env: LOCAL_API_KEY
+    headers: {"${LOCAL_SESSION_HEADER}": "${LOCAL_SESSION}"}
+    header_env: {"${LOCAL_AUTH_HEADER}": LOCAL_AUTH_KEY}
+
+agents:
+  first-advice:
+    adapter: pi
+    version: "0.99.1"
+    options: &pi
+      context_window: 140000
+      max_output_tokens: 60000
+      thinking_level_map:
+        {"off": none, minimal: low, low: low, medium: medium, high: xhigh, xhigh: xhigh, max: xhigh}
+      compat: {supportsReasoningEffort: true, supportsDeveloperRole: false}
+      replay: {experiment: loop-case, arm: H-case-back, consult: 1, branch: advice}
+  first-neutral: {adapter: pi, version: "0.99.1", options: {<<: *pi,
+    replay: {experiment: loop-case, arm: H-case-back, consult: 1, branch: neutral}}}
+  last-advice: {adapter: pi, version: "0.99.1", options: {<<: *pi,
+    replay: {experiment: loop-case, arm: H-case-back, consult: last, branch: advice}}}
+  last-neutral: {adapter: pi, version: "0.99.1", options: {<<: *pi,
+    replay: {experiment: loop-case, arm: H-case-back, consult: last, branch: neutral}}}
+
+arms:
+  - {name: R-first-advice, agent: first-advice, executor: local}
+  - {name: R-first-neutral, agent: first-neutral, executor: local}
+  - {name: R-last-advice, agent: last-advice, executor: local}
+  - {name: R-last-neutral, agent: last-neutral, executor: local}

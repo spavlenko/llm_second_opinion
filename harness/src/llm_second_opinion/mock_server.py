@@ -7,7 +7,9 @@ Recordings are JSONL, one completion per line, answered in file order:
     {"message": {"content": "...", "tool_calls": [...]}, "finish_reason": "stop", "usage": {...}}
 
 With `upstream`, requests past the end of the file are proxied to a real endpoint and
-appended to it, which is how recordings are made.
+appended to it, which is how recordings are made, and how a replay (`replay.py`) hands a
+logged run over to the live model at its fork. Recordings may carry the model's thinking as
+`reasoning_content`.
 
 A recording without `usage` is answered with a made-up one (`mock_usage`), and a usage
 preflight request is answered without using up a recording.
@@ -58,16 +60,23 @@ class MockServer(HTTPServer):
     def __init__(
         self,
         address: tuple[str, int],
-        recordings: Path,
+        recordings: Path | list[dict[str, Any]],
         upstream: str | None = None,
         upstream_api_key: str | None = None,
+        upstream_timeout_s: float = 600,
+        upstream_headers: dict[str, str] | None = None,
     ):
         super().__init__(address, _Handler)
-        self.recordings_path = recordings
-        self.recordings = load_recordings(recordings)
+        # Given as a list, recordings stay in memory: upstream completions are not saved.
+        self.recordings_path = recordings if isinstance(recordings, Path) else None
+        self.recordings = (
+            load_recordings(recordings) if isinstance(recordings, Path) else list(recordings)
+        )
         self.served = 0
         self.upstream = upstream.rstrip("/") if upstream else None
         self.upstream_api_key = upstream_api_key
+        self.upstream_timeout_s = upstream_timeout_s
+        self.upstream_headers = upstream_headers or {}
 
     def server_bind(self) -> None:
         # HTTPServer.server_bind calls socket.getfqdn, which can stall for tens of
@@ -85,8 +94,9 @@ class MockServer(HTTPServer):
         elif self.upstream:
             entry = self._fetch_upstream(body)
             self.recordings.append(entry)
-            with self.recordings_path.open("a") as f:
-                f.write(json.dumps(entry) + "\n")
+            if self.recordings_path:
+                with self.recordings_path.open("a") as f:
+                    f.write(json.dumps(entry) + "\n")
         else:
             return None
         self.served += 1
@@ -94,13 +104,13 @@ class MockServer(HTTPServer):
 
     def _fetch_upstream(self, body: dict[str, Any]) -> dict[str, Any]:
         body = {k: v for k, v in body.items() if k not in ("stream", "stream_options")}
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **self.upstream_headers}
         if self.upstream_api_key:
             headers["Authorization"] = f"Bearer {self.upstream_api_key}"
         req = urllib.request.Request(
             f"{self.upstream}/chat/completions", data=json.dumps(body).encode(), headers=headers
         )
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=self.upstream_timeout_s) as resp:
             reply = json.load(resp)
         choice = reply["choices"][0]
         return {
@@ -154,7 +164,10 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
-        deltas = [{"role": "assistant", "content": message["content"] or ""}]
+        deltas = []
+        if message.get("reasoning_content"):
+            deltas.append({"role": "assistant", "reasoning_content": message["reasoning_content"]})
+        deltas.append({"role": "assistant", "content": message["content"] or ""})
         deltas += [
             {"tool_calls": [{"index": i, **call}]}
             for i, call in enumerate(message.get("tool_calls") or [])

@@ -39,6 +39,10 @@ from llm_second_opinion.contracts import (
     RunConfig,
     Strict,
 )
+from llm_second_opinion.metering import default_proxy_host
+from llm_second_opinion.mock_server import MockServer
+from llm_second_opinion.replay import ReplayOptions, source_dir
+from llm_second_opinion.replay import build as build_replay
 from llm_second_opinion.runtime import Container
 from llm_second_opinion.tasks import Task
 from llm_second_opinion.tracing import Span, advisor_spans, clip, ms_to_ns, nest
@@ -64,6 +68,10 @@ EXTENSIONS = (
     f"{MOUNT}/extensions/toolcall-nudge.ts",  # tool calls written as text: nudge, logged
 )
 ADVISOR_EXTENSION = f"{MOUNT}/extensions/lso-advisor.js"
+# Replay arms only, written into the container per run (not in the bundle, so other arms'
+# config hashes do not depend on it).
+REPLAY_EXTENSION = BUNDLE_DIR / "replay.ts"
+RUNS_DIR = REPO / "runs"
 # Over the task image's run-tests, for the agent only: repeats a build failure after ctest's
 # output (agents/pi/run-tests). Images without one (toy tasks) are left alone.
 INSTALL_RUN_TESTS = (
@@ -98,6 +106,8 @@ class PiOptions(Strict):
     # pi's thinking level -> the endpoint's reasoning_effort value (None: not sent)
     thinking_level_map: dict[Thinking, str | None] | None = None
     compat: dict[str, Any] | None = None  # pi's `compat` flags for the endpoint, as is
+    # Replay a logged advisor run to one consult, then go on live (replay.py); no advisor.
+    replay: ReplayOptions | None = None
 
 
 class PiAdapter:
@@ -112,6 +122,7 @@ class PiAdapter:
         f"{RUN_DIR}/timeline.jsonl",
         f"{RUN_DIR}/nudges.jsonl",  # tool calls written as text, and the nudge each got
         f"{RUN_DIR}/advice.jsonl",  # the plugin's full record of each consult (advisor arms)
+        f"{RUN_DIR}/replay.json",  # replay arms: the script replay.ts followed
     )
 
     def __init__(self, spec: AgentSpec):
@@ -143,7 +154,10 @@ class PiAdapter:
     def fingerprint(self) -> dict[str, str]:
         """In the config hash: the fixed task prompt, and the bundle image (pi, the harness's
         extensions, and the advisor plugin as built)."""
-        return {"prompt": prompt_hash(PROMPT), "bundle_image": self.bundle_image()}
+        out = {"prompt": prompt_hash(PROMPT), "bundle_image": self.bundle_image()}
+        if self.options.replay:
+            out["replay_extension"] = prompt_hash(REPLAY_EXTENSION.read_text())
+        return out
 
     def provenance(self) -> dict[str, Any]:
         return {
@@ -182,7 +196,10 @@ class PiAdapter:
         installed = box.exec(INSTALL_RUN_TESTS)
         if installed.exit_code != 0:
             raise RuntimeError(f"installing run-tests failed: {installed.output.strip()}")
-        box.write(f"{RUN_DIR}/agent/models.json", json.dumps(self.models_json(config.executor)))
+        executor, mock = config.executor, None
+        if self.options.replay:
+            executor, mock = self._replay(box, task, config, env)
+        box.write(f"{RUN_DIR}/agent/models.json", json.dumps(self.models_json(executor)))
         exit_file = f"{RUN_DIR}/exit.json"
         pi_env = {
             **env,
@@ -204,12 +221,19 @@ class PiAdapter:
                 # one through the host gateway, as pi does the executor.
                 "LSO_ADVISOR_BASE_URL": container_url(config.advisor_model.base_url),
             }
-        done = box.exec(
-            self.command(config.executor, advisor=advisor),
-            workdir=task.workdir,
-            timeout_s=limits.wall_minutes * 60,
-            env=pi_env,
-        )
+        if mock:
+            pi_env["LSO_REPLAY"] = f"{RUN_DIR}/replay.json"
+        try:
+            done = box.exec(
+                self.command(config.executor, advisor=advisor, replay=mock is not None),
+                workdir=task.workdir,
+                timeout_s=limits.wall_minutes * 60,
+                env=pi_env,
+            )
+        finally:
+            if mock:
+                mock.shutdown()
+                mock.server_close()
         events = parse_jsonl(box.read(f"{RUN_DIR}/pi.jsonl") or "")
         stderr = box.read(f"{RUN_DIR}/pi.stderr") or ""
         limit = json.loads(box.read(exit_file) or "{}")
@@ -230,11 +254,37 @@ class PiAdapter:
             raise AgentInfraError(outage, result)
         return result
 
-    def command(self, executor: ModelEndpoint, advisor: bool = False) -> str:
+    def _replay(
+        self, box: Container, task: Task, config: RunConfig, env: dict[str, str]
+    ) -> tuple[ModelEndpoint, MockServer]:
+        """Start the mock server that replays the source run and then proxies to the executor;
+        write replay.ts and its script into the container. Returns the endpoint pi should use."""
+        assert self.options.replay is not None
+        src = source_dir(RUNS_DIR, self.options.replay, task.id, config.run.seed)
+        recordings, script = build_replay(
+            src, self.options.replay.consult, self.options.replay.branch
+        )
+        script["source"] = str(src.relative_to(RUNS_DIR))
+        box.write(f"{RUN_DIR}/replay.json", json.dumps(script))
+        box.write(f"{RUN_DIR}/replay.ts", REPLAY_EXTENSION.read_text())
+        ex = config.executor
+        headers = ex.headers | {h: env.get(v, "") for h, v in ex.header_env.items()}
+        if ex.api_key_env and env.get(ex.api_key_env):
+            headers["Authorization"] = f"Bearer {env[ex.api_key_env]}"
+        mock = MockServer((default_proxy_host(), 0), recordings, upstream=host_url(ex.base_url),
+                          upstream_timeout_s=3600, upstream_headers=headers)  # fmt: skip
+        threading.Thread(target=mock.serve_forever, daemon=True).start()
+        local = ex.model_copy(update={"base_url": mock.url, "api_key_env": None, "headers": {},
+                                      "header_env": {}})  # fmt: skip
+        return local, mock
+
+    def command(self, executor: ModelEndpoint, advisor: bool = False, replay: bool = False) -> str:
         """pi in JSON mode with only the harness's extensions (and the advisor plugin on advisor
-        arms); the prompt is read from a file."""
+        arms, replay.ts on replay arms); the prompt is read from a file."""
         thinking = self.options.thinking or executor.reasoning_effort
-        extensions = [*EXTENSIONS, ADVISOR_EXTENSION] if advisor else EXTENSIONS
+        extensions = [*EXTENSIONS, ADVISOR_EXTENSION] if advisor else list(EXTENSIONS)
+        if replay:
+            extensions.append(f"{RUN_DIR}/replay.ts")
         args = [
             PI, "--mode", "json", "--provider", PROVIDER, "--model", executor.model,
             "--no-extensions", *[a for e in extensions for a in ("-e", e)],
@@ -563,6 +613,16 @@ def container_url(url: str) -> str:
     parts = urlsplit(url)
     if parts.hostname in ("127.0.0.1", "localhost", "0.0.0.0"):
         netloc = "host.docker.internal" + (f":{parts.port}" if parts.port else "")
+        return urlunsplit(parts._replace(netloc=netloc))
+    return url
+
+
+def host_url(url: str) -> str:
+    """The inverse of `container_url`: the metering proxy's route as the host reaches it (the
+    replay mock server runs on the host)."""
+    parts = urlsplit(url)
+    if parts.hostname == "host.docker.internal":
+        netloc = default_proxy_host() + (f":{parts.port}" if parts.port else "")
         return urlunsplit(parts._replace(netloc=netloc))
     return url
 

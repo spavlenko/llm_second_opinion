@@ -208,9 +208,14 @@ The pilot below waits for the go/no-go gate.
         - [x] `bench consult-value`: per consult, trigger (gate, prompt, own), Kimi tokens,
               closing verdict, edits after, uptake verdict, run outcome
         - [ ] Run it (and `bench uptake`) on `holdout-case`
-        - [ ] Replay a run at a consult, advice vs a neutral message, Qwen only after it
-              (workspace rebuilt by re-running the logged calls, checked against the patch;
-              pi `--fork` from a session rebuilt from pi.jsonl): causal value per consult, no Kimi
+        - [ ] Replay a run at a consult, advice vs a neutral message, Qwen only after it:
+              causal value per consult, no Kimi
+          - [x] pi `replay` option: mock server serves the logged replies (pi re-executes every
+                call), `agents/pi/replay.ts` answers consults and refusals from the log, then
+                live Qwen; `replay.fidelity` compares tool results up to the fork
+          - [x] Validate on one run (json-2019 s0, fork at consult 4): 41/43 tool results equal
+          - [ ] `replay-loop`: the 10 loop H-case-back runs, fork at first and last consult (closing
+                consults happen in 3/10 only: the budget of 4 is spent first)
         - [ ] Ablation arms, one consult kind off each (`experiment_report`, `closing_report`,
               `come_back_turns`), for the paper
         - [ ] Then: skip consults that rarely change the outcome, by rule
