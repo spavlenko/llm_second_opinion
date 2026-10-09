@@ -432,3 +432,18 @@ def test_advisor_arm_gets_prompts_and_paired_metrics(repo, tmp_path, monkeypatch
     assert tracker.summaries["H"]["paired_items"] == 4
     assert tracker.summaries["H"]["paired_diff"] == 0
     assert "paired_items" not in tracker.summaries["A0"]
+
+
+def test_a_held_429_retried_into_advice_is_not_a_failed_consult(tmp_path):
+    from llm_second_opinion.runner import advisor_failures
+
+    rec = {"schema_version": "1", "role": "advisor", "model": "k3", "prompt_tokens": 0, "completion_tokens": 0,
+           "latency_ms": 1.0, "attempt": 1}  # fmt: skip
+    rows = [
+        {**rec, "seq": 1, "ts": 1.0, "status": 429, "request_id": "r1"},
+        {**rec, "seq": 2, "ts": 2.0, "status": 200, "request_id": "r1"},
+        {**rec, "seq": 3, "ts": 3.0, "status": 400, "request_id": "r2"},
+    ]
+    path = tmp_path / "usage.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert advisor_failures(path) == [400]

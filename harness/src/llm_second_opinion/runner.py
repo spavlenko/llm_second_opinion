@@ -99,9 +99,15 @@ ADVISOR_REFUSED = (401, 403)
 
 
 def advisor_failures(usage: Path) -> list[int]:
-    """The HTTP status of each advisor call that got no 2xx answer (0: no answer)."""
+    """The HTTP status of each advisor call that got no 2xx answer (0: no answer). A failure
+    the proxy retried into a 2xx for the same request (a held 429) is not one: the executor
+    got its advice."""
+    calls = [r for r in read_usage(usage) if r.role == "advisor"]
+    answered = {r.request_id for r in calls if r.request_id and 200 <= r.status < 300}
     return [
-        r.status for r in read_usage(usage) if r.role == "advisor" and not 200 <= r.status < 300
+        r.status
+        for r in calls
+        if not 200 <= r.status < 300 and not (r.request_id and r.request_id in answered)
     ]
 
 
