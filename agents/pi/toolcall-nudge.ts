@@ -3,8 +3,10 @@
 // the final answer and the run ends with the work undone (4 of 62 executor runs in calibration).
 // The turn gets a short notice and one more model request, at most LSO_NUDGE_MAX times per
 // run; every nudge is logged to LSO_NUDGE_LOG. A turn with neither a tool call nor any text
-// (Qwen thinking at length, then stopping: an empty patch at turn 3 in loop-case) is nudged the
-// same way. Loaded for every arm, so all arms are equal.
+// (Qwen thinking at length, then stopping: 36 of 593 logged runs ended so, nearly all with an
+// empty patch) is nudged the same way on its own budget, LSO_NUDGE_EMPTY_MAX: Qwen stalls
+// repeatedly in a run (json-2225: 4 stalls in 16 turns) and resumes after each nudge. Loaded
+// for every arm, so all arms are equal.
 import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -13,12 +15,14 @@ const NOTICE =
 	"Your last message contained a tool call written as text (for example `<tool_call>` or " +
 	"`<function=...>`). It was not executed. Call tools through the tool interface, not in text.";
 const EMPTY_NOTICE =
-	"Your last turn ended without a tool call or a reply. Continue the task: call a tool, or say that you are done.";
+	"Your last turn ended without a tool call or a reply. Continue the task: call a tool, or say that you are done. " +
+	"Keep your thinking short: take the next small step with one tool call, then think again on its output.";
 
 export default function (pi: ExtensionAPI) {
-	const max = Number(process.env.LSO_NUDGE_MAX ?? "3");
+	const max = { text_tool_call: Number(process.env.LSO_NUDGE_MAX ?? "3"), empty_turn: Number(process.env.LSO_NUDGE_EMPTY_MAX ?? "10") };
 	const log = process.env.LSO_NUDGE_LOG;
 	let turn = 0;
+	const used = { text_tool_call: 0, empty_turn: 0 };
 	let nudges = 0;
 	pi.on("turn_end", async (event, ctx) => {
 		turn += 1;
@@ -28,7 +32,8 @@ export default function (pi: ExtensionAPI) {
 		if (content.some((c) => c.type === "toolCall") || event.toolResults?.length) return;
 		const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
 		const kind = TEXT_TOOL_CALL.test(text) ? "text_tool_call" : text.trim() ? null : "empty_turn";
-		if (!kind || nudges >= max) return;
+		if (!kind || used[kind] >= max[kind]) return;
+		used[kind] += 1;
 		nudges += 1;
 		if (log) {
 			const record = { turn, nudge: nudges, kind, ts: Date.now() / 1000, excerpt: text.slice(0, 300) };
