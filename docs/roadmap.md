@@ -189,7 +189,12 @@ The pilot below waits for the go/no-go gate.
             fully followed 8/16
       - [x] Iteration 4: H-case-uptake (`experiment_report`, evidence read-back, acceptance
             check, recall is not evidence): 4/10; right and followed 18/23 (H-case 6/9)
-      - [ ] json-3564: why `test-element_access2` fails after a fix that follows right advice
+      - [x] json-3564: why `test-element_access2` fails after a fix that follows right advice:
+            an old `erase(first, last)` bug, hit once the suite runs over `ordered_json`
+      - [x] Iteration 5: H-case-users (acceptance check from user code, existing tests to
+            extend) on json-2225 and json-3564: 0/4; Kimi did not name the missing context
+      - [ ] Executor stalls: an empty-turn stop after 3 nudges ends a run with no patch
+            (json-2225); an executor stuck in a sub-problem does not come back to consult
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract

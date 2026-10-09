@@ -77,6 +77,13 @@ prompts:
     brief: ../prompts/case/brief.md
     advisor_system: ../prompts/case/advisor_system_uptake.md
     advice_injection: ../prompts/case/advice_injection_uptake.md
+  case-users:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance_users.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system_users.md
+    advice_injection: ../prompts/case/advice_injection_uptake.md
 
 arms:
   - name: H-case
@@ -139,6 +146,26 @@ arms:
     advisor:
       level: L3
       prompts: case-uptake
+      interventions: [consult]
+      report_gate: true
+      experiment_report: true
+      closing_report: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+      rules: {max_advice_code_lines: 15}
+  # Iteration 5: json-2225 and json-3564 lost to hidden tests that use the fix as users and
+  # maintainers do (inside a user namespace; the existing suite over ordered_json). The
+  # acceptance check is written from user code over every variant, and Kimi names existing
+  # tests to rerun for the variant.
+  - name: H-case-users
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-users
       interventions: [consult]
       report_gate: true
       experiment_report: true
