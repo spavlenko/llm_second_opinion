@@ -24,13 +24,14 @@ hold on tasks not used to tune them.
   OpenAI-compatible endpoint (any compatible server works). It does all the work: reading
   code, editing, building, running tests. Its traffic stays on trusted machines, so exposure
   counts only what reaches the advisor.
-- **Advisor:** Kimi K3 through an OpenAI-compatible API. It never touches the repository; it
-  only sees the briefs the executor sends it.
+- **Advisor:** Kimi K3 (Kimi Code plan) through an OpenAI-compatible API. It never touches
+  the repository; it only sees the briefs the executor sends it.
 - **Agent:** [pi](https://github.com/earendil-works/pi), a coding agent, runs non-interactively
   in each task's container. The advisor is a pi extension (`plugin/`).
 - **Tasks:** real bug fixes from [Multi-SWE-bench](https://huggingface.co/datasets/ByteDance-Seed/Multi-SWE-bench_mini)
   (C++: nlohmann/json, fmt, simdjson, Catch2), rebuilt and validated for arm64. The current
-  task set is 49 tasks, split into `dev` (24) and `test` (25).
+  task set (`mswe-full-cpp-v1`) is 123 tasks, split into `dev` (60) and `test` (63); tuning
+  uses 25 `dev` tasks with headroom (the local model alone is flaky on them).
 - **One model pair.** The study fixes this executor–advisor pair and searches many prompt
   versions for it; whether the prompts transfer to other pairs is a follow-up.
 
@@ -39,6 +40,7 @@ hold on tasks not used to tune them.
 | Arm | Who does the work | Role |
 | --- | --- | --- |
 | **A0** | Executor alone | Floor: what the local model manages without help |
+| **`L-best3`** | Executor alone, three runs; a local picker (build and existing tests) keeps one patch | The bar: free in cloud tokens and exposure |
 | **H** (many variants) | Executor, with help from the advisor under a help policy | What we optimise |
 | **A4** | Advisor model does the whole task | Ceiling: what full cloud delegation achieves |
 
@@ -67,7 +69,8 @@ the results:
   - number of consults, and when the first one happens
   - advice uptake
   - exposure: tokens and identifiers sent
-- **Relative to the arms:** lift over A0 on the same task and seed, and the share of the A0–A4 gap closed, **(H − A0) / (A4 − A0)**.
+- **Relative to the arms:** lift over A0 on the same task and seed, and the share of the gap closed, **(H − `L-best3`) / (A4 − `L-best3`)**. A policy must close at least 25% to go on.
+- **Which consults mattered:** advice uptake (an offline judge that sees the upstream fix: was the advice right, did the final patch follow it?) and replays: a logged run is replayed up to one consult, then the live executor goes on with the advice or with a neutral reply.
 
 The result is a **Pareto front** of resolve rate against advisor cost and exposure, not a single
 winner.
@@ -103,44 +106,47 @@ the reference fix passes twice.
 
 ## Status
 
+Interim results, on `dev` only (nothing has touched `test`); details in
+[docs/results.md](docs/results.md), run-by-run findings in [docs/lab-notes.md](docs/lab-notes.md).
+
+| Arm (25 `dev` tasks) | Resolved |
+| --- | --- |
+| A0, one run | 26% |
+| `L-best3` | 25 / 74 groups |
+| A4, Kimi as the agent | 93% |
+
+- **Hints did not pass the gate.** Up to 3 hint consults per run (`H-phase`, `H-evidence`)
+  help a single run but not the `L-best3` bar; Kimi as a patch reviewer closes 7% of the gap.
+- **Gates work where hints do not.** The case protocol (`H-case-back`) makes Qwen investigate
+  and file a report before its first edit, run an experiment before editing, and pass a
+  closing review before it stops: 8 / 10 on the 5 tuning tasks. Qwen obeyed every gate that
+  refused a tool call and declined every optional hint.
+- **Qwen stops; it does not get lost.** 91% of failed runs end with Qwen declaring the task
+  done. Build failures on "interface" tasks are hidden tests calling names the issue never
+  gives; no advice helps there.
+- **Running now:** `H-case-back` on the 20 held-out `dev` tasks, and replays of the tuning
+  runs that ask which consults decide the outcome (so far: the closing consult never did).
+
 Built and tested:
-- **Task set:** 49 validated C++ tasks, with a `dev`/`test` split and a 3-task smoke subset.
-- **Runner:**
-  - runs items in parallel in containers and resumes after interruption
-  - retries infrastructure errors
-  - grades each patch in a fresh container by per-test results
-- **pi adapter:** turn and time limits, and a clean exit reason for every run.
-- **MLflow tracking:** on for every run.
-  - a run per arm with its pinned inputs and summary metrics
-  - a run per task and seed
-  - a trace per item: turns, model calls, tool calls, grading
-- **Help policies in config:** prompt sets (five slots, hashed by text) with a baseline in
-  `prompts/default/`, sweeps over prompt sets and interventions.
-- **Report:** per-arm resolve rates, paired comparisons with A0 (bootstrap CI, McNemar, share
-  of the A0–A4 gap closed), the number of variants tried.
+- **Task pipeline:** arm64 images from per-repository recipes, gold-patch validation, frozen
+  manifests with a `dev`/`test` split.
+- **Runner:** items in parallel in containers, resumable, retries infrastructure errors
+  (endpoint outages are never scored as agent failures), grades each patch in a fresh
+  container by per-test results.
+- **pi adapter:** turn and time limits, a clean exit reason for every run, record/replay of a
+  logged run through the mock model server (`replay` option).
+- **Advisor plugin:** a pi extension with the consult tool, harness triggers and gates
+  (report before the first edit, experiment before editing, closing review, come-back, stuck),
+  memory across consults, briefs at levels L0–L3 with identifiers redacted and mapped back,
+  every request logged exactly.
 - **Token metering:** every model call goes through a harness proxy that records the
   provider's own token counts per item (`usage.jsonl`), adds the API keys on the host (agent
-  containers hold no secrets), enforces an optional token budget, and refuses endpoints that
-  do not report usage. Tokens and cost (from a price table) reach the ledger, MLflow, and
-  `bench report`.
-- **Advisor plugin:** a pi extension with the consult tool (and its anti-delegation rules) and harness triggers (plan review, orient, before_done,
-  stuck heuristic, failed test run, periodic), cooldown and budget, briefs at levels L0–L3
-  with identifiers redacted to placeholders and mapped back in the advice, and every request
-  logged exactly; advisor spans in the item traces.
-- **Data retention:** every attempt keeps its own directory and spend (failed ones too), with
-  provenance (`item.json`), per-test grading (`grade.json`), trajectory metrics, and every
-  request's parameters. Endpoint outages are retried, not scored as agent failures.
-- **Calibration:** grader controls on real tasks (gold resolves, empty and no-op patches fail);
-  a smoke suite (`experiments/smoke-*.yaml`) with an anomaly checker (`scripts/smoke-check.py`).
-- **Scorers:** `bench score` re-scores stored runs (resolve is the acceptance score; partial
-  credit, gold similarity, advice copying, consult rate, leaked identifiers and a
-  re-identification probe are diagnostics).
+  containers hold no secrets), holds and retries rate limits, and enforces an optional budget.
+- **MLflow tracking:** a run per arm, per task and seed, and a trace per item.
+- **Analysis:** `bench report` (paired comparisons, bootstrap CIs, McNemar, gap closed),
+  `bench pick` (`L-best3`), `bench uptake`, `bench consult-value`, `bench score`,
+  `bench regrade`.
 - **Mock model server:** CI and development run without a GPU or API keys.
-
-In progress:
-- headroom check on `dev` (A0 and A4 once per task) before any tuning
-- anti-delegation rules (the executor must do the work), size targets, new triggers
-- then the pilot of help policies and prompt search
 
 Progress is tracked in [docs/roadmap.md](docs/roadmap.md).
 
@@ -156,16 +162,16 @@ Progress is tracked in [docs/roadmap.md](docs/roadmap.md).
 - `tasks/repos/` — per-repository image recipes for the task pipeline
 - `experiments/` — example experiment YAML files
 - `scripts/` — MLflow server, grader calibration, smoke-run checker
-- `docs/` — [spec](docs/spec.md) (source of truth for the design), [roadmap](docs/roadmap.md),
-  [lab notes](docs/lab-notes.md), [related work](docs/related-work.md),
-  [task pipeline notes](docs/task-pipeline.md)
+- `docs/` — [spec](docs/spec.md) (source of truth for the design), [results](docs/results.md),
+  [roadmap](docs/roadmap.md), [lab notes](docs/lab-notes.md),
+  [related work](docs/related-work.md), [task pipeline notes](docs/task-pipeline.md)
 
 v1 targets a single Apple Silicon Mac with arm64 Linux containers.
 
 ## Development
 
-Requires Python 3.11+, Node 22+ and pnpm (`brew install node pnpm`), and a Docker API
-(Colima or Docker Desktop) for running experiments.
+Requires Python 3.11+ (developed on 3.14), Node and pnpm (developed on Node 26, pnpm 12:
+`brew install node pnpm`), and a Docker API (Docker Desktop or Colima) for running experiments.
 
 ```sh
 cd harness
@@ -178,8 +184,11 @@ bench --help
 ```sh
 cd plugin
 pnpm install
-pnpm build && pnpm test
+pnpm check:types && pnpm build && pnpm test
 ```
+
+After changing `harness/src/llm_second_opinion/contracts.py`, regenerate the schemas and the
+plugin's types: `bench schemas`, then `pnpm gen:types` in `plugin/`.
 
 Every experiment run is tracked in MLflow; `bench run` refuses to start without the server:
 
@@ -214,7 +223,12 @@ does not report token usage, fails before anything runs.
 bench run experiments/smoke-toy.yaml --runs-dir /tmp/lso-smoke     # minutes, all levels + A4
 python scripts/smoke-check.py /tmp/lso-smoke/smoke-toy             # prints nothing wrong when clean
 bench run experiments/calib-floor.yaml                              # A0/A4 headroom on dev
-bench run experiments/pilot.yaml                                    # the pilot (150 items)
+bench run experiments/gate-a0.yaml --parallel 2                     # A0 on the gate tasks
+bench pick experiments/gate-a0.yaml --csv runs/gate-a0-best3.csv    # L-best3 from those runs
+bench run experiments/holdout-case.yaml --parallel 2                # H-case-back, held-out dev
+bench uptake experiments/holdout-case.yaml                          # was the advice right, followed?
+bench consult-value experiments/holdout-case.yaml                   # per consult: trigger, cost, outcome
+bench run experiments/replay-loop.yaml --parallel 2                 # replay to a consult, then live
 ```
 
 Tuning and smoke runs use `dev` only; `test` needs `--final` and is run once.
@@ -234,6 +248,8 @@ bench tasks import --dataset mini
 bench tasks build mswe-mini-cpp --parallel 2
 bench tasks validate mswe-mini-cpp --parallel 2
 bench tasks freeze mswe-mini-cpp --version mswe-mini-cpp-v2 --out ../tasks/manifests/mswe-mini-cpp-v2.yaml
+bench tasks freeze mswe-full-cpp --version mswe-full-cpp-v1 \
+  --out ../tasks/manifests/mswe-full-cpp-v1.yaml --keep-splits ../tasks/manifests/mswe-mini-cpp-v2.yaml
 ```
 
 ## License
