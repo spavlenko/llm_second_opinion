@@ -51,6 +51,18 @@ export const CLOSING_REPORT =
   `Before you finish, file your closing report with the \`${CONSULT_TOOL}\` tool. In \`tried\`: what you changed and ` +
   "why, the latest test results, any existing test whose expectation contradicts the issue (and what you did about it), " +
   "and any advice you did not follow, and why. In `hypothesis`: why you think the fix is complete. Then act on the answer.";
+/** `come_back_turns`: asks the executor to report when it may be stuck. */
+export const comeBack = (turns: number): string =>
+  `You have gone ${turns} turns without a report to the advisor. If a prediction failed, tests still fail, or ` +
+  "you are stuck on a sub-problem (a build error, a helper that will not work), report it now with the " +
+  `\`${CONSULT_TOOL}\` tool: in \`tried\`, what you did and the output; in \`question\`, what blocks you. If you ` +
+  "are making clear progress, continue.";
+/** ... and sends back an executor that stops without ever having reported. */
+export const STOP_UNREPORTED =
+  `You are stopping without having reported to the advisor. File your investigation report with the \`${CONSULT_TOOL}\` ` +
+  "tool now (what you reproduced, the symptoms, where you think the cause is and why), then fix the issue.";
+/** `come_back_turns` asks at most this many times in a run. */
+export const COME_BACK_MAX = 2;
 /** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
 export const CLARIFY_MAX_LINES = 40;
 
@@ -137,6 +149,10 @@ export class AdvisorSession {
   /** A command run since the last report, not a read or an edit (`experiment_report`). */
   private ranSinceReport = false;
   private experimentBlocks = 0;
+  /** Turns since the last report, or since the start (`come_back_turns`). */
+  private turnsSinceReport = 0;
+  private comeBacks = 0;
+  private stopUnreportedAsked = false;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
@@ -206,6 +222,7 @@ export class AdvisorSession {
 
   turnStart(turn: number): void {
     this.engine.turnStart(turn);
+    this.turnsSinceReport++;
   }
 
   /** The executor's own text in a turn (not its tool calls): its findings, for `orient`. */
@@ -311,6 +328,26 @@ export class AdvisorSession {
     return CLOSING_REPORT;
   }
 
+  /** `come_back_turns`: the message that sends the executor back to report, or null. When it
+   * stops without ever having reported, once (while a consult is left); otherwise after that
+   * many turns without a report since its first one, at most COME_BACK_MAX times (while a
+   * consult is left beyond the closing report's). */
+  comeBack(stopping: boolean): string | null {
+    const turns = this.settings.come_back_turns;
+    if (!turns) return null;
+    const left = this.engine.consultsLeft - this.engine.reserved;
+    if (stopping) {
+      if (this.reports > 0 || this.stopUnreportedAsked || left <= 0) return null;
+      this.stopUnreportedAsked = true;
+      return STOP_UNREPORTED;
+    }
+    const spare = left - (this.settings.closing_report ? 1 : 0);
+    if (this.reports === 0 || this.turnsSinceReport < turns || spare <= 0 || this.comeBacks >= COME_BACK_MAX) return null;
+    this.comeBacks++;
+    this.turnsSinceReport = 0;
+    return comeBack(turns);
+  }
+
   /** Is this call one that changes files (so `beforeEdit` applies)? */
   isEdit(name: string, args: Record<string, unknown>): boolean {
     return editsFiles({ name, args, result: "", isError: false });
@@ -345,6 +382,7 @@ export class AdvisorSession {
     this.reports++;
     this.editedSinceReport = false;
     this.ranSinceReport = false;
+    this.turnsSinceReport = 0;
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },

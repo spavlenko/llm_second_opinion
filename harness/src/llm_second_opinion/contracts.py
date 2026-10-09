@@ -166,6 +166,14 @@ class AdvisorSettings(Strict):
         "run an experiment (a command that is not a read) and reported the result with the "
         "consult tool, at most 3 times, while a consult is left beyond the closing report's.",
     )
+    come_back_turns: int = Field(
+        default=0,
+        ge=0,
+        description="After this many turns without a consult since the executor's last report, "
+        "it is asked to report if it is stuck, at most twice, while a consult is left beyond the "
+        "closing report's; and an executor that stops without ever reporting is sent back once to "
+        "report. 0: off.",
+    )
     surrogates: bool = Field(
         default=False,
         description="Below L3, redacted names become plausible fake names instead of "
@@ -186,7 +194,7 @@ class AdvisorSettings(Strict):
             raise ValueError("the periodic intervention needs periodic_every")
         if self.report_gate and Intervention.CONSULT not in self.interventions:
             raise ValueError("report_gate needs the consult intervention (the report is a consult)")
-        for name in ("closing_report", "experiment_report"):
+        for name in ("closing_report", "experiment_report", "come_back_turns"):
             if getattr(self, name) and Intervention.CONSULT not in self.interventions:
                 raise ValueError(f"{name} needs the consult intervention (the report is a consult)")
         return self

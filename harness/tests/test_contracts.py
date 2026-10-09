@@ -103,8 +103,12 @@ def test_result_rejects_unknown_exit_reason():
         )
 
 
-@pytest.mark.parametrize("setting", ["report_gate", "closing_report", "experiment_report"])
-def test_reports_need_the_consult_tool(setting):
-    AdvisorSettings(level="L3", interventions=["consult"], **{setting: True})
+@pytest.mark.parametrize(
+    ("setting", "on"),
+    [("report_gate", True), ("closing_report", True), ("experiment_report", True),
+     ("come_back_turns", 25)],
+)  # fmt: skip
+def test_reports_need_the_consult_tool(setting, on):
+    AdvisorSettings(level="L3", interventions=["consult"], **{setting: on})
     with pytest.raises(ValidationError, match=setting):
-        AdvisorSettings(level="L3", interventions=["stuck"], **{setting: True})
+        AdvisorSettings(level="L3", interventions=["stuck"], **{setting: on})

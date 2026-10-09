@@ -6,8 +6,8 @@ import { type AdvisorClientLike, AdvisorClientError, type CompletionRequest } fr
 import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
-import { type AdviceRecord, AdvisorSession, type ConsultArgs, CLOSING_REPORT,
-  EXPERIMENT_GATE_MAX, EXPERIMENT_REPORT, EXPERIMENT_RUN, REPORT_GATE, TRUNCATED_MARKER } from "../src/session.js";
+import { type AdviceRecord, AdvisorSession, type ConsultArgs, CLOSING_REPORT, COME_BACK_MAX, comeBack,
+  EXPERIMENT_GATE_MAX, EXPERIMENT_REPORT, EXPERIMENT_RUN, REPORT_GATE, STOP_UNREPORTED, TRUNCATED_MARKER } from "../src/session.js";
 import { CODE_CUT_NOTE } from "../src/advice.js";
 import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
 import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
@@ -209,6 +209,35 @@ describe("advisor session", () => {
     const spare = setup({ interventions: ["consult"], experiment_report: true, closing_report: true, max_consults: 2, reserve_for_end: 0 });
     await spare.session.consultTool(report);
     expect(spare.session.reportGate()).toBeNull(); // the last consult is the closing report's
+  });
+
+  it("come_back_turns: asks for a report after quiet turns, and once on an unreported stop", async () => {
+    const report = { question: "Is the cause in parse_value?", tried: "reproduced", hypothesis: "empty input" };
+    const { session } = setup({ interventions: ["consult"], closing_report: true, come_back_turns: 3, max_consults: 5, reserve_for_end: 0 });
+    for (let t = 0; t < 5; t++) session.turnStart(t);
+    expect(session.comeBack(false)).toBeNull(); // nothing reported yet: no count
+    expect(session.comeBack(true)).toBe(STOP_UNREPORTED);
+    expect(session.comeBack(true)).toBeNull(); // once
+    await session.consultTool(report);
+    let t = 5;
+    const quiet = (n: number) => { for (let i = 0; i < n; i++) session.turnStart(t++); };
+    quiet(2);
+    expect(session.comeBack(false)).toBeNull();
+    quiet(1);
+    expect(session.comeBack(false)).toBe(comeBack(3));
+    expect(session.comeBack(false)).toBeNull(); // the count starts again
+    quiet(3);
+    expect(session.comeBack(false)).toBe(comeBack(3));
+    quiet(3);
+    expect(session.comeBack(false)).toBeNull(); // COME_BACK_MAX
+    expect(COME_BACK_MAX).toBe(2);
+    expect(session.comeBack(true)).toBeNull(); // reported, so no unreported stop
+    const spare = setup({ interventions: ["consult"], closing_report: true, come_back_turns: 1, max_consults: 2, reserve_for_end: 0 });
+    await spare.session.consultTool(report);
+    spare.session.turnStart(1);
+    expect(spare.session.comeBack(false)).toBeNull(); // the last consult is the closing report's
+    const off = setup({ interventions: ["consult"], max_consults: 3 });
+    expect(off.session.comeBack(true)).toBeNull();
   });
 
   it("policy_rendered comes once, first, with a null tool when consult is off", async () => {

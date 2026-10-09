@@ -515,6 +515,10 @@ export interface AdvisorSettings {
    */
   experiment_report: boolean;
   /**
+   * After this many turns without a consult since the executor's last report, it is asked to report if it is stuck, at most twice, while a consult is left beyond the closing report's; and an executor that stops without ever reporting is sent back once to report. 0: off.
+   */
+  come_back_turns: number;
+  /**
    * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
    */
   surrogates: boolean;

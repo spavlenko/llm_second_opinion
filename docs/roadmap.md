@@ -193,8 +193,12 @@ The pilot below waits for the go/no-go gate.
             an old `erase(first, last)` bug, hit once the suite runs over `ordered_json`
       - [x] Iteration 5: H-case-users (acceptance check from user code, existing tests to
             extend) on json-2225 and json-3564: 0/4; Kimi did not name the missing context
-      - [ ] Executor stalls: an empty-turn stop after 3 nudges ends a run with no patch
-            (json-2225); an executor stuck in a sub-problem does not come back to consult
+      - [x] Executor stalls: an empty-turn stop after 3 nudges ends a run with no patch
+            (json-2225); an executor stuck in a sub-problem does not come back to consult:
+            `come_back_turns`
+      - [x] Iteration 6: H-case-back (come-back, stricter closing review) on json-2225 and
+            simdjson-644: 3/4; Qwen did not consult right after a come-back
+      - [ ] H-case-back on the other 3 loop tasks, against H-case-uptake's 4/10
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract

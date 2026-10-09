@@ -77,6 +77,13 @@ prompts:
     brief: ../prompts/case/brief.md
     advisor_system: ../prompts/case/advisor_system_uptake.md
     advice_injection: ../prompts/case/advice_injection_uptake.md
+  case-review:
+    base: default
+    executor_guidance: ../prompts/case/executor_guidance_uptake.md
+    consult_tool: ../prompts/case/consult_tool.md
+    brief: ../prompts/case/brief.md
+    advisor_system: ../prompts/case/advisor_system_review.md
+    advice_injection: ../prompts/case/advice_injection_uptake.md
   case-users:
     base: default
     executor_guidance: ../prompts/case/executor_guidance_users.md
@@ -170,6 +177,29 @@ arms:
       report_gate: true
       experiment_report: true
       closing_report: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+      rules: {max_advice_code_lines: 15}
+
+  # Iteration 6 (from H-case-uptake): json-2225 s1 spent 40 turns on a sub-problem with 2
+  # consults unused, and s0 stopped unreported (H-case-users); `come_back_turns` asks for a
+  # report after 25 quiet turns (resolved runs went up to ~30 between consults) or on an
+  # unreported stop. json-2019 s1 and simdjson s0 lost to Kimi approving a wrong fix: the
+  # closing review first names the strongest reason the maintainers would reject the change.
+  - name: H-case-back
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-review
+      interventions: [consult]
+      report_gate: true
+      experiment_report: true
+      closing_report: true
+      come_back_turns: 25
       memory: true
       max_consults: 4
       reserve_for_end: 0

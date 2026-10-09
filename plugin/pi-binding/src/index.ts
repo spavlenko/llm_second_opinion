@@ -15,6 +15,8 @@
 //   blocks its edits, and the block reason asks for the report.
 // - closing_report: when the executor stops with edits it has not reported, it is sent back
 //   once (a custom message, `continue: true`) to file a closing report with the consult tool.
+// - come_back_turns: the same way, it is asked to report after that many turns without one, or
+//   sent back once when it stops without ever having reported.
 // - orient, if it has not fired by the executor's first edit, fires in `tool_call` for that
 //   edit: the edit is blocked, and the block reason (the tool result) carries the advice and asks
 //   the executor to re-issue the edit if it still fits.
@@ -122,7 +124,7 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
       !event.toolResults?.length &&
       !TEXT_TOOL_CALL.test(text) &&
       text.trim() !== "";
-    const closing = session.closingReport(stopping);
+    const closing = session.closingReport(stopping) ?? session.comeBack(stopping);
     if (closing) {
       return { entries: [{ type: "custom_message", customType: ADVICE_MESSAGE, content: closing, display: true }], continue: true };
     }
