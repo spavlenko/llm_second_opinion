@@ -250,6 +250,44 @@ messages, and an A–B–A–B alternation over 6 or more cycles; events are com
 *For us:* our `stuck` heuristic covers repeats, same error, and no-diff turns. Add the
 **alternation** pattern, and use their thresholds as defaults so they are not tuned on dev.
 
+**When the executor cannot tell it is stuck** (searched 2026-10-09).
+- *Detect from outside, then advise.* Shuyang Liu et al., *LivePlan: Online Monitoring and
+  Corrective Steering of Programming Agents*, 2026,
+  [arXiv:2608.06701](https://arxiv.org/abs/2608.06701). A rule-based monitor (no LLM) flags
+  derailment, repeated failed actions and premature termination; only then does an advisor LLM
+  send a high-level next-step correction. Up to +15.2% resolved (mean +9.9%) on SWE-bench
+  Verified and Pro, $0.08 per instance, gains on medium and hard tasks.
+- *A small learned monitor.* Jiangrui Zhao et al., *HiSentinel*, 2026,
+  [arXiv:2609.39957](https://arxiv.org/html/2609.39957). A 0.6B/1.7B sentinel, distilled from
+  a teacher that saw the outcomes, reviews each proposed action: allow, redirect, or pause.
+  Qwen3-Coder-30B 30% → 44% on SWE-bench Verified Mini; 45% of its interventions help, 4.2%
+  for baselines. Timing beats frequency.
+- *Restart, keep the diff.* Chenyu Wang et al., *Fail-Fast, Restart-Smart*, 2026,
+  [arXiv:2608.03222](https://arxiv.org/abs/2608.03222). A 0.6B monitor predicts failure from the
+  trajectory prefix; the run restarts with no history, the old diff offered as an optional
+  overlay. Qwen3.6-27B 66.6% → 71.8% (cold restart 66.8%), 15–20% fewer tokens.
+- *Small models repeat what they saw fail.* Esmail Gumaan, *Feedback That Backfires*, 2026,
+  [arXiv:2608.23651](https://arxiv.org/abs/2608.23651) (135M–1.7B). After a failure the chance
+  of re-issuing the same call goes 0.06 → 0.54. Replacing the failed call in context with a
+  description removes 76% of it; a "do not repeat" instruction does nothing; deleting the
+  attempt makes it worse.
+- *Escalation and history.* Roy Ganz et al., *The Handoff Tax*, 2026,
+  [arXiv:2608.24358](https://arxiv.org/abs/2608.24358): handing a weak model's trajectory to a
+  strong one recovers under half the gap; dropping the weak history helps.
+- *Right code, then thrashed.* Myeongsoo Kim et al., *Coherence Collapse*, 2026,
+  [arXiv:2603.24631](https://arxiv.org/abs/2603.24631): 60–69% of failures of capable agents
+  reach and edit the right functions, then overwrite them; edit-commit checkpoints recovered
+  all 5 lost gold patches.
+- *Scheduled reminders.* *From Plan to Action*, 2026,
+  [arXiv:2604.12147](https://arxiv.org/abs/2604.12147): periodic plan reminders cut plan
+  violations and raise success on SWE-bench Verified/Pro (16,991 trajectories).
+
+*For us:* the field does not ask the executor whether it is stuck. It (a) detects from the
+outside, with rules (LivePlan) or a small trained monitor (HiSentinel, FailFast), then (b) acts
+without the executor's consent: a redirect, an advisor message, or a restart. Our logged runs
+(~270, with outcomes) are the training or tuning data such a monitor needs. Restart with the
+diff and Kimi's diagnosis, without the history, matches FailFast and the Handoff Tax.
+
 ## 3. Prompt and agent optimisation
 
 **GEPA.** Lakshya A Agrawal, Shangyin Tan, Dilara Soylu, Noah Ziems, Rishi Khare, Krista
