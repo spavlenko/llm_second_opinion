@@ -90,6 +90,25 @@ The advice was often right, but nothing measured whether Qwen used it.
   from Qwen recalling the upstream code, not from advice. It counts only once held-out tasks
   confirm it. Kimi cost: ~9k tokens in and 3.5k out per run (3 consults).
 
+### Where Qwen's runs fail (offline, 2026-10-09)
+
+Over the logged Qwen dev runs, before spending Kimi on stuck handling:
+
+- **Qwen stops; it does not get lost.** 91% of failed runs end with Qwen declaring the task
+  finished; 8% hit the turn limit. 70% of finished runs saw the visible tests pass after their
+  last edit and still resolve only 36%: the miss is what the hidden tests check (a user
+  namespace, a sibling type), not skipped verification.
+- **Exploring is not being stuck.** LivePlan-style phase stagnation does not separate runs;
+  long scratch work goes with success (71% vs 27% at turn 20). A burst of failed calls does
+  (17% vs 31%): `stuck_report` gates on it.
+- **Two published fixes do not transfer.** Rewriting failed calls (Fail-Fast): Qwen 27B
+  repeats one verbatim 0.4% of the time (54% for the paper's small models). Restarting on the
+  burst within the same turn budget: −1.0 pt by counterfactual; runs still going at turn 60
+  resolve 30%, more than a fresh run.
+
+So the lever is the stop: what the closing review and the acceptance check make Qwen test
+before it says "done".
+
 ## Cost and exposure
 
 | Run | Consults | Kimi tokens in / out |
@@ -114,4 +133,5 @@ for redaction. Every brief is stored with its run.
 
 1. `H-case-back` on the 20 held-out `dev` tasks; if it holds, the full gate (25 tasks × 3
    seeds, paired with A0 and `L-best3`).
-2. Task-based stuck detection, tuned offline on the logged runs, with the report as a gate.
+2. `H-case-stuck` on the 5 loop tasks once Kimi's weekly quota resets; then the stop: an
+   acceptance check that reaches the hidden tests' context (user namespace, sibling types).

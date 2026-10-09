@@ -203,8 +203,11 @@ The pilot below waits for the go/no-go gate.
       - [x] Task-based stuck detection, tuned offline on logged runs: `stuck_report` (failed-call
             burst; phase rules did not separate runs); the report as a gate, not a hint
       - [ ] H-case-stuck on the 5 loop tasks, 2 seeds
-      - [ ] Restart instead of rescue (Fail-Fast, Restart-Smart): fresh context, diff and Kimi's
-            diagnosis kept
+      - [x] Restart instead of rescue (Fail-Fast, Restart-Smart): evaluated offline, not built
+            (counterfactual −1.0 pt; long runs resolve as often as fresh ones)
+      - [x] Failed-call rewriting (Fail-Fast): not built; Qwen repeats a failed call 0.4%
+      - [ ] Wrong "done" stops (91% of failures): acceptance checks that reach the hidden tests'
+            context
       - [x] results.md: optimization loop section (iterations 1–6)
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
