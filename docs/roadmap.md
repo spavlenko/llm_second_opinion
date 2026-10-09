@@ -231,6 +231,9 @@ The pilot below waits for the go/no-go gate.
 - [ ] If go: larger task pool (decision open), then `--final` on `test`
 - [ ] Outputs: paper, public repo (README, one-command repro, secrets audit), MLflow write-up,
       LinkedIn post — all from the same figures
+- [ ] Faster builds: a shared ccache for run-tests and grading (same base sources recompiled
+      every run; replays are all repeats). Builds already use `-j` = container CPU cap; the
+      12 cores are full at 4–5 containers × 4. Needs a task-image change → between experiments
 - Postponed: advice playbook (ACE), decoy briefs, provider splitting, advisor-side retrieval
 
 ## Week 8 — pilot
