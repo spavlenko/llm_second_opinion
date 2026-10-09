@@ -212,8 +212,10 @@ def test_a_rate_limit_is_waited_out_and_both_calls_recorded(proxy, upstream, tmp
     post(chat_url(proxy, meter), {"model": "m", "messages": []})  # the agent sees only the 200
     assert time.monotonic() - start >= 1  # Retry-After: 1
     meter.close(1)
-    statuses = [r.status for r in read_usage(tmp_path / "usage.jsonl")]
-    assert statuses == [429, 200] and len(upstream.requests) == 2
+    records = read_usage(tmp_path / "usage.jsonl")
+    assert [r.status for r in records] == [429, 200] and len(upstream.requests) == 2
+    assert "quota window" in records[0].error and records[0].error.endswith("(Retry-After: 1)")
+    assert records[1].error is None
 
 
 def test_an_empty_balance_is_not_waited_out(proxy, upstream, tmp_path):

@@ -73,6 +73,18 @@
       "description": "The item attempt this call belongs to.",
       "minimum": 1,
       "type": "integer"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "For a 429: the upstream's response body (its first 500 characters) and its Retry-After header, i.e. which limit the provider says was hit."
     }
   },
   "required": [
@@ -88,7 +100,8 @@
     "latency_ms",
     "status",
     "request_id",
-    "attempt"
+    "attempt",
+    "error"
   ],
   "type": "object"
 }

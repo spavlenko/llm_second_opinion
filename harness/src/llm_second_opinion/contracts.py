@@ -115,7 +115,7 @@ class AdvisorSettings(Strict):
     )
     max_consults: int = Field(default=5, ge=0)
     max_answer_tokens: int | None = Field(
-        default=4000,
+        default=8000,
         ge=1,
         description="Safety ceiling on each advisor answer (sent as max_tokens); reaching it is "
         "logged. The working limit is the prompt's target, `answer_target_words`.",
@@ -458,6 +458,11 @@ class UsageRecord(Strict):
         "joins this record to the advisor_request event.",
     )
     attempt: int = Field(default=1, ge=1, description="The item attempt this call belongs to.")
+    error: str | None = Field(
+        default=None,
+        description="For a 429: the upstream's response body (its first 500 characters) and its "
+        "Retry-After header, i.e. which limit the provider says was hit.",
+    )
 
 
 class RoleUsage(Strict):

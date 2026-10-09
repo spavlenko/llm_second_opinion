@@ -634,4 +634,8 @@ export interface UsageRecord {
    * The item attempt this call belongs to.
    */
   attempt: number;
+  /**
+   * For a 429: the upstream's response body (its first 500 characters) and its Retry-After header, i.e. which limit the provider says was hit.
+   */
+  error: string | null;
 }

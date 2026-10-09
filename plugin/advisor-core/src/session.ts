@@ -614,6 +614,11 @@ export class AdvisorSession {
           { role: "user", content: sent },
         ]);
       }
+      // Nothing to inject, and an empty assistant turn in the history fails every later consult
+      // (HTTP 400): a failed consult, kept out of the history.
+      if (!done.text.trim()) {
+        throw new Error(`empty answer (finish_reason ${done.finishReason}, ${done.reasoningTokens ?? "?"} reasoning tokens)`);
+      }
       this.history.push({ brief: brief.text, answer: done.text });
       const restored = this.roles.restore(done.text.trim());
       const code = limitCodeBlocks(restored, this.settings.rules.max_advice_code_lines);

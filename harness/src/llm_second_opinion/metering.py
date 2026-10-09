@@ -269,7 +269,8 @@ class ItemMeter:
                 path.write_text(json.dumps(full, indent=2))
 
     def end(self, seq: int, role: Role, model: str, tokens: Tokens | None, status: int,
-            start: float, note: str, request_id: str | None = None) -> None:  # fmt: skip
+            start: float, note: str, request_id: str | None = None,
+            error: str | None = None) -> None:  # fmt: skip
         """Record a finished call: a usage line (zero tokens for a call that failed), or a
         missing-usage mark for a 2xx call without usage."""
         with self._cond:
@@ -292,6 +293,7 @@ class ItemMeter:
                     status=status,
                     request_id=request_id,
                     attempt=self.attempt,
+                    error=error,
                 )
                 with self.usage_path.open("a") as f:
                     f.write(record.model_dump_json() + "\n")
@@ -435,6 +437,8 @@ class _Handler(BaseHTTPRequestHandler):
     server: MeteringProxy
     # HTTP/1.0: each response ends by closing the connection, so a stream needs no framing.
     protocol_version = "HTTP/1.0"
+    # A 429's body and Retry-After, for the usage record (`_relay` sets it).
+    _upstream_error: str | None = None
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -484,12 +488,14 @@ class _Handler(BaseHTTPRequestHandler):
         waited = 0.0
         while True:
             tokens, status, delay = None, 0, None
+            self._upstream_error = None
             hold = waited < RATE_LIMIT_MAX_WAIT_S
             try:
                 meter.request(seq, role, route["rest"] or "/", request, request_id, start)
                 tokens, status, delay = self._relay(target, endpoint, body, StreamUsage(), hold)
             finally:
-                meter.end(seq, role, model, tokens, status, start, note, request_id)
+                meter.end(seq, role, model, tokens, status, start, note, request_id,
+                          self._upstream_error)  # fmt: skip
             if delay is None:
                 return
             # Rate limited (quota windows): recorded above as a failed call; wait, then retry
@@ -542,6 +548,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if hold_rate_limit and resp.status == 429:
                 data = resp.read()
+                self._upstream_error = (
+                    f"{data.decode('utf-8', 'replace')[:500]} "
+                    f"(Retry-After: {resp.getheader('Retry-After')})"
+                )
                 if not _BILLING.search(data.decode("utf-8", "replace")):
                     self._backoff = getattr(self, "_backoff", RATE_LIMIT_FIRST_WAIT_S / 2) * 2
                     return None, 429, retry_after(resp.getheader("Retry-After"), self._backoff)

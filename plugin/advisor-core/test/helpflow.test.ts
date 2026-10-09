@@ -275,6 +275,18 @@ describe("memory", () => {
     await off.session.consultTool({ question: "Second?" });
     expect(off.client.requests[1]!.history).toEqual([]);
   });
+
+  it("an empty answer (reasoning ate the budget) is a failed consult and stays out of the history", async () => {
+    const { session, client, events } = setup({ level: "L2", memory: true }, ["  ", "second answer"]);
+    const first = await session.consultTool({ question: "First?" });
+    expect(first.advice).toBeNull();
+    expect(first.text).toMatch(/could not be reached/);
+    expect(events().find((e) => e.type === "advisor_error")).toMatchObject({ request_id: "r1", status: null });
+    session.observe(failing);
+    await session.consultTool({ question: "Second?" });
+    expect(client.requests[1]!.history).toEqual([]);
+    valid(events());
+  });
 });
 
 describe("surrogates", () => {

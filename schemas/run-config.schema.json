@@ -34,7 +34,7 @@
               "type": "null"
             }
           ],
-          "default": 4000,
+          "default": 8000,
           "description": "Safety ceiling on each advisor answer (sent as max_tokens); reaching it is logged. The working limit is the prompt's target, `answer_target_words`."
         },
         "answer_target_words": {
