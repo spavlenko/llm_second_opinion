@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from llm_second_opinion import __version__
 from llm_second_opinion.config import ConfigError, Experiment, load_dotenv
+from llm_second_opinion.consult_value import value_experiment
 from llm_second_opinion.contracts import render_schemas, stale_schemas
 from llm_second_opinion.ledger import Ledger
 from llm_second_opinion.metering import read_usage, spend
@@ -607,6 +608,20 @@ def uptake(
     finally:
         judge.stop()
     click.echo(f"judge: {judge.calls} new call(s), the rest from the cache")
+
+
+@main.command("consult-value")
+@EXPERIMENT
+@RUNS_DIR
+@click.option("--arm", help="Only this arm.")
+def consult_value(experiment: str, runs_dir: Path, arm: str | None) -> None:
+    """Which consults mattered: per consult, its trigger (gate, prompt or the executor's own),
+    Kimi tokens, closing verdict, edits after it, `bench uptake`'s verdict when judged, and
+    the run's outcome. Offline; writes RUNS_DIR/<experiment>/consult-value.jsonl."""
+    exp = _load(experiment)
+    if not (runs_dir / exp.name / "ledger.sqlite").exists():
+        raise click.ClickException(f"no ledger in {runs_dir / exp.name}; run the experiment first")
+    value_experiment(exp, runs_dir, arm=arm, echo=click.echo)
 
 
 @main.command()

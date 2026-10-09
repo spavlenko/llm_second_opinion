@@ -202,7 +202,18 @@ The pilot below waits for the go/no-go gate.
       - [ ] H-case-back on held-out dev tasks (the tuning set is 5 of 25)
       - [x] Task-based stuck detection, tuned offline on logged runs: `stuck_report` (failed-call
             burst; phase rules did not separate runs); the report as a gate, not a hint
-      - [ ] H-case-stuck on the 5 loop tasks, 2 seeds
+      - [x] H-case-stuck on the 5 loop tasks, 2 seeds: 7/10; the stuck gate fired once
+      - [ ] H-case-back on the 20 held-out gate-pool dev tasks, 2 seeds (`holdout-case`)
+      - [ ] Which consults matter (spend Kimi where it changes the outcome):
+        - [x] `bench consult-value`: per consult, trigger (gate, prompt, own), Kimi tokens,
+              closing verdict, edits after, uptake verdict, run outcome
+        - [ ] Run it (and `bench uptake`) on `holdout-case`
+        - [ ] Replay a run at a consult, advice vs a neutral message, Qwen only after it
+              (workspace rebuilt by re-running the logged calls, checked against the patch;
+              pi `--fork` from a session rebuilt from pi.jsonl): causal value per consult, no Kimi
+        - [ ] Ablation arms, one consult kind off each (`experiment_report`, `closing_report`,
+              `come_back_turns`), for the paper
+        - [ ] Then: skip consults that rarely change the outcome, by rule
       - [x] Restart instead of rescue (Fail-Fast, Restart-Smart): evaluated offline, not built
             (counterfactual −1.0 pt; long runs resolve as often as fresh ones)
       - [x] Failed-call rewriting (Fail-Fast): not built; Qwen repeats a failed call 0.4%
