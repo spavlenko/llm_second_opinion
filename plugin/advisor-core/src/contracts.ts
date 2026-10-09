@@ -519,6 +519,10 @@ export interface AdvisorSettings {
    */
   come_back_turns: number;
   /**
+   * From turn 30, when 4 of the executor's last 10 tool calls since its last report failed, its next tool calls are refused until it reports with the consult tool (at most 3 refusals, twice a run, while a consult is left beyond the closing report's).
+   */
+  stuck_report: boolean;
+  /**
    * Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.
    */
   surrogates: boolean;

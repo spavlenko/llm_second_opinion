@@ -200,9 +200,11 @@ The pilot below waits for the go/no-go gate.
             simdjson-644: 3/4; Qwen did not consult right after a come-back
       - [x] H-case-back on all 5 loop tasks: 8/10 (H-case-uptake 4/10, A0 8/45)
       - [ ] H-case-back on held-out dev tasks (the tuning set is 5 of 25)
-      - [ ] Task-based stuck detection (tests and repro unchanged, work only outside the
-            repository, repeated tool failures, stalls, turn-50 checkpoint), tuned offline on
-            logged runs; the report as a gate, not a hint
+      - [x] Task-based stuck detection, tuned offline on logged runs: `stuck_report` (failed-call
+            burst; phase rules did not separate runs); the report as a gate, not a hint
+      - [ ] H-case-stuck on the 5 loop tasks, 2 seeds
+      - [ ] Restart instead of rescue (Fail-Fast, Restart-Smart): fresh context, diff and Kimi's
+            diagnosis kept
       - [x] results.md: optimization loop section (iterations 1–6)
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction

@@ -7,7 +7,8 @@ import type { AdvisorSettings, Event, PromptSet } from "../src/contracts.js";
 import { EventWriter } from "../src/events.js";
 import type { ToolObservation } from "../src/observe.js";
 import { type AdviceRecord, AdvisorSession, type ConsultArgs, CLOSING_REPORT, COME_BACK_MAX, comeBack,
-  EXPERIMENT_GATE_MAX, EXPERIMENT_REPORT, EXPERIMENT_RUN, REPORT_GATE, STOP_UNREPORTED, TRUNCATED_MARKER } from "../src/session.js";
+  EXPERIMENT_GATE_MAX, EXPERIMENT_REPORT, EXPERIMENT_RUN, REPORT_GATE, STOP_UNREPORTED, STUCK_FAILURES, STUCK_FROM_TURN,
+  STUCK_GATE_MAX, STUCK_MAX, TRUNCATED_MARKER, stuckGate } from "../src/session.js";
 import { CODE_CUT_NOTE } from "../src/advice.js";
 import { BRIEF_CUT_MARKER, DEFAULT_QUESTIONS } from "../src/brief.js";
 import { DEFAULT_RULES, LOOSE, promptSet, runConfig, validateEvent } from "./helpers.js";
@@ -238,6 +239,37 @@ describe("advisor session", () => {
     expect(spare.session.comeBack(false)).toBeNull(); // the last consult is the closing report's
     const off = setup({ interventions: ["consult"], max_consults: 3 });
     expect(off.session.comeBack(true)).toBeNull();
+  });
+
+  it("stuck_report: a burst of failed calls since the last report refuses calls until a report", async () => {
+    const report = { question: "Why does the probe not build?", tried: "compiled it", hypothesis: "a missing include" };
+    const bad: ToolObservation = { name: "bash", args: { command: "g++ p.cpp" }, result: "p.cpp:1: error: no member", isError: true };
+    const ok: ToolObservation = { name: "read", args: { path: "a.cpp" }, result: "int x;", isError: false };
+    const refused: ToolObservation = { name: "edit", args: { path: "a.cpp" }, result: REPORT_GATE, isError: true };
+    const { session } = setup({ interventions: ["consult"], closing_report: true, stuck_report: true, max_consults: 6, reserve_for_end: 0 });
+    session.turnStart(STUCK_FROM_TURN - 1);
+    for (let i = 0; i < STUCK_FAILURES; i++) session.observe(bad);
+    expect(session.stuckGate()).toBeNull(); // too early in the run
+    session.turnStart(STUCK_FROM_TURN);
+    for (let i = 0; i < 3; i++) session.observe(refused); // the session's own refusals do not count
+    expect(session.stuckGate()).toBeNull();
+    session.observe(ok); // the earlier failures are still among the last 10 calls
+    const gate = session.stuckGate();
+    expect(gate).toBe(stuckGate(STUCK_FAILURES, "`bash`: p.cpp:1: error: no member"));
+    expect([1, 2, 3].map(() => session.stuckGate()).filter(Boolean)).toHaveLength(STUCK_GATE_MAX - 1);
+    await session.consultTool(report); // a report clears the window
+    session.observe(bad);
+    expect(session.stuckGate()).toBeNull();
+    for (let i = 0; i < STUCK_FAILURES; i++) session.observe(bad);
+    expect(session.stuckGate()).not.toBeNull(); // the second firing
+    await session.consultTool(report);
+    for (let i = 0; i < STUCK_FAILURES; i++) session.observe(bad);
+    expect(session.stuckGate()).toBeNull(); // STUCK_MAX
+    expect(STUCK_MAX).toBe(2);
+    const spare = setup({ interventions: ["consult"], closing_report: true, stuck_report: true, max_consults: 1, reserve_for_end: 0 });
+    spare.session.turnStart(STUCK_FROM_TURN);
+    for (let i = 0; i < STUCK_FAILURES; i++) spare.session.observe(bad);
+    expect(spare.session.stuckGate()).toBeNull(); // the last consult is the closing report's
   });
 
   it("policy_rendered comes once, first, with a null tool when consult is off", async () => {

@@ -36,6 +36,7 @@ _LATER_ADVISOR_DEFAULTS = {
     "closing_report": False,
     "experiment_report": False,
     "come_back_turns": 0,
+    "stuck_report": False,
 }
 _DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$")
 

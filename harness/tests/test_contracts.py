@@ -106,7 +106,7 @@ def test_result_rejects_unknown_exit_reason():
 @pytest.mark.parametrize(
     ("setting", "on"),
     [("report_gate", True), ("closing_report", True), ("experiment_report", True),
-     ("come_back_turns", 25)],
+     ("come_back_turns", 25), ("stuck_report", True)],
 )  # fmt: skip
 def test_reports_need_the_consult_tool(setting, on):
     AdvisorSettings(level="L3", interventions=["consult"], **{setting: on})

@@ -206,3 +206,24 @@ arms:
       field_target_words: 150
       answer_target_words: 300
       rules: {max_advice_code_lines: 15}
+  # Iteration 7: Qwen ignored the come-back prompt. Over 507 logged dev runs, 4 failed tool
+  # calls in the last 10 since a report, from turn 30, marks runs that resolve 17% vs 31%
+  # (scratch probes that will not build). stuck_report then refuses calls until a report.
+  - name: H-case-stuck
+    agent: pi
+    executor: local
+    advisor:
+      level: L3
+      prompts: case-review
+      interventions: [consult]
+      report_gate: true
+      experiment_report: true
+      closing_report: true
+      come_back_turns: 25
+      stuck_report: true
+      memory: true
+      max_consults: 4
+      reserve_for_end: 0
+      field_target_words: 150
+      answer_target_words: 300
+      rules: {max_advice_code_lines: 15}

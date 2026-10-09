@@ -63,6 +63,24 @@ export const STOP_UNREPORTED =
   "tool now (what you reproduced, the symptoms, where you think the cause is and why), then fix the issue.";
 /** `come_back_turns` asks at most this many times in a run. */
 export const COME_BACK_MAX = 2;
+/** `stuck_report`: from this turn, STUCK_FAILURES failed calls among the last STUCK_WINDOW
+ * since the executor's last report count as stuck. Set from the logged dev runs (docs/lab-notes.md,
+ * 2026-10-09): runs where this fires resolve about half as often as the rest. */
+export const STUCK_FROM_TURN = 30;
+export const STUCK_WINDOW = 10;
+export const STUCK_FAILURES = 4;
+/** ... it fires at most this many times in a run, and refuses at most STUCK_GATE_MAX calls
+ * each time, so a consult the rules refuse cannot block the executor for good. */
+export const STUCK_MAX = 2;
+export const STUCK_GATE_MAX = 3;
+/** The tool result of a call refused by `stuck_report`. */
+export const stuckGate = (failed: number, latest: string): string =>
+  `This call was not run: ${failed} of your last ${STUCK_WINDOW} tool calls failed (the latest: ${latest}). ` +
+  `Report to the advisor with the \`${CONSULT_TOOL}\` tool before you go on: in \`tried\`, what you are trying to do ` +
+  "and the failing command with its output; in `question`, what blocks you. Then continue.";
+// Results of calls the session's own gates refused: not failures of the executor's work.
+const REFUSED = /^This (edit was not applied|call was not run)/;
+
 /** `clarify`: the most lines of a file, or of test output, sent in a follow-up. */
 export const CLARIFY_MAX_LINES = 40;
 
@@ -153,6 +171,12 @@ export class AdvisorSession {
   private turnsSinceReport = 0;
   private comeBacks = 0;
   private stopUnreportedAsked = false;
+  /** `stuck_report`: whether each tool call since the last report failed, and the latest failure. */
+  private failures: boolean[] = [];
+  private latestFailure = "";
+  private stuckFires = 0;
+  /** Calls left to refuse for the current firing; 0 when it is not armed. */
+  private stuckBlocks = 0;
   private policyDone = false;
 
   constructor(private readonly opts: AdvisorSessionOptions) {
@@ -243,6 +267,7 @@ export class AdvisorSession {
     const run = testRun(obs);
     if (buildOrTestFailure(obs)) this.lastFailure = obs;
     if (obs.name === "bash" && !readsCode(obs) && !editsFiles(obs)) this.ranSinceReport = true;
+    if (!REFUSED.test(obs.result)) this.noteOutcome(obs);
     if (run) {
       this.failedTests = run.failedTests;
       this.lastTestRun = obs;
@@ -348,6 +373,31 @@ export class AdvisorSession {
     return comeBack(turns);
   }
 
+  private noteOutcome(obs: ToolObservation): void {
+    if (!this.settings.stuck_report) return;
+    this.failures = [...this.failures, obs.isError].slice(-STUCK_WINDOW);
+    if (obs.isError) {
+      const line = errorText(obs.result, 1).trim();
+      this.latestFailure = `\`${obs.name}\`: ${line.length > 160 ? `${line.slice(0, 160)}…` : line}`;
+    }
+    const failed = this.failures.filter(Boolean).length;
+    const spare = this.engine.consultsLeft - this.engine.reserved - (this.settings.closing_report ? 1 : 0);
+    if (this.stuckBlocks || this.engine.turn < STUCK_FROM_TURN || failed < STUCK_FAILURES) return;
+    if (this.stuckFires >= STUCK_MAX || spare <= 0) return;
+    this.stuckFires++;
+    this.stuckBlocks = STUCK_GATE_MAX;
+  }
+
+  /** `stuck_report`: the reason to refuse any tool call but the consult tool, or null. Armed when
+   * STUCK_FAILURES of the last STUCK_WINDOW calls since the last report failed (from turn
+   * STUCK_FROM_TURN, at most STUCK_MAX times); it refuses at most STUCK_GATE_MAX calls, and a
+   * report disarms it. */
+  stuckGate(): string | null {
+    if (!this.stuckBlocks) return null;
+    this.stuckBlocks--;
+    return stuckGate(this.failures.filter(Boolean).length, this.latestFailure);
+  }
+
   /** Is this call one that changes files (so `beforeEdit` applies)? */
   isEdit(name: string, args: Record<string, unknown>): boolean {
     return editsFiles({ name, args, result: "", isError: false });
@@ -383,6 +433,8 @@ export class AdvisorSession {
     this.editedSinceReport = false;
     this.ranSinceReport = false;
     this.turnsSinceReport = 0;
+    this.failures = [];
+    this.stuckBlocks = 0;
     const advice = await this.onDecision(
       decision,
       { question: args.question, tried: args.tried, hypothesis: args.hypothesis },

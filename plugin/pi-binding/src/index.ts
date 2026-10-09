@@ -17,6 +17,8 @@
 //   once (a custom message, `continue: true`) to file a closing report with the consult tool.
 // - come_back_turns: the same way, it is asked to report after that many turns without one, or
 //   sent back once when it stops without ever having reported.
+// - stuck_report: after a burst of failed tool calls, `tool_call` blocks every call but the
+//   consult tool (a few at most), and the block reason asks for a report.
 // - orient, if it has not fired by the executor's first edit, fires in `tool_call` for that
 //   edit: the edit is blocked, and the block reason (the tool result) carries the advice and asks
 //   the executor to re-issue the edit if it still fits.
@@ -97,6 +99,8 @@ export default function advisorExtension(pi: ExtensionAPI, env: Env = process.en
 
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     if (event.toolName === CONSULT_TOOL || event.parentToolCallId) return;
+    const stuck = session.stuckGate();
+    if (stuck) return { block: true, reason: stuck };
     if (!session.isEdit(event.toolName, event.input as Record<string, unknown>)) return;
     const gate = session.reportGate();
     if (gate) return { block: true, reason: gate };

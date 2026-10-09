@@ -105,6 +105,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "stuck_report": {
+          "default": false,
+          "description": "From turn 30, when 4 of the executor's last 10 tool calls since its last report failed, its next tool calls are refused until it reports with the consult tool (at most 3 refusals, twice a run, while a consult is left beyond the closing report's).",
+          "type": "boolean"
+        },
         "surrogates": {
           "default": false,
           "description": "Below L3, redacted names become plausible fake names instead of `<role_N>` placeholders.",
@@ -153,6 +158,7 @@
         "closing_report",
         "experiment_report",
         "come_back_turns",
+        "stuck_report",
         "surrogates",
         "rules",
         "cooldown_turns",

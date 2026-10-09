@@ -174,6 +174,12 @@ class AdvisorSettings(Strict):
         "closing report's; and an executor that stops without ever reporting is sent back once to "
         "report. 0: off.",
     )
+    stuck_report: bool = Field(
+        default=False,
+        description="From turn 30, when 4 of the executor's last 10 tool calls since its last "
+        "report failed, its next tool calls are refused until it reports with the consult tool "
+        "(at most 3 refusals, twice a run, while a consult is left beyond the closing report's).",
+    )
     surrogates: bool = Field(
         default=False,
         description="Below L3, redacted names become plausible fake names instead of "
@@ -194,7 +200,7 @@ class AdvisorSettings(Strict):
             raise ValueError("the periodic intervention needs periodic_every")
         if self.report_gate and Intervention.CONSULT not in self.interventions:
             raise ValueError("report_gate needs the consult intervention (the report is a consult)")
-        for name in ("closing_report", "experiment_report", "come_back_turns"):
+        for name in ("closing_report", "experiment_report", "come_back_turns", "stuck_report"):
             if getattr(self, name) and Intervention.CONSULT not in self.interventions:
                 raise ValueError(f"{name} needs the consult intervention (the report is a consult)")
         return self
