@@ -198,7 +198,8 @@ The pilot below waits for the go/no-go gate.
             `come_back_turns`
       - [x] Iteration 6: H-case-back (come-back, stricter closing review) on json-2225 and
             simdjson-644: 3/4; Qwen did not consult right after a come-back
-      - [ ] H-case-back on the other 3 loop tasks, against H-case-uptake's 4/10
+      - [x] H-case-back on all 5 loop tasks: 8/10 (H-case-uptake 4/10, A0 8/45)
+      - [ ] H-case-back on held-out dev tasks (the tuning set is 5 of 25)
 - [x] Interim write-up: `docs/results.md`, `docs/linkedin-draft.md` (2026-10-08)
 - [ ] If go: brief writer with local retrieval, searched for resolve − λ × leaks; redaction
       levels none / surrogates / abstract
